@@ -700,7 +700,7 @@ mod test {
     #[test]
     fn test_repr_parse_link_layer_opt_ethernet() {
         let mut bytes = [0x01, 0x01, 0x54, 0x52, 0x00, 0x12, 0x23, 0x34];
-        let addr = EthernetAddress([0x54, 0x52, 0x00, 0x12, 0x23, 0x34]);
+        let addr = EthernetAddress::from_octets([0x54, 0x52, 0x00, 0x12, 0x23, 0x34]);
         {
             assert_eq!(
                 Repr::parse(&NdiscOption::new_unchecked(&bytes)),

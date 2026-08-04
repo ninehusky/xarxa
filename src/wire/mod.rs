@@ -315,6 +315,15 @@ impl fmt::Display for Error {
 pub type Result<T> = core::result::Result<T, Error>;
 
 /// Representation of an hardware address, such as an Ethernet address or an IEEE802.15.4 address.
+///
+/// The `unicast` refinement is a **one-sided** claim: `HardwareAddress[true]` is a
+/// proof that the address is unicast, while `HardwareAddress[false]` only means "not
+/// known to be unicast". That asymmetry is what makes the enum refinable at all —
+/// `Ieee802154Address` decides unicast by comparing against `BROADCAST` through a
+/// derived `PartialEq` on arrays, which carries no refinement, and its `Absent`
+/// variant has no unicast bit in the first place. Indexing those cases `false` is
+/// sound under the one-sided reading; an exact `bool[unicast]` spec would need
+/// `Ieee802154Address` restructured the same way `EthernetAddress` was.
 #[cfg(any(
     feature = "medium-ip",
     feature = "medium-ethernet",
@@ -322,12 +331,16 @@ pub type Result<T> = core::result::Result<T, Error>;
 ))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(unicast: bool)]
 pub enum HardwareAddress {
     #[cfg(feature = "medium-ip")]
+    #[flux_rs::variant(HardwareAddress[false])]
     Ip,
     #[cfg(feature = "medium-ethernet")]
+    #[flux_rs::variant((EthernetAddress[@o0]) -> HardwareAddress[o0 % 2 == 0])]
     Ethernet(EthernetAddress),
     #[cfg(feature = "medium-ieee802154")]
+    #[flux_rs::variant((Ieee802154Address) -> HardwareAddress[false])]
     Ieee802154(Ieee802154Address),
 }
 
@@ -373,6 +386,12 @@ impl HardwareAddress {
     }
 
     /// Query whether the address is an unicast address.
+    ///
+    /// The signature states the one-sided reading of the refinement described on the
+    /// type: an address indexed `true` is guaranteed to answer `true` here. Nothing
+    /// is promised for `false`, which is what lets the IEEE 802.15.4 arm — whose
+    /// answer Flux cannot predict — typecheck without weakening the Ethernet arm.
+    #[flux_rs::sig(fn(&HardwareAddress[@unicast]) -> bool{b: unicast => b})]
     pub fn is_unicast(&self) -> bool {
         match self {
             #[cfg(feature = "medium-ip")]
@@ -581,7 +600,7 @@ mod tests {
 
     #[rstest]
     #[cfg(feature = "medium-ethernet")]
-    #[case((Medium::Ethernet, &[0u8; 6][..]), Ok(HardwareAddress::Ethernet(EthernetAddress([0, 0, 0, 0, 0, 0]))))]
+    #[case((Medium::Ethernet, &[0u8; 6][..]), Ok(HardwareAddress::Ethernet(EthernetAddress::from_octets([0, 0, 0, 0, 0, 0]))))]
     #[cfg(feature = "medium-ethernet")]
     #[case((Medium::Ethernet, &[1u8; 5][..]), Err(Error))]
     #[cfg(feature = "medium-ethernet")]

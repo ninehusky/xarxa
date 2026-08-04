@@ -185,10 +185,14 @@ mod test {
 
     use crate::wire::EthernetAddress;
 
-    const HADDR_A: HardwareAddress = HardwareAddress::Ethernet(EthernetAddress([0, 0, 0, 0, 0, 1]));
-    const HADDR_B: HardwareAddress = HardwareAddress::Ethernet(EthernetAddress([0, 0, 0, 0, 0, 2]));
-    const HADDR_C: HardwareAddress = HardwareAddress::Ethernet(EthernetAddress([0, 0, 0, 0, 0, 3]));
-    const HADDR_D: HardwareAddress = HardwareAddress::Ethernet(EthernetAddress([0, 0, 0, 0, 0, 4]));
+    const HADDR_A: HardwareAddress =
+        HardwareAddress::Ethernet(EthernetAddress::from_octets([0, 0, 0, 0, 0, 1]));
+    const HADDR_B: HardwareAddress =
+        HardwareAddress::Ethernet(EthernetAddress::from_octets([0, 0, 0, 0, 0, 2]));
+    const HADDR_C: HardwareAddress =
+        HardwareAddress::Ethernet(EthernetAddress::from_octets([0, 0, 0, 0, 0, 3]));
+    const HADDR_D: HardwareAddress =
+        HardwareAddress::Ethernet(EthernetAddress::from_octets([0, 0, 0, 0, 0, 4]));
 
     #[test]
     fn test_fill() {

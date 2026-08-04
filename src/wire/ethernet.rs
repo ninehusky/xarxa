@@ -24,31 +24,103 @@ impl fmt::Display for EtherType {
 }
 
 /// A six-octet Ethernet II address.
+///
+/// The address is refined by its **first octet**, which is stored as a field of its
+/// own rather than as element 0 of an array. Two facts force that layout:
+///
+/// * Flux does not track the values of individual array elements, so
+///   `self.0[0] & 0x01 != 0` carries no refinement even when the array is a literal.
+///   Splitting the octet out is what lets the unicast predicate have a real spec
+///   instead of being `#[trusted]`.
+/// * The first octet is the *only* one the unicast/multicast predicates depend on:
+///   `BROADCAST` is all-`0xff` and `0xff & 0x01 == 1`, so broadcast implies
+///   multicast and `is_unicast` collapses to a test on the low bit of octet 0.
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
-pub struct Address(pub [u8; 6]);
+#[repr(C)]
+#[flux_rs::refined_by(o0: int)]
+pub struct Address {
+    #[flux_rs::field(u8[o0])]
+    o0: u8,
+    rest: [u8; 5],
+}
 
 impl Address {
     /// The broadcast address.
-    pub const BROADCAST: Address = Address([0xff; 6]);
+    pub const BROADCAST: Address = Address::new(0xff, 0xff, 0xff, 0xff, 0xff, 0xff);
+
+    /// Construct an Ethernet address from six octets, in big-endian.
+    ///
+    /// Unlike [`from_bytes`](Self::from_bytes) this preserves the value of the first
+    /// octet in the refinement, so an address built from literals here is the only
+    /// kind that can be statically known to be unicast.
+    #[flux_rs::sig(fn(u8[@a0], u8, u8, u8, u8, u8) -> Address[a0])]
+    pub const fn new(a0: u8, a1: u8, a2: u8, a3: u8, a4: u8, a5: u8) -> Address {
+        Address {
+            o0: a0,
+            rest: [a1, a2, a3, a4, a5],
+        }
+    }
+
+    /// Construct an Ethernet address from an array of octets, in big-endian.
+    #[flux_rs::sig(fn([u8; 6]) -> Address)]
+    pub const fn from_octets(octets: [u8; 6]) -> Address {
+        Address::new(
+            octets[0], octets[1], octets[2], octets[3], octets[4], octets[5],
+        )
+    }
 
     /// Construct an Ethernet address from a sequence of octets, in big-endian.
+    ///
+    /// The refinement is left unconstrained: an address that came off the wire is not
+    /// provably unicast, which is the correct conclusion.
     ///
     /// # Panics
     /// The function panics if `data` is not six octets long.
     pub fn from_bytes(data: &[u8]) -> Address {
         let mut bytes = [0; 6];
         bytes.copy_from_slice(data);
-        Address(bytes)
+        Address::from_octets(bytes)
+    }
+
+    /// Return an Ethernet address as an array of octets, in big-endian.
+    #[flux_rs::sig(fn(&Address) -> [u8; 6])]
+    pub const fn octets(&self) -> [u8; 6] {
+        [
+            self.o0,
+            self.rest[0],
+            self.rest[1],
+            self.rest[2],
+            self.rest[3],
+            self.rest[4],
+        ]
     }
 
     /// Return an Ethernet address as a sequence of octets, in big-endian.
+    //
+    // Borrowing the octets out of the split representation is the one place the
+    // layout costs us something: it needs a pointer cast, so the function is
+    // `trusted`. Note that this is a *layout* axiom, not a claim about the unicast
+    // refinement — the chain that licenses the panic removal stays trusted-free.
+    // The `[u8][6]` result keeps the length available to callers that would
+    // otherwise lose it (e.g. `copy_from_slice` into a six-byte field).
+    #[allow(unsafe_code)]
+    #[flux_rs::trusted]
+    #[flux_rs::sig(fn(&Address) -> &[u8][6])]
     pub const fn as_bytes(&self) -> &[u8] {
-        &self.0
+        // SAFETY: `Address` is `#[repr(C)]` and every field is `u8` or an array of
+        // `u8`, so it has alignment 1, contains no padding, and is exactly six
+        // contiguous initialised bytes laid out in declaration order.
+        unsafe { core::slice::from_raw_parts(core::ptr::from_ref(self).cast::<u8>(), 6) }
     }
 
     /// Query whether the address is an unicast address.
+    #[flux_rs::sig(fn(&Address[@o0]) -> bool[o0 % 2 == 0])]
     pub fn is_unicast(&self) -> bool {
-        !(self.is_broadcast() || self.is_multicast())
+        // `is_broadcast` used to be part of this test, but it is subsumed:
+        // `BROADCAST` is all-`0xff` and `0xff` is odd, so a broadcast address is
+        // always multicast. Dropping it also sidesteps the derived `PartialEq`,
+        // through which Flux cannot relate the result back to the octets.
+        !self.is_multicast()
     }
 
     /// Query whether this address is the broadcast address.
@@ -57,22 +129,28 @@ impl Address {
     }
 
     /// Query whether the "multicast" bit in the OUI is set.
+    //
+    // `% 2` rather than `& 0x01`: for `u8` the two are identical and LLVM lowers the
+    // remainder straight back to an `and`, but Flux relates `x % 2 == 1` to the
+    // refinement while `x & 0x01 != 0` does not.
+    #[flux_rs::sig(fn(&Address[@o0]) -> bool[o0 % 2 == 1])]
     pub const fn is_multicast(&self) -> bool {
-        self.0[0] & 0x01 != 0
+        self.o0 % 2 == 1
     }
 
     /// Query whether the "locally administered" bit in the OUI is set.
     pub const fn is_local(&self) -> bool {
-        self.0[0] & 0x02 != 0
+        self.o0 & 0x02 != 0
     }
 
     /// Convert the address to an Extended Unique Identifier (EUI-64)
     pub fn as_eui_64(&self) -> Option<[u8; 8]> {
+        let octets = self.octets();
         let mut bytes = [0; 8];
-        bytes[0..3].copy_from_slice(&self.0[0..3]);
+        bytes[0..3].copy_from_slice(&octets[0..3]);
         bytes[3] = 0xFF;
         bytes[4] = 0xFE;
-        bytes[5..8].copy_from_slice(&self.0[3..6]);
+        bytes[5..8].copy_from_slice(&octets[3..6]);
         bytes[0] ^= 1 << 1;
         Some(bytes)
     }
@@ -80,7 +158,7 @@ impl Address {
 
 impl fmt::Display for Address {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let bytes = self.0;
+        let bytes = self.octets();
         write!(
             f,
             "{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}",
@@ -92,7 +170,7 @@ impl fmt::Display for Address {
 #[cfg(feature = "defmt")]
 impl defmt::Format for Address {
     fn format(&self, fmt: defmt::Formatter) {
-        let bytes = self.0;
+        let bytes = self.octets();
         defmt::write!(
             fmt,
             "{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}",
@@ -354,11 +432,11 @@ mod test_ipv4 {
         let frame = Frame::new_unchecked(&FRAME_BYTES[..]);
         assert_eq!(
             frame.dst_addr(),
-            Address([0x01, 0x02, 0x03, 0x04, 0x05, 0x06])
+            Address::from_octets([0x01, 0x02, 0x03, 0x04, 0x05, 0x06])
         );
         assert_eq!(
             frame.src_addr(),
-            Address([0x11, 0x12, 0x13, 0x14, 0x15, 0x16])
+            Address::from_octets([0x11, 0x12, 0x13, 0x14, 0x15, 0x16])
         );
         assert_eq!(frame.ethertype(), EtherType::Ipv4);
         assert_eq!(frame.payload(), &PAYLOAD_BYTES[..]);
@@ -368,8 +446,8 @@ mod test_ipv4 {
     fn test_construct() {
         let mut bytes = vec![0xa5; 64];
         let mut frame = Frame::new_unchecked(&mut bytes);
-        frame.set_dst_addr(Address([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]));
-        frame.set_src_addr(Address([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]));
+        frame.set_dst_addr(Address::from_octets([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]));
+        frame.set_src_addr(Address::from_octets([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]));
         frame.set_ethertype(EtherType::Ipv4);
         frame.payload_mut().copy_from_slice(&PAYLOAD_BYTES[..]);
         assert_eq!(&frame.into_inner()[..], &FRAME_BYTES[..]);
@@ -400,11 +478,11 @@ mod test_ipv6 {
         let frame = Frame::new_unchecked(&FRAME_BYTES[..]);
         assert_eq!(
             frame.dst_addr(),
-            Address([0x01, 0x02, 0x03, 0x04, 0x05, 0x06])
+            Address::from_octets([0x01, 0x02, 0x03, 0x04, 0x05, 0x06])
         );
         assert_eq!(
             frame.src_addr(),
-            Address([0x11, 0x12, 0x13, 0x14, 0x15, 0x16])
+            Address::from_octets([0x11, 0x12, 0x13, 0x14, 0x15, 0x16])
         );
         assert_eq!(frame.ethertype(), EtherType::Ipv6);
         assert_eq!(frame.payload(), &PAYLOAD_BYTES[..]);
@@ -414,11 +492,35 @@ mod test_ipv6 {
     fn test_construct() {
         let mut bytes = vec![0xa5; 54];
         let mut frame = Frame::new_unchecked(&mut bytes);
-        frame.set_dst_addr(Address([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]));
-        frame.set_src_addr(Address([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]));
+        frame.set_dst_addr(Address::from_octets([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]));
+        frame.set_src_addr(Address::from_octets([0x11, 0x12, 0x13, 0x14, 0x15, 0x16]));
         frame.set_ethertype(EtherType::Ipv6);
         assert_eq!(PAYLOAD_BYTES.len(), frame.payload_mut().len());
         frame.payload_mut().copy_from_slice(&PAYLOAD_BYTES[..]);
         assert_eq!(&frame.into_inner()[..], &FRAME_BYTES[..]);
+    }
+}
+
+#[cfg(test)]
+mod layout_test {
+    use super::*;
+    #[test]
+    fn address_is_still_six_bytes() {
+        assert_eq!(core::mem::size_of::<Address>(), 6);
+        assert_eq!(core::mem::align_of::<Address>(), 1);
+        let a = Address::new(0x12, 0x22, 0x33, 0x44, 0x55, 0x66);
+        assert_eq!(a.as_bytes(), &[0x12, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        assert_eq!(a.octets(), [0x12, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        assert_eq!(
+            Address::from_bytes(&[0x12, 0x22, 0x33, 0x44, 0x55, 0x66]),
+            a
+        );
+        assert!(Address::BROADCAST.is_broadcast());
+        assert!(Address::BROADCAST.is_multicast());
+        assert!(!Address::BROADCAST.is_unicast());
+        // Even first octet -> unicast; odd -> multicast. Only octet 0 matters.
+        assert!(a.is_unicast() && !a.is_multicast());
+        let m = Address::new(0x13, 0x22, 0x33, 0x44, 0x55, 0x66);
+        assert!(m.is_multicast() && !m.is_unicast());
     }
 }
