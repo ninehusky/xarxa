@@ -1581,6 +1581,11 @@ impl<'a> Socket<'a> {
         }
     }
 
+    // FIXME(flux): fixpoint chokes on this function; it's ~700 lines of code that
+    // seem far larger than any other function in the crate. fixpoint grows
+    // to the point where it runs out of memory and never terminates -- we're
+    // trusting for now until we can refactor into smaller functions.
+    #[flux_rs::trusted(reason = "Fixpoint chokes (see above documentation)")]
     pub(crate) fn process(
         &mut self,
         cx: &mut Context,
@@ -2429,6 +2434,9 @@ impl<'a> Socket<'a> {
         }
     }
 
+    // FIXME(flux): same fixpoint blowup as `process` above (~680KB constraint, fixpoint
+    // reaches 7GB RSS without terminating). Trusted until it is split up.
+    #[flux_rs::trusted]
     pub(crate) fn dispatch<F, E>(&mut self, cx: &mut Context, emit: F) -> Result<(), E>
     where
         F: FnOnce(&mut Context, (IpRepr, TcpRepr)) -> Result<(), E>,

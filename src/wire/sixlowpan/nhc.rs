@@ -635,6 +635,8 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> UdpNhcPacket<T> {
     set_field!(set_checksum_field, 0b1, 2);
     set_field!(set_ports_field, 0b11, 0);
 
+    // FIXME(flux): ICE -- (flux-refineck/src/type_env.rs:543). Trusted until that flux bug is fixed.
+    #[flux_rs::trusted(reason = "ICE: flux-refineck/src/type_env.rs:543")]
     fn set_ports(&mut self, src_port: u16, dst_port: u16) {
         let mut idx = 1;
 

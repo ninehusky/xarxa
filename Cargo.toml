@@ -31,6 +31,15 @@ bitflags = { version = "1.0", default-features = false }
 defmt = { version = "1.0.1", optional = true, features = ["ip_in_core"] }
 cfg-if = "1.0.0"
 heapless = "0.9"
+flux-rs = { path = "../flux/lib/flux-rs" }
+
+[package.metadata.flux]
+enabled = true
+no_panic = true
+cache = true
+# Restrict checking to the library; otherwise `no_panic` also applies to build.rs,
+# whose errors abort the run before the lib is checked.
+include = ["src/**/*.rs"]
 
 [dev-dependencies]
 env_logger = "0.10"

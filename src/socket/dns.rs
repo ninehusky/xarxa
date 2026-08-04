@@ -665,10 +665,20 @@ impl<'a> Socket<'a> {
     }
 }
 
-fn eq_names<'a>(
-    mut a: impl Iterator<Item = wire::Result<&'a [u8]>>,
-    mut b: impl Iterator<Item = wire::Result<&'a [u8]>>,
-) -> wire::Result<bool> {
+// FIXME(flux): Not a critical bug, but noting here that the original signature:
+// ```
+// fn eq_names<'a>(
+//     mut a: impl Iterator<Item = wire::Result<&'a [u8]>>,
+//     mut b: impl Iterator<Item = wire::Result<&'a [u8]>>,
+// ) -> wire::Result<bool> {
+// ```
+// was changed to the current one b/c Flux complained about the duplicate
+// `impl Iterator...` in the signature.
+fn eq_names<'a, A, B>(mut a: A, mut b: B) -> wire::Result<bool>
+where
+    A: Iterator<Item = wire::Result<&'a [u8]>>,
+    B: Iterator<Item = wire::Result<&'a [u8]>>,
+{
     loop {
         match (a.next(), b.next()) {
             // Handle errors

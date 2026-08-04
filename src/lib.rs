@@ -184,6 +184,8 @@ pub mod storage;
 pub mod time;
 pub mod wire;
 
+mod flux_specs;
+
 #[cfg(all(
     test,
     any(
