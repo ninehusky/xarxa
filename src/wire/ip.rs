@@ -85,14 +85,18 @@ impl fmt::Display for Protocol {
 
 /// An internetworking address.
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+#[flux_rs::refined_by(address_ty: int)]
 pub enum Address {
     /// An IPv4 address.
     #[cfg(feature = "proto-ipv4")]
+    #[flux_rs::variant((Ipv4Address) -> Address[0])]
     Ipv4(Ipv4Address),
     /// An IPv6 address.
     #[cfg(feature = "proto-ipv6")]
+    #[flux_rs::variant((Ipv6Address) -> Address[1])]
     Ipv6(Ipv6Address),
 }
+
 
 impl Address {
     /// Create an address wrapping an IPv4 address with the given octets.
