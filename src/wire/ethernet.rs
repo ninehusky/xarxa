@@ -44,6 +44,12 @@ pub struct Address {
     rest: [u8; 5],
 }
 
+// `as_bytes` below reinterprets an `Address` as six contiguous octets. These make the
+// premise of that `unsafe` a compile error rather than silent UB if the layout ever
+// drifts — e.g. if a field is added, reordered, or `#[repr(C)]` is dropped.
+const _: () = assert!(core::mem::size_of::<Address>() == 6);
+const _: () = assert!(core::mem::align_of::<Address>() == 1);
+
 impl Address {
     /// The broadcast address.
     pub const BROADCAST: Address = Address::new(0xff, 0xff, 0xff, 0xff, 0xff, 0xff);
@@ -114,18 +120,32 @@ impl Address {
     }
 
     /// Query whether the address is an unicast address.
+    //
+    // The broadcast disjunct is redundant — `BROADCAST` is all-`0xff` and `0xff` is
+    // odd, so a broadcast address is always multicast — but it is kept so this reads
+    // like the original. It is absorbed rather than dropped: `is_broadcast` implies
+    // `o0 == 255`, hence `o0 % 2 == 1`, hence `is_multicast`.
     #[flux_rs::sig(fn(&Address[@o0]) -> bool[o0 % 2 == 0])]
     pub fn is_unicast(&self) -> bool {
-        // `is_broadcast` used to be part of this test, but it is subsumed:
-        // `BROADCAST` is all-`0xff` and `0xff` is odd, so a broadcast address is
-        // always multicast. Dropping it also sidesteps the derived `PartialEq`,
-        // through which Flux cannot relate the result back to the octets.
-        !self.is_multicast()
+        !(self.is_broadcast() || self.is_multicast())
     }
 
     /// Query whether this address is the broadcast address.
-    pub fn is_broadcast(&self) -> bool {
-        *self == Self::BROADCAST
+    //
+    // Matched structurally rather than with `*self == Self::BROADCAST`: the derived
+    // `PartialEq` on the octets yields a plain `bool` that Flux cannot relate back to
+    // the address. The spec is one-sided because `rest` is an array, whose element
+    // values Flux does not track — "broadcast implies the first octet is 0xff" is all
+    // that can be stated, and all that `is_unicast` needs.
+    #[flux_rs::sig(fn(&Address[@o0]) -> bool{b: b => o0 == 255})]
+    pub const fn is_broadcast(&self) -> bool {
+        matches!(
+            self,
+            Address {
+                o0: 0xff,
+                rest: [0xff, 0xff, 0xff, 0xff, 0xff]
+            }
+        )
     }
 
     /// Query whether the "multicast" bit in the OUI is set.

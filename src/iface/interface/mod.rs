@@ -328,7 +328,7 @@ impl Interface {
     ///
     /// # Panics
     /// This function panics if the medium is not Ethernet or Ieee802154.
-    #[flux_rs::sig(fn(&mut Interface, HardwareAddress[true]))]
+    #[flux_rs::sig(fn(&mut Self, HardwareAddress[true]))]
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
     pub fn set_hardware_addr(&mut self, addr: HardwareAddress) {
         #[cfg(all(feature = "medium-ethernet", not(feature = "medium-ieee802154")))]
@@ -895,8 +895,8 @@ impl InterfaceInner {
     /// cheaper.
     ///
     /// Note that nothing inside this crate calls the only caller of this function
-    /// (see [`Interface::set_hardware_addr`]), so the obligation is exported rather
-    /// than discharged here — see `tools/NEXT.md`.
+    /// (see [`Interface::set_hardware_addr`]), so the obligation is exported to
+    /// downstream callers rather than discharged here.
     #[flux_rs::sig(fn(&HardwareAddress[true]))]
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
     #[allow(unsafe_code)]

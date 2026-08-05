@@ -316,14 +316,9 @@ pub type Result<T> = core::result::Result<T, Error>;
 
 /// Representation of an hardware address, such as an Ethernet address or an IEEE802.15.4 address.
 ///
-/// The `unicast` refinement is a **one-sided** claim: `HardwareAddress[true]` is a
-/// proof that the address is unicast, while `HardwareAddress[false]` only means "not
-/// known to be unicast". That asymmetry is what makes the enum refinable at all —
-/// `Ieee802154Address` decides unicast by comparing against `BROADCAST` through a
-/// derived `PartialEq` on arrays, which carries no refinement, and its `Absent`
-/// variant has no unicast bit in the first place. Indexing those cases `false` is
-/// sound under the one-sided reading; an exact `bool[unicast]` spec would need
-/// `Ieee802154Address` restructured the same way `EthernetAddress` was.
+/// The `unicast` refinement is a **one-sided** claim:
+/// `unicast == true` means "definitely unicast",
+/// `unicast == false` means "maybe unicast".
 #[cfg(any(
     feature = "medium-ip",
     feature = "medium-ethernet",
@@ -386,11 +381,6 @@ impl HardwareAddress {
     }
 
     /// Query whether the address is an unicast address.
-    ///
-    /// The signature states the one-sided reading of the refinement described on the
-    /// type: an address indexed `true` is guaranteed to answer `true` here. Nothing
-    /// is promised for `false`, which is what lets the IEEE 802.15.4 arm — whose
-    /// answer Flux cannot predict — typecheck without weakening the Ethernet arm.
     #[flux_rs::sig(fn(&HardwareAddress[@unicast]) -> bool{b: unicast => b})]
     pub fn is_unicast(&self) -> bool {
         match self {
@@ -477,6 +467,11 @@ impl core::fmt::Display for HardwareAddress {
 
 #[cfg(feature = "medium-ethernet")]
 impl From<EthernetAddress> for HardwareAddress {
+    // Carries the unicast refinement across the conversion. Note this only helps the
+    // explicit `HardwareAddress::from(addr)` form: `addr.into()` dispatches through
+    // core's blanket `Into` impl, which Flux treats opaquely, so the refinement is
+    // lost there regardless of what is written here.
+    #[flux_rs::sig(fn(EthernetAddress[@o0]) -> HardwareAddress[o0 % 2 == 0])]
     fn from(addr: EthernetAddress) -> Self {
         HardwareAddress::Ethernet(addr)
     }
