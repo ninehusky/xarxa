@@ -465,12 +465,13 @@ impl core::fmt::Display for HardwareAddress {
     }
 }
 
+// Carries the unicast refinement across the conversion, for both `From::from` and
+// `.into()`. The latter needs the associated refinement rather than a plain signature:
+// `.into()` dispatches through core's blanket `Into` impl, which forwards to
+// `from_val` (see `crate::flux_specs`).
 #[cfg(feature = "medium-ethernet")]
+#[flux_rs::assoc(fn from_val(s: EthernetAddress, into: HardwareAddress) -> bool { into == (s % 2 == 0) })]
 impl From<EthernetAddress> for HardwareAddress {
-    // Carries the unicast refinement across the conversion. Note this only helps the
-    // explicit `HardwareAddress::from(addr)` form: `addr.into()` dispatches through
-    // core's blanket `Into` impl, which Flux treats opaquely, so the refinement is
-    // lost there regardless of what is written here.
     #[flux_rs::sig(fn(EthernetAddress[@o0]) -> HardwareAddress[o0 % 2 == 0])]
     fn from(addr: EthernetAddress) -> Self {
         HardwareAddress::Ethernet(addr)
