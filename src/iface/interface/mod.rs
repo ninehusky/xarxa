@@ -319,12 +319,24 @@ impl Interface {
 
     /// Set the HardwareAddress address of the interface.
     ///
-    /// The address must be unicast. This is now a *verified precondition* rather than
-    /// a runtime check: the caller has to supply a `HardwareAddress` whose refinement
-    /// says it is unicast, which in practice means an [`EthernetAddress`] built with
-    /// [`EthernetAddress::new`] from octets whose first octet is statically even.
-    /// Addresses reconstructed from bytes off the wire or from a driver do not
-    /// satisfy it.
+    /// The address must be unicast. This is a *verified precondition* rather than a
+    /// runtime check: the caller supplies a `HardwareAddress` whose refinement says it
+    /// is unicast, and this function no longer panics if it is not.
+    ///
+    /// The address does **not** have to be statically known. An address built from
+    /// runtime bytes carries no refinement, but a guard recovers one, because
+    /// [`EthernetAddress::is_unicast`] reports exactly the fact the precondition needs:
+    ///
+    /// ```ignore
+    /// let addr = EthernetAddress::from_octets(mac);   // not known to be unicast
+    /// if addr.is_unicast() {
+    ///     iface.set_hardware_addr(HardwareAddress::Ethernet(addr)); // ok
+    /// }
+    /// ```
+    ///
+    /// Use [`HardwareAddress::Ethernet`] or `HardwareAddress::from` to wrap it.
+    /// `addr.into()` does *not* work: it dispatches through core's blanket `Into`
+    /// impl, which Flux treats opaquely, so the refinement is lost crossing it.
     ///
     /// # Panics
     /// This function panics if the medium is not Ethernet or Ieee802154.
