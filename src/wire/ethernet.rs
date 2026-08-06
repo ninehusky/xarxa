@@ -127,12 +127,6 @@ impl Address {
     }
 
     /// Query whether this address is the broadcast address.
-    //
-    // Matched structurally rather than with `*self == Self::BROADCAST`: the derived
-    // `PartialEq` on the octets yields a plain `bool` that Flux cannot relate back to
-    // the address. The spec is one-sided because `rest` is an array, whose element
-    // values Flux does not track — "broadcast implies the first octet is 0xff" is all
-    // that can be stated, and all that `is_unicast` needs.
     #[flux_rs::sig(fn(&Address[@o0]) -> bool{b: b => o0 == 255})]
     pub const fn is_broadcast(&self) -> bool {
         matches!(
