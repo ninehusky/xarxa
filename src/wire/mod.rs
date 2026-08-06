@@ -395,15 +395,8 @@ impl HardwareAddress {
 
     /// Return this address if it is provably unicast, otherwise `None`.
     ///
-    /// This is the boundary helper for callers who obtain an address at runtime — from
-    /// a driver, off the wire — and so cannot satisfy the `HardwareAddress[true]`
-    /// precondition of [`crate::iface::Interface::set_hardware_addr`] statically. The
-    /// check happens here, inside the verified crate, so the caller does not have to be
-    /// verified to benefit.
-    ///
     /// `Short` IEEE 802.15.4 addresses always answer `None`: their octets are not
-    /// tracked, so unicast cannot be established for them. `Absent` and `Extended` are
-    /// unicast by construction.
+    /// tracked, so unicast cannot be established for them.
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
     #[flux_rs::sig(fn(HardwareAddress) -> Option<HardwareAddress[true]>)]
     pub fn into_unicast(self) -> Option<Self> {

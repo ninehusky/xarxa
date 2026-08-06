@@ -94,11 +94,9 @@ impl defmt::Format for Pan {
 
 /// A IEEE 802.15.4 address.
 ///
-/// The `unicast` refinement is one-sided, as on [`crate::wire::HardwareAddress`]:
-/// `true` means "definitely unicast", `false` means "maybe unicast". `BROADCAST` is a
-/// `Short` address, so `Absent` and `Extended` can never be broadcast and are always
-/// unicast; only `Short` is genuinely unknown, because Flux does not track the values
-/// of its octets.
+/// The `unicast` refinement is one-sided: `true` means "definitely unicast", `false`
+/// means "unknown". `Short` is `false` because Flux does not track its octets, and
+/// `BROADCAST` is a `Short`.
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 #[flux_rs::refined_by(unicast: bool)]
 pub enum Address {
@@ -150,9 +148,6 @@ impl Address {
     }
 
     /// Query whether this address is the broadcast address.
-    //
-    // Matched structurally rather than with `*self == Self::BROADCAST`: the derived
-    // `PartialEq` yields a plain `bool` Flux cannot relate back to the address.
     #[flux_rs::sig(fn(&Address[@unicast]) -> bool{b: b => !unicast})]
     pub const fn is_broadcast(&self) -> bool {
         matches!(self, Address::Short([0xff, 0xff]))

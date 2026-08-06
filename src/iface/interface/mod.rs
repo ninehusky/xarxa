@@ -340,18 +340,12 @@ impl Interface {
         self.inner.hardware_addr = addr;
     }
 
-    /// Set the HardwareAddress of the interface if it is unicast, reporting whether it
-    /// was set.
+    /// Set the HardwareAddress of the interface if it is provably unicast, reporting
+    /// whether it was set. Leaves the interface unchanged and returns `false` otherwise.
     ///
-    /// Use this when the address is only known at runtime — supplied by a driver, or
-    /// read off the wire — and so cannot satisfy [`set_hardware_addr`]'s
-    /// `HardwareAddress[true]` precondition statically. The unicast check is discharged
-    /// here, inside the verified crate, which means the caller gets the guarantee
-    /// without itself having to be verified.
-    ///
-    /// Returns `false` and leaves the interface unchanged if the address is not
-    /// provably unicast. Note that `Short` IEEE 802.15.4 addresses are never accepted;
-    /// see [`HardwareAddress::into_unicast`].
+    /// Unlike [`set_hardware_addr`], the unicast check happens at runtime, so an
+    /// unverified caller can pass an address obtained from a driver. `Short` IEEE
+    /// 802.15.4 addresses are never accepted; see [`HardwareAddress::into_unicast`].
     ///
     /// # Panics
     /// This function panics if the medium is not Ethernet or Ieee802154.
