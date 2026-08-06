@@ -139,10 +139,6 @@ impl Address {
     }
 
     /// Query whether the "multicast" bit in the OUI is set.
-    //
-    // `% 2` rather than `& 0x01`: for `u8` the two are identical and LLVM lowers the
-    // remainder straight back to an `and`, but Flux relates `x % 2 == 1` to the
-    // refinement while `x & 0x01 != 0` does not.
     #[flux_rs::sig(fn(&Address[@o0]) -> bool[o0 % 2 == 1])]
     pub const fn is_multicast(&self) -> bool {
         self.o0 % 2 == 1
