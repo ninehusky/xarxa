@@ -69,7 +69,7 @@ fn main() {
     // Create interface
     let mut config = match device.capabilities().medium {
         DriverMedium::Ethernet => {
-            Config::new(EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]).into())
+            Config::new(EthernetAddress::from_octets([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]).into())
         }
         DriverMedium::Ip => Config::new(xarxa::wire::HardwareAddress::Ip),
         DriverMedium::Ieee802154 => Config::new(

@@ -37,7 +37,7 @@ fn main() {
         utils::parse_middleware_options(&mut matches, device, /*loopback=*/ false);
 
     // Create interface
-    let ethernet_addr = EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x02]);
+    let ethernet_addr = EthernetAddress::from_octets([0x02, 0x00, 0x00, 0x00, 0x00, 0x02]);
     let mut config = match device.capabilities().medium {
         DriverMedium::Ethernet => Config::new(ethernet_addr.into()),
         DriverMedium::Ip => Config::new(xarxa::wire::HardwareAddress::Ip),

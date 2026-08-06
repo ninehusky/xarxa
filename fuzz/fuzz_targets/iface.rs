@@ -120,7 +120,7 @@ fuzz_target!(|data: &[u8]| {
 
     let mut device = device;
 
-    let config = Config::new(EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]).into());
+    let config = Config::new(EthernetAddress::from_octets([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]).into());
     let mut iface = Interface::new(config, &mut device, clock.elapsed());
     iface.update_ip_addrs(|ip_addrs| {
         ip_addrs
