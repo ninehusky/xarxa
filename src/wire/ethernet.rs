@@ -24,17 +24,6 @@ impl fmt::Display for EtherType {
 }
 
 /// A six-octet Ethernet II address.
-///
-/// The address is refined by its **first octet**, which is stored as a field of its
-/// own rather than as element 0 of an array. Two facts force that layout:
-///
-/// * Flux does not track the values of individual array elements, so
-///   `self.0[0] & 0x01 != 0` carries no refinement even when the array is a literal.
-///   Splitting the octet out is what lets the unicast predicate have a real spec
-///   instead of being `#[trusted]`.
-/// * The first octet is the *only* one the unicast/multicast predicates depend on:
-///   `BROADCAST` is all-`0xff` and `0xff & 0x01 == 1`, so broadcast implies
-///   multicast and `is_unicast` collapses to a test on the low bit of octet 0.
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
 #[repr(C)]
 #[flux_rs::refined_by(o0: int)]
