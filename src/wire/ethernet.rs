@@ -121,10 +121,6 @@ impl Address {
 
     /// Query whether the address is an unicast address.
     //
-    // The broadcast disjunct is redundant — `BROADCAST` is all-`0xff` and `0xff` is
-    // odd, so a broadcast address is always multicast — but it is kept so this reads
-    // like the original. It is absorbed rather than dropped: `is_broadcast` implies
-    // `o0 == 255`, hence `o0 % 2 == 1`, hence `is_multicast`.
     #[flux_rs::sig(fn(&Address[@o0]) -> bool[o0 % 2 == 0])]
     pub fn is_unicast(&self) -> bool {
         !(self.is_broadcast() || self.is_multicast())
