@@ -271,8 +271,8 @@ mod tests {
         use crate::wire::{EthernetAddress, EthernetProtocol, EthernetRepr};
 
         let repr = EthernetRepr {
-            src_addr: EthernetAddress([0, 1, 2, 3, 4, 5]),
-            dst_addr: EthernetAddress([5, 4, 3, 2, 1, 0]),
+            src_addr: EthernetAddress::from_octets([0, 1, 2, 3, 4, 5]),
+            dst_addr: EthernetAddress::from_octets([5, 4, 3, 2, 1, 0]),
             ethertype: EthernetProtocol::Unknown(0),
         };
         let mut buffer = vec![0_u8; repr.buffer_len()];

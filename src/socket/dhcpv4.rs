@@ -903,7 +903,8 @@ mod test {
 
     const MASK_24: Ipv4Address = Ipv4Address::new(255, 255, 255, 0);
 
-    const MY_MAC: EthernetAddress = EthernetAddress([0x02, 0x02, 0x02, 0x02, 0x02, 0x02]);
+    const MY_MAC: EthernetAddress =
+        EthernetAddress::from_octets([0x02, 0x02, 0x02, 0x02, 0x02, 0x02]);
 
     const IP_BROADCAST: Ipv4Repr = Ipv4Repr {
         src_addr: Ipv4Address::UNSPECIFIED,

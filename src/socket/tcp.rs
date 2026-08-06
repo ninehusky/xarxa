@@ -435,8 +435,16 @@ enum AckDelayTimer {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+// Observe here that the invariant is that
+// `local` and `remote` are refined by the same
+// `addr_ty`: unsure if this is something that
+// should be enforced globally (as it is now)
+// or only in the `no_panic` context.
+#[flux_rs::refined_by(addr_ty: int)]
 struct Tuple {
+    #[flux_rs::field(IpEndpoint[addr_ty])]
     local: IpEndpoint,
+    #[flux_rs::field(IpEndpoint[addr_ty])]
     remote: IpEndpoint,
 }
 
@@ -1048,7 +1056,7 @@ impl<'a> Socket<'a> {
             port: local_endpoint.port,
         };
 
-        if local_endpoint.addr.version() != remote_endpoint.addr.version() {
+        if !local_endpoint.addr.same_version(&remote_endpoint.addr) {
             return Err(ConnectError::Unaddressable);
         }
 
@@ -1916,10 +1924,11 @@ impl<'a> Socket<'a> {
                     }
                 }
 
-                self.tuple = Some(Tuple {
-                    local: IpEndpoint::new(ip_repr.dst_addr(), repr.dst_port),
-                    remote: IpEndpoint::new(ip_repr.src_addr(), repr.src_port),
-                });
+                self.tuple = Some(Self::tuple_from_repr(
+                    ip_repr,
+                    repr.dst_port,
+                    repr.src_port,
+                ));
                 self.local_seq_no = Self::random_seq_no(cx);
                 self.remote_seq_no = repr.seq_number + 1;
                 self.remote_last_seq = self.local_seq_no;
@@ -2434,6 +2443,36 @@ impl<'a> Socket<'a> {
         }
     }
 
+    // This builds a `Tuple` from an inbound packet's `IpRepr`. Split out of `process`
+    // (currently trusted) for the same reason as `ip_repr_for_tuple` below: a `Tuple`
+    // built inside a trusted body would have its invariant assumed rather than proved.
+    // Here it is proved -- both addresses come from the same `IpRepr`, whose accessors
+    // are indexed by its version.
+    #[flux_rs::sig(fn(&IpRepr[@v], u16, u16) -> Tuple[v])]
+    fn tuple_from_repr(ip_repr: &IpRepr, local_port: u16, remote_port: u16) -> Tuple {
+        Tuple {
+            local: IpEndpoint::new(ip_repr.dst_addr(), local_port),
+            remote: IpEndpoint::new(ip_repr.src_addr(), remote_port),
+        }
+    }
+
+    // This builds an `IpRepr` from a tuple. Used in
+    // `dispatch` (currently trusted) to build the `IpRepr`.
+    // This function's purpose is there for the verifier
+    // to show that `Tuple`'s invariant is enough to
+    // guarantee that the `IpRepr` is well-formed (i.e.,
+    // that it won't panic).
+    #[flux_rs::sig(fn(Tuple[@v], u8) -> IpRepr)]
+    fn ip_repr_for_tuple(tuple: Tuple, hop_limit: u8) -> IpRepr {
+        IpRepr::new(
+            tuple.local.addr,
+            tuple.remote.addr,
+            IpProtocol::Tcp,
+            0,
+            hop_limit,
+        )
+    }
+
     // FIXME(flux): same fixpoint blowup as `process` above (~680KB constraint, fixpoint
     // reaches 7GB RSS without terminating). Trusted until it is split up.
     #[flux_rs::trusted]
@@ -2553,13 +2592,7 @@ impl<'a> Socket<'a> {
 
         // Construct the lowered IP representation.
         // We might need this to calculate the MSS, so do it early.
-        let mut ip_repr = IpRepr::new(
-            tuple.local.addr,
-            tuple.remote.addr,
-            IpProtocol::Tcp,
-            0,
-            self.hop_limit.unwrap_or(64),
-        );
+        let mut ip_repr = Self::ip_repr_for_tuple(tuple, self.hop_limit.unwrap_or(64));
 
         // Construct the basic TCP representation, an empty ACK packet.
         // We'll adjust this to be more specific as needed.

@@ -775,8 +775,8 @@ fn test_handle_valid_ndisc_request(#[case] medium: Medium) {
 
     let local_ip_addr = Ipv6Address::new(0xfdbe, 0, 0, 0, 0, 0, 0, 1);
     let remote_ip_addr = Ipv6Address::new(0xfdbe, 0, 0, 0, 0, 0, 0, 2);
-    let local_hw_addr = EthernetAddress([0x02, 0x02, 0x02, 0x02, 0x02, 0x02]);
-    let remote_hw_addr = EthernetAddress([0x52, 0x54, 0x00, 0x00, 0x00, 0x00]);
+    let local_hw_addr = EthernetAddress::from_octets([0x02, 0x02, 0x02, 0x02, 0x02, 0x02]);
+    let remote_hw_addr = EthernetAddress::from_octets([0x52, 0x54, 0x00, 0x00, 0x00, 0x00]);
 
     let solicit = Icmpv6Repr::Ndisc(NdiscRepr::NeighborSolicit {
         target_addr: local_ip_addr,
@@ -791,7 +791,9 @@ fn test_handle_valid_ndisc_request(#[case] medium: Medium) {
     });
 
     let mut frame = EthernetFrame::new_unchecked(&mut eth_bytes);
-    frame.set_dst_addr(EthernetAddress([0x33, 0x33, 0x00, 0x00, 0x00, 0x00]));
+    frame.set_dst_addr(EthernetAddress::from_octets([
+        0x33, 0x33, 0x00, 0x00, 0x00, 0x00,
+    ]));
     frame.set_src_addr(remote_hw_addr);
     frame.set_ethertype(EthernetProtocol::Ipv6);
     ip_repr.emit(frame.payload_mut(), &ChecksumCapabilities::default());
@@ -877,8 +879,8 @@ fn test_router_advertisement(#[case] medium: Medium) {
     let mut eth_bytes = vec![0u8; 102];
 
     // Create mac addresses with derived link local addresses
-    let local_hw_addr = EthernetAddress([0x02, 0x02, 0x02, 0x02, 0x02, 0x02]);
-    let remote_hw_addr = EthernetAddress([0x52, 0x54, 0x00, 0x00, 0x00, 0x00]);
+    let local_hw_addr = EthernetAddress::from_octets([0x02, 0x02, 0x02, 0x02, 0x02, 0x02]);
+    let remote_hw_addr = EthernetAddress::from_octets([0x52, 0x54, 0x00, 0x00, 0x00, 0x00]);
     let ll_prefix = Ipv6Cidr::new(Ipv6Cidr::LINK_LOCAL_PREFIX.address(), 64);
     let local_ip_addr =
         Ipv6Cidr::from_link_prefix(&ll_prefix, HardwareAddress::Ethernet(local_hw_addr)).unwrap();
@@ -1682,7 +1684,7 @@ fn test_handle_valid_multicast_query(#[case] medium: Medium) {
 
     let local_ip_addr = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
     let remote_ip_addr = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 100);
-    let remote_hw_addr = EthernetAddress([0x52, 0x54, 0x00, 0x00, 0x00, 0x00]);
+    let remote_hw_addr = EthernetAddress::from_octets([0x52, 0x54, 0x00, 0x00, 0x00, 0x00]);
     let query_ip_addr = Ipv6Address::new(0xff02, 0, 0, 0, 0, 0, 0, 0x1234);
 
     iface.join_multicast_group(query_ip_addr).unwrap();
@@ -1722,7 +1724,9 @@ fn test_handle_valid_multicast_query(#[case] medium: Medium) {
         });
 
         let mut frame = EthernetFrame::new_unchecked(&mut eth_bytes);
-        frame.set_dst_addr(EthernetAddress([0x33, 0x33, 0x00, 0x00, 0x00, 0x00]));
+        frame.set_dst_addr(EthernetAddress::from_octets([
+            0x33, 0x33, 0x00, 0x00, 0x00, 0x00,
+        ]));
         frame.set_src_addr(remote_hw_addr);
         frame.set_ethertype(EthernetProtocol::Ipv6);
         ip_repr.emit(frame.payload_mut(), &ChecksumCapabilities::default());

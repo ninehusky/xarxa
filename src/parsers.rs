@@ -133,7 +133,7 @@ impl<'a> Parser<'a> {
                 self.accept_char(separator)?;
             }
         }
-        Ok(EthernetAddress(octets))
+        Ok(EthernetAddress::from_octets(octets))
     }
 
     #[cfg(feature = "medium-ethernet")]
@@ -478,27 +478,39 @@ mod test {
         assert_eq!(EthernetAddress::from_str(""), Err(()));
         assert_eq!(
             EthernetAddress::from_str("02:00:00:00:00:00"),
-            Ok(EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x00]))
+            Ok(EthernetAddress::from_octets([
+                0x02, 0x00, 0x00, 0x00, 0x00, 0x00
+            ]))
         );
         assert_eq!(
             EthernetAddress::from_str("01:23:45:67:89:ab"),
-            Ok(EthernetAddress([0x01, 0x23, 0x45, 0x67, 0x89, 0xab]))
+            Ok(EthernetAddress::from_octets([
+                0x01, 0x23, 0x45, 0x67, 0x89, 0xab
+            ]))
         );
         assert_eq!(
             EthernetAddress::from_str("cd:ef:10:00:00:00"),
-            Ok(EthernetAddress([0xcd, 0xef, 0x10, 0x00, 0x00, 0x00]))
+            Ok(EthernetAddress::from_octets([
+                0xcd, 0xef, 0x10, 0x00, 0x00, 0x00
+            ]))
         );
         assert_eq!(
             EthernetAddress::from_str("00:00:00:ab:cd:ef"),
-            Ok(EthernetAddress([0x00, 0x00, 0x00, 0xab, 0xcd, 0xef]))
+            Ok(EthernetAddress::from_octets([
+                0x00, 0x00, 0x00, 0xab, 0xcd, 0xef
+            ]))
         );
         assert_eq!(
             EthernetAddress::from_str("00-00-00-ab-cd-ef"),
-            Ok(EthernetAddress([0x00, 0x00, 0x00, 0xab, 0xcd, 0xef]))
+            Ok(EthernetAddress::from_octets([
+                0x00, 0x00, 0x00, 0xab, 0xcd, 0xef
+            ]))
         );
         assert_eq!(
             EthernetAddress::from_str("AB-CD-EF-00-00-00"),
-            Ok(EthernetAddress([0xab, 0xcd, 0xef, 0x00, 0x00, 0x00]))
+            Ok(EthernetAddress::from_octets([
+                0xab, 0xcd, 0xef, 0x00, 0x00, 0x00
+            ]))
         );
         assert_eq!(EthernetAddress::from_str("100:00:00:00:00:00"), Err(()));
         assert_eq!(EthernetAddress::from_str("002:00:00:00:00:00"), Err(()));

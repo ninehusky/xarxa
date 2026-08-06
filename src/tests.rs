@@ -10,9 +10,9 @@ pub(crate) fn setup<'a>(medium: Medium) -> (Interface, SocketSet<'a>, TestingDev
 
     let config = Config::new(match medium {
         #[cfg(feature = "medium-ethernet")]
-        Medium::Ethernet => {
-            HardwareAddress::Ethernet(EthernetAddress([0x02, 0x02, 0x02, 0x02, 0x02, 0x02]))
-        }
+        Medium::Ethernet => HardwareAddress::Ethernet(EthernetAddress::from_octets([
+            0x02, 0x02, 0x02, 0x02, 0x02, 0x02,
+        ])),
         #[cfg(feature = "medium-ip")]
         Medium::Ip => HardwareAddress::Ip,
         #[cfg(feature = "medium-ieee802154")]

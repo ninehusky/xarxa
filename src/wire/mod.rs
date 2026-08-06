@@ -315,6 +315,10 @@ impl fmt::Display for Error {
 pub type Result<T> = core::result::Result<T, Error>;
 
 /// Representation of an hardware address, such as an Ethernet address or an IEEE802.15.4 address.
+///
+/// The `unicast` refinement is a **one-sided** claim:
+/// `unicast == true` means "definitely unicast",
+/// `unicast == false` means "maybe unicast".
 #[cfg(any(
     feature = "medium-ip",
     feature = "medium-ethernet",
@@ -322,12 +326,16 @@ pub type Result<T> = core::result::Result<T, Error>;
 ))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(unicast: bool)]
 pub enum HardwareAddress {
     #[cfg(feature = "medium-ip")]
+    #[flux_rs::variant(HardwareAddress[false])]
     Ip,
     #[cfg(feature = "medium-ethernet")]
+    #[flux_rs::variant((EthernetAddress[@o0]) -> HardwareAddress[o0 % 2 == 0])]
     Ethernet(EthernetAddress),
     #[cfg(feature = "medium-ieee802154")]
+    #[flux_rs::variant((Ieee802154Address) -> HardwareAddress[false])]
     Ieee802154(Ieee802154Address),
 }
 
@@ -373,6 +381,7 @@ impl HardwareAddress {
     }
 
     /// Query whether the address is an unicast address.
+    #[flux_rs::sig(fn(&HardwareAddress[@unicast]) -> bool{b: unicast => b})]
     pub fn is_unicast(&self) -> bool {
         match self {
             #[cfg(feature = "medium-ip")]
@@ -456,8 +465,14 @@ impl core::fmt::Display for HardwareAddress {
     }
 }
 
+// Carries the unicast refinement across the conversion, for both `From::from` and
+// `.into()`. The latter needs the associated refinement rather than a plain signature:
+// `.into()` dispatches through core's blanket `Into` impl, which forwards to
+// `from_val` (see `crate::flux_specs`).
 #[cfg(feature = "medium-ethernet")]
+#[flux_rs::assoc(fn from_val(s: EthernetAddress, into: HardwareAddress) -> bool { into == (s % 2 == 0) })]
 impl From<EthernetAddress> for HardwareAddress {
+    #[flux_rs::sig(fn(EthernetAddress[@o0]) -> HardwareAddress[o0 % 2 == 0])]
     fn from(addr: EthernetAddress) -> Self {
         HardwareAddress::Ethernet(addr)
     }
@@ -581,7 +596,7 @@ mod tests {
 
     #[rstest]
     #[cfg(feature = "medium-ethernet")]
-    #[case((Medium::Ethernet, &[0u8; 6][..]), Ok(HardwareAddress::Ethernet(EthernetAddress([0, 0, 0, 0, 0, 0]))))]
+    #[case((Medium::Ethernet, &[0u8; 6][..]), Ok(HardwareAddress::Ethernet(EthernetAddress::from_octets([0, 0, 0, 0, 0, 0]))))]
     #[cfg(feature = "medium-ethernet")]
     #[case((Medium::Ethernet, &[1u8; 5][..]), Err(Error))]
     #[cfg(feature = "medium-ethernet")]

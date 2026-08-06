@@ -319,9 +319,13 @@ impl Interface {
 
     /// Set the HardwareAddress address of the interface.
     ///
+    /// The address must be unicast. This is a *verified precondition* rather than a
+    /// runtime check: the caller supplies a `HardwareAddress` whose refinement says it
+    /// is unicast, and this function no longer panics if it is not.
+    ///
     /// # Panics
-    /// This function panics if the address is not unicast, and if the medium is not Ethernet or
-    /// Ieee802154.
+    /// This function panics if the medium is not Ethernet or Ieee802154.
+    #[flux_rs::sig(fn(&mut Self, HardwareAddress[true]))]
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
     pub fn set_hardware_addr(&mut self, addr: HardwareAddress) {
         #[cfg(all(feature = "medium-ethernet", not(feature = "medium-ieee802154")))]
@@ -880,10 +884,24 @@ impl InterfaceInner {
         self.ip_addrs = addrs;
     }
 
+    /// Assert that a hardware address is unicast.
+    ///
+    /// The precondition `HardwareAddress[true]` discharges the check statically: with
+    /// a unicast-indexed address, `is_unicast` is known to return `true`, so the
+    /// branch below is dead and the panic can be dropped rather than merely made
+    /// cheaper.
+    ///
+    /// Note that nothing inside this crate calls the only caller of this function
+    /// (see [`Interface::set_hardware_addr`]), so the obligation is exported to
+    /// downstream callers rather than discharged here.
+    #[flux_rs::sig(fn(&HardwareAddress[true]))]
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
+    #[allow(unsafe_code)]
     fn check_hardware_addr(addr: &HardwareAddress) {
         if !addr.is_unicast() {
-            panic!("Hardware address {addr} is not unicast")
+            // If the assert never fires, Flux has shown this branch unreachable.
+            flux_rs::assert(false);
+            unsafe { core::hint::unreachable_unchecked() }
         }
     }
 
@@ -1254,7 +1272,7 @@ impl InterfaceInner {
                     (_, _) => unreachable!(),
                 }
             }
-            _ => (EthernetAddress([0; 6]), tx_token),
+            _ => (EthernetAddress::from_octets([0; 6]), tx_token),
         };
 
         // Emit function for the Ethernet header.
