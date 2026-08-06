@@ -335,7 +335,7 @@ pub enum HardwareAddress {
     #[flux_rs::variant((EthernetAddress[@o0]) -> HardwareAddress[o0 % 2 == 0])]
     Ethernet(EthernetAddress),
     #[cfg(feature = "medium-ieee802154")]
-    #[flux_rs::variant((Ieee802154Address) -> HardwareAddress[false])]
+    #[flux_rs::variant((Ieee802154Address[@u]) -> HardwareAddress[u])]
     Ieee802154(Ieee802154Address),
 }
 
@@ -390,6 +390,40 @@ impl HardwareAddress {
             HardwareAddress::Ethernet(addr) => addr.is_unicast(),
             #[cfg(feature = "medium-ieee802154")]
             HardwareAddress::Ieee802154(addr) => addr.is_unicast(),
+        }
+    }
+
+    /// Return this address if it is provably unicast, otherwise `None`.
+    ///
+    /// This is the boundary helper for callers who obtain an address at runtime — from
+    /// a driver, off the wire — and so cannot satisfy the `HardwareAddress[true]`
+    /// precondition of [`crate::iface::Interface::set_hardware_addr`] statically. The
+    /// check happens here, inside the verified crate, so the caller does not have to be
+    /// verified to benefit.
+    ///
+    /// `Short` IEEE 802.15.4 addresses always answer `None`: their octets are not
+    /// tracked, so unicast cannot be established for them. `Absent` and `Extended` are
+    /// unicast by construction.
+    #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
+    #[flux_rs::sig(fn(HardwareAddress) -> Option<HardwareAddress[true]>)]
+    pub fn into_unicast(self) -> Option<Self> {
+        match self {
+            #[cfg(feature = "medium-ip")]
+            HardwareAddress::Ip => None,
+            #[cfg(feature = "medium-ethernet")]
+            HardwareAddress::Ethernet(addr) => {
+                if addr.is_unicast() {
+                    Some(HardwareAddress::Ethernet(addr))
+                } else {
+                    None
+                }
+            }
+            #[cfg(feature = "medium-ieee802154")]
+            HardwareAddress::Ieee802154(addr) => match addr {
+                Ieee802154Address::Absent => Some(HardwareAddress::Ieee802154(addr)),
+                Ieee802154Address::Extended(_) => Some(HardwareAddress::Ieee802154(addr)),
+                Ieee802154Address::Short(_) => None,
+            },
         }
     }
 
