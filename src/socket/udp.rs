@@ -13,20 +13,24 @@ use crate::wire::{IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, U
 /// Metadata for a sent or received UDP packet.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[flux_rs::refined_by(endpoint: IpEndpoint)]
 pub struct UdpMetadata {
     /// The IP endpoint from which an incoming datagram was received, or to which an outgoing
     /// datagram will be sent.
+    #[flux_rs::field(IpEndpoint[endpoint])]
     pub endpoint: IpEndpoint,
     /// The IP address to which an incoming datagram was sent, or from which an outgoing datagram
     /// will be sent. Incoming datagrams always have this set. On outgoing datagrams, if it is not
     /// set, and the socket is not bound to a single address anyway, a suitable address will be
     /// determined using the algorithms of RFC 6724 (candidate source address selection) or some
     /// heuristic (for IPv4).
+    #[flux_rs::field(Option<IpAddress{v : v == endpoint}>)]
     pub local_address: Option<IpAddress>,
     pub meta: PacketMeta,
 }
 
 impl<T: Into<IpEndpoint>> From<T> for UdpMetadata {
+    #[flux_rs::trusted(no, reason = "establishes UdpMetadata's version invariant")]
     fn from(value: T) -> Self {
         Self {
             endpoint: value.into(),
@@ -128,6 +132,7 @@ pub struct Socket<'a> {
 
 impl<'a> Socket<'a> {
     /// Create an UDP socket with the given buffers.
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     pub fn new(rx_buffer: PacketBuffer<'a>, tx_buffer: PacketBuffer<'a>) -> Socket<'a> {
         Socket {
             endpoint: IpListenEndpoint::default(),
@@ -154,6 +159,7 @@ impl<'a> Socket<'a> {
     /// - "Spurious wakes" are allowed: a wake doesn't guarantee the result of `recv` has
     ///   necessarily changed.
     #[cfg(feature = "async")]
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     pub fn register_recv_waker(&mut self, waker: &Waker) {
         self.rx_waker.register(waker)
     }
@@ -172,6 +178,7 @@ impl<'a> Socket<'a> {
     /// - "Spurious wakes" are allowed: a wake doesn't guarantee the result of `send` has
     ///   necessarily changed.
     #[cfg(feature = "async")]
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     pub fn register_send_waker(&mut self, waker: &Waker) {
         self.tx_waker.register(waker)
     }
@@ -200,6 +207,7 @@ impl<'a> Socket<'a> {
     ///
     /// [IANA recommended]: https://www.iana.org/assignments/ip-parameters/ip-parameters.xhtml
     /// [RFC 1122 § 3.2.1.7]: https://tools.ietf.org/html/rfc1122#section-3.2.1.7
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     pub fn set_hop_limit(&mut self, hop_limit: Option<u8>) {
         // A host MUST NOT send a datagram with a hop limit value of 0
         if let Some(0) = hop_limit {
@@ -214,6 +222,7 @@ impl<'a> Socket<'a> {
     /// This function returns `Err(Error::Illegal)` if the socket was open
     /// (see [is_open](#method.is_open)), and `Err(Error::Unaddressable)`
     /// if the port in the given endpoint is zero.
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     pub fn bind<T: Into<IpListenEndpoint>>(&mut self, endpoint: T) -> Result<(), BindError> {
         let endpoint = endpoint.into();
         if endpoint.port == 0 {
@@ -236,6 +245,7 @@ impl<'a> Socket<'a> {
     }
 
     /// Close the socket.
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     pub fn close(&mut self) {
         // Clear the bound endpoint of the socket.
         self.endpoint = IpListenEndpoint::default();
@@ -300,6 +310,7 @@ impl<'a> Socket<'a> {
     /// `Err(Error::Unaddressable)` if local or remote port, or remote address are unspecified,
     /// and `Err(Error::Truncated)` if there is not enough transmit buffer capacity
     /// to ever send this packet.
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     pub fn send(
         &mut self,
         size: usize,
@@ -335,6 +346,7 @@ impl<'a> Socket<'a> {
     /// into the buffer.
     ///
     /// Also see [send](#method.send).
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     pub fn send_with<F>(
         &mut self,
         max_size: usize,
@@ -372,6 +384,7 @@ impl<'a> Socket<'a> {
     /// Enqueue a packet to be sent to a given remote endpoint, and fill it from a slice.
     ///
     /// See also [send](#method.send).
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     pub fn send_slice(
         &mut self,
         data: &[u8],
@@ -385,6 +398,7 @@ impl<'a> Socket<'a> {
     /// as a pointer to the payload.
     ///
     /// This function returns `Err(Error::Exhausted)` if the receive buffer is empty.
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     pub fn recv(&mut self) -> Result<(&[u8], UdpMetadata), RecvError> {
         let (remote_endpoint, payload_buf) =
             self.rx_buffer.dequeue().map_err(|_| RecvError::Exhausted)?;
@@ -405,6 +419,7 @@ impl<'a> Socket<'a> {
     /// the packet is dropped and a `RecvError::Truncated` error is returned.
     ///
     /// See also [recv](#method.recv).
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     pub fn recv_slice(&mut self, data: &mut [u8]) -> Result<(usize, UdpMetadata), RecvError> {
         let (buffer, endpoint) = self.recv().map_err(|_| RecvError::Exhausted)?;
 
@@ -422,6 +437,7 @@ impl<'a> Socket<'a> {
     /// This function otherwise behaves identically to [recv](#method.recv).
     ///
     /// It returns `Err(Error::Exhausted)` if the receive buffer is empty.
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     pub fn peek(&mut self) -> Result<(&[u8], &UdpMetadata), RecvError> {
         let endpoint = self.endpoint;
         self.rx_buffer.peek().map_err(|_| RecvError::Exhausted).map(
@@ -446,6 +462,7 @@ impl<'a> Socket<'a> {
     /// no data is copied into the provided buffer and a `RecvError::Truncated` error is returned.
     ///
     /// See also [peek](#method.peek).
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     pub fn peek_slice(&mut self, data: &mut [u8]) -> Result<(usize, &UdpMetadata), RecvError> {
         let (buffer, endpoint) = self.peek()?;
 
@@ -489,6 +506,7 @@ impl<'a> Socket<'a> {
         true
     }
 
+    #[flux_rs::trusted(no, reason = "establishes UdpMetadata's version invariant")]
     pub(crate) fn process(
         &mut self,
         cx: &mut Context,
@@ -532,6 +550,7 @@ impl<'a> Socket<'a> {
         self.rx_waker.wake();
     }
 
+    #[flux_rs::trusted(no, reason = "calls IpRepr::new")]
     pub(crate) fn dispatch<F, E>(&mut self, cx: &mut Context, emit: F) -> Result<(), E>
     where
         F: FnOnce(&mut Context, PacketMeta, (IpRepr, UdpRepr, &[u8])) -> Result<(), E>,
