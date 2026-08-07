@@ -505,6 +505,7 @@ impl Interface {
     /// might have changed.
     ///
     /// This is guaranteed to always perform a bounded amount of work.
+    #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
     pub fn poll_egress(
         &mut self,
         timestamp: Instant,
@@ -699,6 +700,7 @@ impl Interface {
         })
     }
 
+    #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
     fn socket_egress(
         &mut self,
         device: &mut (impl Device + ?Sized),
@@ -863,12 +865,17 @@ impl InterfaceInner {
     }
 
     #[allow(unused)] // unused depending on which sockets are enabled
+    #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
+    #[flux_rs::sig(fn(&Self, &IpAddress[@v]) -> Option<IpAddress[v]>)]
     pub(crate) fn get_source_address(&self, dst_addr: &IpAddress) -> Option<IpAddress> {
         match dst_addr {
             #[cfg(feature = "proto-ipv4")]
-            IpAddress::Ipv4(addr) => self.get_source_address_ipv4(addr).map(|a| a.into()),
+            IpAddress::Ipv4(addr) => match self.get_source_address_ipv4(addr) {
+                Some(src) => Some(IpAddress::Ipv4(src)),
+                None => None,
+            },
             #[cfg(feature = "proto-ipv6")]
-            IpAddress::Ipv6(addr) => Some(self.get_source_address_ipv6(addr).into()),
+            IpAddress::Ipv6(addr) => Some(IpAddress::Ipv6(self.get_source_address_ipv6(addr))),
         }
     }
 
@@ -897,6 +904,7 @@ impl InterfaceInner {
     #[flux_rs::sig(fn(&HardwareAddress[true]))]
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
     #[allow(unsafe_code)]
+    #[flux_rs::trusted(no, reason = "discharges the assert(false) licensing unreachable_unchecked")]
     fn check_hardware_addr(addr: &HardwareAddress) {
         if !addr.is_unicast() {
             // If the assert never fires, Flux has shown this branch unreachable.
