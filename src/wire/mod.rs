@@ -398,6 +398,7 @@ impl HardwareAddress {
     /// `Short` IEEE 802.15.4 addresses always answer `None`: their octets are not
     /// tracked, so unicast cannot be established for them.
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
+    #[flux_rs::trusted(no, reason = "sole producer of HardwareAddress[true]")]
     #[flux_rs::sig(fn(HardwareAddress) -> Option<HardwareAddress[true]>)]
     pub fn into_unicast(self) -> Option<Self> {
         match self {
