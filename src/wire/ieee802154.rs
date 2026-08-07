@@ -142,12 +142,14 @@ impl Address {
     pub const BROADCAST: Address = Address::Short([0xff; 2]);
 
     /// Query whether the address is an unicast address.
+    #[flux_rs::trusted(no, reason = "backs HardwareAddress[true]")]
     #[flux_rs::sig(fn(&Address[@unicast]) -> bool{b: unicast => b})]
     pub fn is_unicast(&self) -> bool {
         !self.is_broadcast()
     }
 
     /// Query whether this address is the broadcast address.
+    #[flux_rs::trusted(no, reason = "backs HardwareAddress[true]")]
     #[flux_rs::sig(fn(&Address[@unicast]) -> bool{b: b => !unicast})]
     pub const fn is_broadcast(&self) -> bool {
         matches!(self, Address::Short([0xff, 0xff]))
