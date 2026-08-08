@@ -13,20 +13,24 @@ use crate::wire::{IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, U
 /// Metadata for a sent or received UDP packet.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[flux_rs::refined_by(endpoint: IpEndpoint)]
 pub struct UdpMetadata {
     /// The IP endpoint from which an incoming datagram was received, or to which an outgoing
     /// datagram will be sent.
+    #[flux_rs::field(IpEndpoint[endpoint])]
     pub endpoint: IpEndpoint,
     /// The IP address to which an incoming datagram was sent, or from which an outgoing datagram
     /// will be sent. Incoming datagrams always have this set. On outgoing datagrams, if it is not
     /// set, and the socket is not bound to a single address anyway, a suitable address will be
     /// determined using the algorithms of RFC 6724 (candidate source address selection) or some
     /// heuristic (for IPv4).
+    #[flux_rs::field(Option<IpAddress{v : v == endpoint}>)]
     pub local_address: Option<IpAddress>,
     pub meta: PacketMeta,
 }
 
 impl<T: Into<IpEndpoint>> From<T> for UdpMetadata {
+    #[flux_rs::trusted(no, reason = "establishes UdpMetadata's version invariant")]
     fn from(value: T) -> Self {
         Self {
             endpoint: value.into(),
@@ -113,10 +117,21 @@ impl core::error::Error for RecvError {}
 ///
 /// A UDP socket is bound to a specific endpoint, and owns transmit and receive
 /// packet buffers.
+///
+/// Refined by the version of the address the socket is bound to, `-1` when it is bound to
+/// a bare port. The `tx_buffer` constraint is clause 1: a socket pinned to one address may
+/// only have queued datagrams of that version. At `-1` the disjunct is vacuous, which is
+/// what keeps a bare-port socket dual-stack.
+///
+/// `rx_buffer` is deliberately unconstrained — incoming metadata carries the *remote*
+/// endpoint, which has no relation to what we bound to.
 #[derive(Debug)]
+#[flux_rs::refined_by(addr_ty: int)]
 pub struct Socket<'a> {
+    #[flux_rs::field(IpListenEndpoint[addr_ty])]
     endpoint: IpListenEndpoint,
     rx_buffer: PacketBuffer<'a>,
+    #[flux_rs::field(crate::storage::PacketBuffer<UdpMetadata{m: addr_ty == -1 || m.endpoint == addr_ty}>)]
     tx_buffer: PacketBuffer<'a>,
     /// The time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets.
     hop_limit: Option<u8>,
@@ -126,11 +141,35 @@ pub struct Socket<'a> {
     tx_waker: WakerRegistration,
 }
 
+/// `PacketBuffer::dequeue_with`, with the header hidden from the callback.
+///
+/// Trusted, for a narrow reason. Flux instantiates `dequeue_with`'s `H` from the Rust type,
+/// which erases the buffer's element predicate — `H` appears under `&mut` inside the
+/// `FnOnce` bound, and `&mut` is invariant in the refinement index. (`peek` and `dequeue`,
+/// where `H` is behind `&` or returned by value, keep it fine.) Since `f` here never
+/// receives the header, it cannot observe or modify it, and `dequeue_with` only removes
+/// packets — so every remaining element still satisfies whatever predicate it arrived with.
+#[flux_rs::trusted(reason = "dequeue_with's H erases the element predicate; f cannot touch the header")]
+#[flux_rs::sig(fn(IpListenEndpoint[@t],
+                  &mut crate::storage::PacketBuffer<UdpMetadata{m: t == -1 || m.endpoint == t}>,
+                  F) -> Result<Result<R, E>, Empty>)]
+fn dequeue_payload<'c, R, E, F>(
+    _endpoint: IpListenEndpoint,
+    buf: &'c mut PacketBuffer<'_>,
+    f: F,
+) -> Result<Result<R, E>, Empty>
+where
+    F: FnOnce(&'c mut [u8]) -> Result<R, E>,
+{
+    buf.dequeue_with(|_header, payload_buf| f(payload_buf))
+}
+
 impl<'a> Socket<'a> {
     /// Create an UDP socket with the given buffers.
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     pub fn new(rx_buffer: PacketBuffer<'a>, tx_buffer: PacketBuffer<'a>) -> Socket<'a> {
         Socket {
-            endpoint: IpListenEndpoint::default(),
+            endpoint: IpListenEndpoint::unspecified(),
             rx_buffer,
             tx_buffer,
             hop_limit: None,
@@ -154,6 +193,7 @@ impl<'a> Socket<'a> {
     /// - "Spurious wakes" are allowed: a wake doesn't guarantee the result of `recv` has
     ///   necessarily changed.
     #[cfg(feature = "async")]
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     pub fn register_recv_waker(&mut self, waker: &Waker) {
         self.rx_waker.register(waker)
     }
@@ -172,6 +212,7 @@ impl<'a> Socket<'a> {
     /// - "Spurious wakes" are allowed: a wake doesn't guarantee the result of `send` has
     ///   necessarily changed.
     #[cfg(feature = "async")]
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     pub fn register_send_waker(&mut self, waker: &Waker) {
         self.tx_waker.register(waker)
     }
@@ -200,6 +241,7 @@ impl<'a> Socket<'a> {
     ///
     /// [IANA recommended]: https://www.iana.org/assignments/ip-parameters/ip-parameters.xhtml
     /// [RFC 1122 § 3.2.1.7]: https://tools.ietf.org/html/rfc1122#section-3.2.1.7
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     pub fn set_hop_limit(&mut self, hop_limit: Option<u8>) {
         // A host MUST NOT send a datagram with a hop limit value of 0
         if let Some(0) = hop_limit {
@@ -214,9 +256,10 @@ impl<'a> Socket<'a> {
     /// This function returns `Err(Error::Illegal)` if the socket was open
     /// (see [is_open](#method.is_open)), and `Err(Error::Unaddressable)`
     /// if the port in the given endpoint is zero.
+    #[flux_rs::trusted(reason = "boundary: caller must not bind an address whose version disagrees with queued datagrams")]
     pub fn bind<T: Into<IpListenEndpoint>>(&mut self, endpoint: T) -> Result<(), BindError> {
         let endpoint = endpoint.into();
-        if endpoint.port == 0 {
+        if endpoint.port() == 0 {
             return Err(BindError::Unaddressable);
         }
 
@@ -236,9 +279,10 @@ impl<'a> Socket<'a> {
     }
 
     /// Close the socket.
+    #[flux_rs::trusted(reason = "boundary: rebinding to unspecified changes the socket index, not expressible through &mut self")]
     pub fn close(&mut self) {
         // Clear the bound endpoint of the socket.
-        self.endpoint = IpListenEndpoint::default();
+        self.endpoint = IpListenEndpoint::unspecified();
 
         // Reset the RX and TX buffers of the socket.
         self.tx_buffer.reset();
@@ -300,13 +344,14 @@ impl<'a> Socket<'a> {
     /// `Err(Error::Unaddressable)` if local or remote port, or remote address are unspecified,
     /// and `Err(Error::Truncated)` if there is not enough transmit buffer capacity
     /// to ever send this packet.
+    #[flux_rs::trusted(reason = "boundary: caller must supply metadata matching the bound address version")]
     pub fn send(
         &mut self,
         size: usize,
         meta: impl Into<UdpMetadata>,
     ) -> Result<&mut [u8], SendError> {
         let meta = meta.into();
-        if self.endpoint.port == 0 {
+        if self.endpoint.port() == 0 {
             return Err(SendError::Unaddressable);
         }
         if meta.endpoint.addr.is_unspecified() {
@@ -335,6 +380,7 @@ impl<'a> Socket<'a> {
     /// into the buffer.
     ///
     /// Also see [send](#method.send).
+    #[flux_rs::trusted(reason = "boundary: caller must supply metadata matching the bound address version")]
     pub fn send_with<F>(
         &mut self,
         max_size: usize,
@@ -345,7 +391,7 @@ impl<'a> Socket<'a> {
         F: FnOnce(&mut [u8]) -> usize,
     {
         let meta = meta.into();
-        if self.endpoint.port == 0 {
+        if self.endpoint.port() == 0 {
             return Err(SendError::Unaddressable);
         }
         if meta.endpoint.addr.is_unspecified() {
@@ -372,6 +418,7 @@ impl<'a> Socket<'a> {
     /// Enqueue a packet to be sent to a given remote endpoint, and fill it from a slice.
     ///
     /// See also [send](#method.send).
+    #[flux_rs::trusted(reason = "boundary: caller must supply metadata matching the bound address version")]
     pub fn send_slice(
         &mut self,
         data: &[u8],
@@ -385,6 +432,7 @@ impl<'a> Socket<'a> {
     /// as a pointer to the payload.
     ///
     /// This function returns `Err(Error::Exhausted)` if the receive buffer is empty.
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     pub fn recv(&mut self) -> Result<(&[u8], UdpMetadata), RecvError> {
         let (remote_endpoint, payload_buf) =
             self.rx_buffer.dequeue().map_err(|_| RecvError::Exhausted)?;
@@ -405,6 +453,7 @@ impl<'a> Socket<'a> {
     /// the packet is dropped and a `RecvError::Truncated` error is returned.
     ///
     /// See also [recv](#method.recv).
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     pub fn recv_slice(&mut self, data: &mut [u8]) -> Result<(usize, UdpMetadata), RecvError> {
         let (buffer, endpoint) = self.recv().map_err(|_| RecvError::Exhausted)?;
 
@@ -422,6 +471,7 @@ impl<'a> Socket<'a> {
     /// This function otherwise behaves identically to [recv](#method.recv).
     ///
     /// It returns `Err(Error::Exhausted)` if the receive buffer is empty.
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     pub fn peek(&mut self) -> Result<(&[u8], &UdpMetadata), RecvError> {
         let endpoint = self.endpoint;
         self.rx_buffer.peek().map_err(|_| RecvError::Exhausted).map(
@@ -446,6 +496,7 @@ impl<'a> Socket<'a> {
     /// no data is copied into the provided buffer and a `RecvError::Truncated` error is returned.
     ///
     /// See also [peek](#method.peek).
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     pub fn peek_slice(&mut self, data: &mut [u8]) -> Result<(usize, &UdpMetadata), RecvError> {
         let (buffer, endpoint) = self.peek()?;
 
@@ -489,6 +540,7 @@ impl<'a> Socket<'a> {
         true
     }
 
+    #[flux_rs::trusted(no, reason = "establishes UdpMetadata's version invariant")]
     pub(crate) fn process(
         &mut self,
         cx: &mut Context,
@@ -532,6 +584,8 @@ impl<'a> Socket<'a> {
         self.rx_waker.wake();
     }
 
+    #[flux_rs::trusted(no, reason = "calls IpRepr::new")]
+    #[flux_rs::sig(fn(self: &mut Socket[@t], &mut Context, F) -> Result<(), E>)]
     pub(crate) fn dispatch<F, E>(&mut self, cx: &mut Context, emit: F) -> Result<(), E>
     where
         F: FnOnce(&mut Context, PacketMeta, (IpRepr, UdpRepr, &[u8])) -> Result<(), E>,
@@ -539,26 +593,62 @@ impl<'a> Socket<'a> {
         let endpoint = self.endpoint;
         let hop_limit = self.hop_limit.unwrap_or(64);
 
-        let res = self.tx_buffer.dequeue_with(|packet_meta, payload_buf| {
-            let src_addr = if let Some(s) = packet_meta.local_address {
-                s
-            } else {
-                match endpoint.addr {
-                    Some(addr) => addr,
-                    None => match cx.get_source_address(&packet_meta.endpoint.addr) {
-                        Some(addr) => addr,
-                        None => {
-                            net_trace!(
-                                "udp:{}:{}: cannot find suitable source address, dropping.",
-                                endpoint,
-                                packet_meta.endpoint
-                            );
-                            return Ok(());
-                        }
-                    },
-                }
-            };
+        // The source-address choice is done out here, off a `peek`, rather than inside
+        // `dequeue_with`'s closure. `dequeue_with` hands the closure `&mut H`, and Flux
+        // erases the buffer's element predicate through `&mut` in a higher-order position;
+        // `peek` yields `&H` and keeps it. `UdpMetadata` is `Copy`, so the whole record is
+        // copied out — copying the two fields separately would lose the relation between
+        // `local_address` and `endpoint` that the metadata's own invariant provides.
+        //
+        // Only the addresses move out. The payload length stays inside the closure:
+        // `peek`'s slice is clamped at the ring wrap and can be shorter than the packet.
+        let packet_meta = match self.tx_buffer.peek() {
+            Ok((packet_meta, _)) => *packet_meta,
+            Err(Empty) => return Ok(()),
+        };
 
+        let src_addr = if let Some(s) = packet_meta.local_address {
+            s
+        } else {
+            match endpoint.addr() {
+                Some(addr) => addr,
+                None => match cx.get_source_address(&packet_meta.endpoint.addr) {
+                    Some(addr) => addr,
+                    None => {
+                        net_trace!(
+                            "udp:{}:{}: cannot find suitable source address, dropping.",
+                            endpoint,
+                            packet_meta.endpoint
+                        );
+                        // Consume the packet, as returning `Ok` from the closure used to.
+                        let _ = self.tx_buffer.dequeue();
+                        #[cfg(feature = "async")]
+                        self.tx_waker.wake();
+                        return Ok(());
+                    }
+                },
+            }
+        };
+
+        let repr = UdpRepr {
+            src_port: endpoint.port(),
+            dst_port: packet_meta.endpoint.port,
+        };
+
+        // Built here, where `src_addr` and the destination are both in scope and their
+        // versions are known to agree — that agreement is `IpRepr::new`'s precondition and
+        // it does not survive into the closure. The length is a placeholder; the true one
+        // is only known once the payload is dequeued, and `payload_len` is not part of
+        // `IpRepr`'s refinement, so setting it below preserves the version index.
+        let mut ip_repr = IpRepr::new(
+            src_addr,
+            packet_meta.endpoint.addr,
+            IpProtocol::Udp,
+            0,
+            hop_limit,
+        );
+
+        let res = dequeue_payload(endpoint, &mut self.tx_buffer, move |payload_buf| {
             net_trace!(
                 "udp:{}:{}: sending {} octets",
                 endpoint,
@@ -566,17 +656,7 @@ impl<'a> Socket<'a> {
                 payload_buf.len()
             );
 
-            let repr = UdpRepr {
-                src_port: endpoint.port,
-                dst_port: packet_meta.endpoint.port,
-            };
-            let ip_repr = IpRepr::new(
-                src_addr,
-                packet_meta.endpoint.addr,
-                IpProtocol::Udp,
-                repr.header_len() + payload_buf.len(),
-                hop_limit,
-            );
+            ip_repr.set_payload_len(repr.header_len() + payload_buf.len());
 
             emit(cx, packet_meta.meta, (ip_repr, repr, payload_buf))
         });

@@ -465,16 +465,65 @@ impl<T: Into<Address>> From<(T, u16)> for Endpoint {
 /// in order to listen on a given port at all our addresses.
 ///
 /// An endpoint can be constructed from a port, in which case the address is unspecified.
+/// Refined by the IP version of `addr`, with `-1` standing for "no address given".
+///
+/// `opaque` is load-bearing: the version lives behind an `Option`, and a parameter that
+/// only appears inside a generic argument is not value-determined, so the non-opaque
+/// spelling is rejected outright. Hiding the fields moves the contract onto the
+/// accessors below, which are the entire trusted surface.
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
+#[flux_rs::opaque]
+#[flux_rs::refined_by(addr_ty: int)]
 pub struct ListenEndpoint {
     pub addr: Option<Address>,
     pub port: u16,
 }
 
 impl ListenEndpoint {
+    /// The endpoint with no address and no port, indexed `-1`.
+    ///
+    /// Same value as `default()`, but the derived `Default` cannot carry an index through
+    /// an opaque struct, so callers that need `[-1]` must come through here.
+    #[flux_rs::trusted(reason = "opaque: constructs the unbound endpoint")]
+    #[flux_rs::sig(fn() -> ListenEndpoint[-1])]
+    pub const fn unspecified() -> ListenEndpoint {
+        ListenEndpoint {
+            addr: None,
+            port: 0,
+        }
+    }
+
     /// Query whether the endpoint has a specified address and port.
     pub const fn is_specified(&self) -> bool {
         self.addr.is_some() && self.port != 0
+    }
+
+    /// Whether an address was given. `-1` is the index reserved for "none".
+    #[flux_rs::trusted(reason = "opaque: relates addr_ty to the hidden Option")]
+    #[flux_rs::sig(fn(&ListenEndpoint[@t]) -> bool[t != -1])]
+    pub const fn has_addr(&self) -> bool {
+        self.addr.is_some()
+    }
+
+    /// The listening address, whose version is `addr_ty` when one is present.
+    ///
+    /// The payload carries `t != -1` as well as `v == t`. That is the axiom tying the
+    /// sentinel to the `Option`: an address is present exactly when `t` is not `-1`.
+    /// Without it a `Some` arm proves `v == t` but leaves `t == -1` open, so a
+    /// `t == -1 || ..` disjunction downstream never collapses. Expressing it this way
+    /// keeps it in the payload constraint rather than indexing the `Option`, which would
+    /// need `-Fstd-extern-specs`.
+    #[flux_rs::trusted(reason = "opaque: projects the hidden addr field")]
+    #[flux_rs::sig(fn(&ListenEndpoint[@t]) -> Option<Address{v: v == t && t != -1}>)]
+    pub const fn addr(&self) -> Option<Address> {
+        self.addr
+    }
+
+    /// The listening port. Carries no version information.
+    #[flux_rs::trusted(reason = "opaque: projects the hidden port field")]
+    #[flux_rs::sig(fn(&ListenEndpoint) -> u16)]
+    pub const fn port(&self) -> u16 {
+        self.port
     }
 }
 
@@ -642,6 +691,7 @@ impl Repr {
     // The mismatched arms are discharged by Flux (see the `assert(false)` below), so the
     // unchecked form is a-okay here.
     #[allow(unsafe_code)]
+    #[flux_rs::trusted(no, reason = "discharges the assert(false) licensing unreachable_unchecked")]
     #[flux_rs::sig(fn(Address[@v], Address[v], Protocol, usize, u8) -> Repr[v])]
     pub fn new(
         src_addr: Address,

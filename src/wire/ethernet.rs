@@ -110,12 +110,14 @@ impl Address {
 
     /// Query whether the address is an unicast address.
     //
+    #[flux_rs::trusted(no, reason = "backs HardwareAddress[true]")]
     #[flux_rs::sig(fn(&Address[@o0]) -> bool[o0 % 2 == 0])]
     pub fn is_unicast(&self) -> bool {
         !(self.is_broadcast() || self.is_multicast())
     }
 
     /// Query whether this address is the broadcast address.
+    #[flux_rs::trusted(no, reason = "backs HardwareAddress[true]")]
     #[flux_rs::sig(fn(&Address[@o0]) -> bool{b: b => o0 == 255})]
     pub const fn is_broadcast(&self) -> bool {
         matches!(
@@ -128,6 +130,7 @@ impl Address {
     }
 
     /// Query whether the "multicast" bit in the OUI is set.
+    #[flux_rs::trusted(no, reason = "backs HardwareAddress[true]")]
     #[flux_rs::sig(fn(&Address[@o0]) -> bool[o0 % 2 == 1])]
     pub const fn is_multicast(&self) -> bool {
         self.o0 % 2 == 1

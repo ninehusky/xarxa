@@ -20,7 +20,6 @@ trait From<T> {
 }
 
 #[extern_spec(core::convert)]
-#[assoc(fn into_val(s: T, into: U) -> bool { <U as From<T>>::from_val(s, into) })]
 impl<T, U: From<T>> Into<U> for T {
     #[sig(fn(T[@s]) -> U{v: <U as From<T>>::from_val(s, v)})]
     fn into(self) -> U;

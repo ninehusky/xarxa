@@ -335,7 +335,7 @@ pub enum HardwareAddress {
     #[flux_rs::variant((EthernetAddress[@o0]) -> HardwareAddress[o0 % 2 == 0])]
     Ethernet(EthernetAddress),
     #[cfg(feature = "medium-ieee802154")]
-    #[flux_rs::variant((Ieee802154Address) -> HardwareAddress[false])]
+    #[flux_rs::variant((Ieee802154Address[@u]) -> HardwareAddress[u])]
     Ieee802154(Ieee802154Address),
 }
 
@@ -390,6 +390,34 @@ impl HardwareAddress {
             HardwareAddress::Ethernet(addr) => addr.is_unicast(),
             #[cfg(feature = "medium-ieee802154")]
             HardwareAddress::Ieee802154(addr) => addr.is_unicast(),
+        }
+    }
+
+    /// Return this address if it is provably unicast, otherwise `None`.
+    ///
+    /// `Short` IEEE 802.15.4 addresses always answer `None`: their octets are not
+    /// tracked, so unicast cannot be established for them.
+    #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
+    #[flux_rs::trusted(no, reason = "sole producer of HardwareAddress[true]")]
+    #[flux_rs::sig(fn(HardwareAddress) -> Option<HardwareAddress[true]>)]
+    pub fn into_unicast(self) -> Option<Self> {
+        match self {
+            #[cfg(feature = "medium-ip")]
+            HardwareAddress::Ip => None,
+            #[cfg(feature = "medium-ethernet")]
+            HardwareAddress::Ethernet(addr) => {
+                if addr.is_unicast() {
+                    Some(HardwareAddress::Ethernet(addr))
+                } else {
+                    None
+                }
+            }
+            #[cfg(feature = "medium-ieee802154")]
+            HardwareAddress::Ieee802154(addr) => match addr {
+                Ieee802154Address::Absent => Some(HardwareAddress::Ieee802154(addr)),
+                Ieee802154Address::Extended(_) => Some(HardwareAddress::Ieee802154(addr)),
+                Ieee802154Address::Short(_) => None,
+            },
         }
     }
 
