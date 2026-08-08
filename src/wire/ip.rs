@@ -506,8 +506,15 @@ impl ListenEndpoint {
     }
 
     /// The listening address, whose version is `addr_ty` when one is present.
+    ///
+    /// The payload carries `t != -1` as well as `v == t`. That is the axiom tying the
+    /// sentinel to the `Option`: an address is present exactly when `t` is not `-1`.
+    /// Without it a `Some` arm proves `v == t` but leaves `t == -1` open, so a
+    /// `t == -1 || ..` disjunction downstream never collapses. Expressing it this way
+    /// keeps it in the payload constraint rather than indexing the `Option`, which would
+    /// need `-Fstd-extern-specs`.
     #[flux_rs::trusted(reason = "opaque: projects the hidden addr field")]
-    #[flux_rs::sig(fn(&ListenEndpoint[@t]) -> Option<Address{v: v == t}>)]
+    #[flux_rs::sig(fn(&ListenEndpoint[@t]) -> Option<Address{v: v == t && t != -1}>)]
     pub const fn addr(&self) -> Option<Address> {
         self.addr
     }
