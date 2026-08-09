@@ -327,6 +327,7 @@ impl Interface {
     /// This function panics if the medium is not Ethernet or Ieee802154.
     #[flux_rs::sig(fn(&mut Self, HardwareAddress[true]))]
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
+    #[flux_rs::trusted(no, reason = "sole caller of check_hardware_addr; discharges its precondition")]
     pub fn set_hardware_addr(&mut self, addr: HardwareAddress) {
         #[cfg(all(feature = "medium-ethernet", not(feature = "medium-ieee802154")))]
         assert!(self.inner.medium == Medium::Ethernet);
