@@ -529,6 +529,7 @@ impl<'a> Socket<'a> {
         net_trace!("no query matched");
     }
 
+    #[flux_rs::trusted(no, reason = "calls IpRepr::new")]
     pub(crate) fn dispatch<F, E>(&mut self, cx: &mut Context, emit: F) -> Result<(), E>
     where
         F: FnOnce(&mut Context, (IpRepr, UdpRepr, &[u8])) -> Result<(), E>,
