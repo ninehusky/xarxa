@@ -1033,7 +1033,7 @@ fn test_raw_socket_with_udp_socket(#[case] medium: Medium) {
 
     // Bind the socket to port 68
     let socket = sockets.get_mut::<udp::Socket>(udp_socket_handle);
-    assert_eq!(socket.bind(68), Ok(()));
+    assert_eq!(socket.bind(68.into()), Ok(()));
     assert!(!socket.can_recv());
     assert!(socket.can_send());
 

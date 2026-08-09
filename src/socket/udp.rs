@@ -7,24 +7,24 @@ use crate::phy::PacketMeta;
 use crate::socket::PollAt;
 #[cfg(feature = "async")]
 use crate::socket::WakerRegistration;
-use crate::storage::Empty;
+use crate::storage::{Empty, Full};
 use crate::wire::{IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, UdpRepr};
 
 /// Metadata for a sent or received UDP packet.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-#[flux_rs::refined_by(endpoint: IpEndpoint)]
+#[flux_rs::refined_by(dst_ty: int)]
 pub struct UdpMetadata {
     /// The IP endpoint from which an incoming datagram was received, or to which an outgoing
     /// datagram will be sent.
-    #[flux_rs::field(IpEndpoint[endpoint])]
+    #[flux_rs::field(IpEndpoint[dst_ty])]
     pub endpoint: IpEndpoint,
     /// The IP address to which an incoming datagram was sent, or from which an outgoing datagram
     /// will be sent. Incoming datagrams always have this set. On outgoing datagrams, if it is not
     /// set, and the socket is not bound to a single address anyway, a suitable address will be
     /// determined using the algorithms of RFC 6724 (candidate source address selection) or some
     /// heuristic (for IPv4).
-    #[flux_rs::field(Option<IpAddress{v : v == endpoint}>)]
+    #[flux_rs::field(Option<IpAddress{v : v == dst_ty}>)]
     pub local_address: Option<IpAddress>,
     pub meta: PacketMeta,
 }
@@ -131,7 +131,7 @@ pub struct Socket<'a> {
     #[flux_rs::field(IpListenEndpoint[addr_ty])]
     endpoint: IpListenEndpoint,
     rx_buffer: PacketBuffer<'a>,
-    #[flux_rs::field(crate::storage::PacketBuffer<UdpMetadata{m: addr_ty == -1 || m.endpoint == addr_ty}>)]
+    #[flux_rs::field(crate::storage::PacketBuffer<UdpMetadata{m: addr_ty == -1 || m.dst_ty == addr_ty}>)]
     tx_buffer: PacketBuffer<'a>,
     /// The time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets.
     hop_limit: Option<u8>,
@@ -151,7 +151,7 @@ pub struct Socket<'a> {
 /// packets — so every remaining element still satisfies whatever predicate it arrived with.
 #[flux_rs::trusted(reason = "dequeue_with's H erases the element predicate; f cannot touch the header")]
 #[flux_rs::sig(fn(IpListenEndpoint[@t],
-                  &mut crate::storage::PacketBuffer<UdpMetadata{m: t == -1 || m.endpoint == t}>,
+                  &mut crate::storage::PacketBuffer<UdpMetadata{m: t == -1 || m.dst_ty == t}>,
                   F) -> Result<Result<R, E>, Empty>)]
 fn dequeue_payload<'c, R, E, F>(
     _endpoint: IpListenEndpoint,
@@ -163,6 +163,49 @@ where
 {
     buf.dequeue_with(|_header, payload_buf| f(payload_buf))
 }
+
+/// Empty a transmit buffer and re-type its elements for `endpoint`.
+///
+/// Trusted because `&mut` is invariant in the refinement index, so the element predicate
+/// cannot be changed by subtyping even when the buffer is empty and every predicate holds
+/// vacuously. `reset` clears the ring, which is what makes the `ensures` sound for any `t`.
+/// Passing the endpoint by value is how `t` gets value-determined.
+#[flux_rs::trusted(reason = "reset empties the buffer; any element predicate then holds vacuously")]
+#[flux_rs::sig(fn(buf: &strg crate::storage::PacketBuffer<UdpMetadata{m: o == -1 || m.dst_ty == o}>,
+                  IpListenEndpoint[@o],
+                  IpListenEndpoint[@t])
+                 ensures buf: crate::storage::PacketBuffer<UdpMetadata{m: t == -1 || m.dst_ty == t}>)]
+fn reset_tx_buffer(buf: &mut PacketBuffer<'_>, _old: IpListenEndpoint, _new: IpListenEndpoint) {
+    buf.reset();
+}
+
+/// `PacketBuffer::enqueue_with_infallible`, with the header hidden from the callback.
+///
+/// Same reason as [`dequeue_payload`]: the generic `F` makes Flux instantiate `H` from the
+/// Rust type, erasing the element predicate. The header goes in by value and `f` only ever
+/// sees the payload, so the predicate the caller proves for `meta` is the one the buffer ends
+/// up holding.
+#[flux_rs::trusted(reason = "enqueue_with_infallible's H erases the element predicate; f cannot touch the header")]
+#[flux_rs::sig(fn(IpListenEndpoint[@t],
+                  &mut crate::storage::PacketBuffer<UdpMetadata{m: t == -1 || m.dst_ty == t}>,
+                  usize,
+                  UdpMetadata{m: t == -1 || m.dst_ty == t},
+                  F) -> Result<usize, Full>)]
+fn enqueue_payload<F>(
+    _endpoint: IpListenEndpoint,
+    buf: &mut PacketBuffer<'_>,
+    max_size: usize,
+    meta: UdpMetadata,
+    f: F,
+) -> Result<usize, Full>
+where
+    F: FnOnce(&mut [u8]) -> usize,
+{
+    buf.enqueue_with_infallible(max_size, meta, f)
+}
+
+
+
 
 impl<'a> Socket<'a> {
     /// Create an UDP socket with the given buffers.
@@ -256,9 +299,10 @@ impl<'a> Socket<'a> {
     /// This function returns `Err(Error::Illegal)` if the socket was open
     /// (see [is_open](#method.is_open)), and `Err(Error::Unaddressable)`
     /// if the port in the given endpoint is zero.
-    #[flux_rs::trusted(reason = "boundary: caller must not bind an address whose version disagrees with queued datagrams")]
-    pub fn bind<T: Into<IpListenEndpoint>>(&mut self, endpoint: T) -> Result<(), BindError> {
-        let endpoint = endpoint.into();
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
+    #[flux_rs::sig(fn(self: &strg Socket[@old], IpListenEndpoint[@y]) -> Result<(), BindError>
+                     ensures self: Socket{v: v == old || v == y})]
+    pub fn bind(&mut self, endpoint: IpListenEndpoint) -> Result<(), BindError> {
         if endpoint.port() == 0 {
             return Err(BindError::Unaddressable);
         }
@@ -267,6 +311,11 @@ impl<'a> Socket<'a> {
             return Err(BindError::InvalidState);
         }
 
+        // No-op at runtime: enqueueing requires an open socket and re-binding requires
+        // `close`, which resets, so the buffer is already empty here. Flux cannot see that,
+        // and binding re-indexes the socket, so the reset is what licenses the new type.
+        let old = self.endpoint;
+        reset_tx_buffer(&mut self.tx_buffer, old, endpoint);
         self.endpoint = endpoint;
 
         #[cfg(feature = "async")]
@@ -279,13 +328,15 @@ impl<'a> Socket<'a> {
     }
 
     /// Close the socket.
-    #[flux_rs::trusted(reason = "boundary: rebinding to unspecified changes the socket index, not expressible through &mut self")]
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
+    #[flux_rs::sig(fn(self: &strg Socket) ensures self: Socket[-1])]
     pub fn close(&mut self) {
         // Clear the bound endpoint of the socket.
-        self.endpoint = IpListenEndpoint::unspecified();
+        let old = self.endpoint;
+        let endpoint = IpListenEndpoint::unspecified();
+        reset_tx_buffer(&mut self.tx_buffer, old, endpoint);
+        self.endpoint = endpoint;
 
-        // Reset the RX and TX buffers of the socket.
-        self.tx_buffer.reset();
         self.rx_buffer.reset();
 
         #[cfg(feature = "async")]
@@ -344,13 +395,14 @@ impl<'a> Socket<'a> {
     /// `Err(Error::Unaddressable)` if local or remote port, or remote address are unspecified,
     /// and `Err(Error::Truncated)` if there is not enough transmit buffer capacity
     /// to ever send this packet.
-    #[flux_rs::trusted(reason = "boundary: caller must supply metadata matching the bound address version")]
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
+    #[flux_rs::sig(fn(self: &mut Socket[@t], usize, UdpMetadata{m: t == -1 || m.dst_ty == t})
+                     -> Result<&mut [u8], SendError>)]
     pub fn send(
         &mut self,
         size: usize,
-        meta: impl Into<UdpMetadata>,
+        meta: UdpMetadata,
     ) -> Result<&mut [u8], SendError> {
-        let meta = meta.into();
         if self.endpoint.port() == 0 {
             return Err(SendError::Unaddressable);
         }
@@ -380,17 +432,18 @@ impl<'a> Socket<'a> {
     /// into the buffer.
     ///
     /// Also see [send](#method.send).
-    #[flux_rs::trusted(reason = "boundary: caller must supply metadata matching the bound address version")]
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
+    #[flux_rs::sig(fn(self: &mut Socket[@t], usize, UdpMetadata{m: t == -1 || m.dst_ty == t}, F)
+                     -> Result<usize, SendError>)]
     pub fn send_with<F>(
         &mut self,
         max_size: usize,
-        meta: impl Into<UdpMetadata>,
+        meta: UdpMetadata,
         f: F,
     ) -> Result<usize, SendError>
     where
         F: FnOnce(&mut [u8]) -> usize,
     {
-        let meta = meta.into();
         if self.endpoint.port() == 0 {
             return Err(SendError::Unaddressable);
         }
@@ -401,9 +454,8 @@ impl<'a> Socket<'a> {
             return Err(SendError::Unaddressable);
         }
 
-        let size = self
-            .tx_buffer
-            .enqueue_with_infallible(max_size, meta, f)
+        let endpoint = self.endpoint;
+        let size = enqueue_payload(endpoint, &mut self.tx_buffer, max_size, meta, f)
             .map_err(|_| SendError::BufferFull)?;
 
         net_trace!(
@@ -418,11 +470,13 @@ impl<'a> Socket<'a> {
     /// Enqueue a packet to be sent to a given remote endpoint, and fill it from a slice.
     ///
     /// See also [send](#method.send).
-    #[flux_rs::trusted(reason = "boundary: caller must supply metadata matching the bound address version")]
+    #[flux_rs::trusted(no, reason = "checking Socket invariant")]
+    #[flux_rs::sig(fn(self: &mut Socket[@t], &[u8], UdpMetadata{m: t == -1 || m.dst_ty == t})
+                     -> Result<(), SendError>)]
     pub fn send_slice(
         &mut self,
         data: &[u8],
-        meta: impl Into<UdpMetadata>,
+        meta: UdpMetadata,
     ) -> Result<(), SendError> {
         self.send(data.len(), meta)?.copy_from_slice(data);
         Ok(())
@@ -793,14 +847,14 @@ mod test {
     #[test]
     fn test_bind_unaddressable() {
         let mut socket = socket(buffer(0), buffer(0));
-        assert_eq!(socket.bind(0), Err(BindError::Unaddressable));
+        assert_eq!(socket.bind(0.into()), Err(BindError::Unaddressable));
     }
 
     #[test]
     fn test_bind_twice() {
         let mut socket = socket(buffer(0), buffer(0));
-        assert_eq!(socket.bind(1), Ok(()));
-        assert_eq!(socket.bind(2), Err(BindError::InvalidState));
+        assert_eq!(socket.bind(1.into()), Ok(()));
+        assert_eq!(socket.bind(2.into()), Err(BindError::InvalidState));
     }
 
     #[test]
@@ -815,10 +869,10 @@ mod test {
         let mut socket = socket(buffer(0), buffer(1));
 
         assert_eq!(
-            socket.send_slice(b"abcdef", REMOTE_END),
+            socket.send_slice(b"abcdef", REMOTE_END.into()),
             Err(SendError::Unaddressable)
         );
-        assert_eq!(socket.bind(LOCAL_PORT), Ok(()));
+        assert_eq!(socket.bind(LOCAL_PORT.into()), Ok(()));
         assert_eq!(
             socket.send_slice(
                 b"abcdef",
@@ -826,6 +880,7 @@ mod test {
                     addr: IpvXAddress::UNSPECIFIED.into(),
                     ..REMOTE_END
                 }
+                .into()
             ),
             Err(SendError::Unaddressable)
         );
@@ -836,17 +891,18 @@ mod test {
                     port: 0,
                     ..REMOTE_END
                 }
+                .into()
             ),
             Err(SendError::Unaddressable)
         );
-        assert_eq!(socket.send_slice(b"abcdef", REMOTE_END), Ok(()));
+        assert_eq!(socket.send_slice(b"abcdef", REMOTE_END.into()), Ok(()));
     }
 
     #[test]
     fn test_send_with_source() {
         let mut socket = socket(buffer(0), buffer(1));
 
-        assert_eq!(socket.bind(LOCAL_PORT), Ok(()));
+        assert_eq!(socket.bind(LOCAL_PORT.into()), Ok(()));
         assert_eq!(
             socket.send_slice(b"abcdef", remote_metadata_with_local()),
             Ok(())
@@ -865,7 +921,7 @@ mod test {
         let cx = iface.context();
         let mut socket = socket(buffer(0), buffer(1));
 
-        assert_eq!(socket.bind(LOCAL_END), Ok(()));
+        assert_eq!(socket.bind(LOCAL_END.into()), Ok(()));
 
         assert!(socket.can_send());
         assert_eq!(
@@ -873,9 +929,9 @@ mod test {
             Ok::<_, ()>(())
         );
 
-        assert_eq!(socket.send_slice(b"abcdef", REMOTE_END), Ok(()));
+        assert_eq!(socket.send_slice(b"abcdef", REMOTE_END.into()), Ok(()));
         assert_eq!(
-            socket.send_slice(b"123456", REMOTE_END),
+            socket.send_slice(b"123456", REMOTE_END.into()),
             Err(SendError::BufferFull)
         );
         assert!(!socket.can_send());
@@ -916,7 +972,7 @@ mod test {
 
         let mut socket = socket(buffer(1), buffer(0));
 
-        assert_eq!(socket.bind(LOCAL_PORT), Ok(()));
+        assert_eq!(socket.bind(LOCAL_PORT.into()), Ok(()));
 
         assert!(!socket.can_recv());
         assert_eq!(socket.recv(), Err(RecvError::Exhausted));
@@ -960,7 +1016,7 @@ mod test {
 
         let mut socket = socket(buffer(1), buffer(0));
 
-        assert_eq!(socket.bind(LOCAL_PORT), Ok(()));
+        assert_eq!(socket.bind(LOCAL_PORT.into()), Ok(()));
 
         assert_eq!(socket.peek(), Err(RecvError::Exhausted));
 
@@ -995,7 +1051,7 @@ mod test {
 
         let mut socket = socket(buffer(1), buffer(0));
 
-        assert_eq!(socket.bind(LOCAL_PORT), Ok(()));
+        assert_eq!(socket.bind(LOCAL_PORT.into()), Ok(()));
 
         assert!(socket.accepts(cx, &REMOTE_IP_REPR, &REMOTE_UDP_REPR));
         socket.process(
@@ -1023,7 +1079,7 @@ mod test {
 
         let mut socket = socket(buffer(1), buffer(0));
 
-        assert_eq!(socket.bind(LOCAL_PORT), Ok(()));
+        assert_eq!(socket.bind(LOCAL_PORT.into()), Ok(()));
 
         socket.process(
             cx,
@@ -1052,10 +1108,10 @@ mod test {
 
         let mut s = socket(buffer(0), buffer(1));
 
-        assert_eq!(s.bind(LOCAL_END), Ok(()));
+        assert_eq!(s.bind(LOCAL_END.into()), Ok(()));
 
         s.set_hop_limit(Some(0x2a));
-        assert_eq!(s.send_slice(b"abcdef", REMOTE_END), Ok(()));
+        assert_eq!(s.send_slice(b"abcdef", REMOTE_END.into()), Ok(()));
         assert_eq!(
             s.dispatch(cx, |_, _, (ip_repr, _, _)| {
                 assert_eq!(
@@ -1087,7 +1143,7 @@ mod test {
 
         let mut socket = socket(buffer(1), buffer(0));
 
-        assert_eq!(socket.bind(LOCAL_PORT), Ok(()));
+        assert_eq!(socket.bind(LOCAL_PORT.into()), Ok(()));
 
         let mut udp_repr = REMOTE_UDP_REPR;
         assert!(socket.accepts(cx, &REMOTE_IP_REPR, &udp_repr));
@@ -1107,11 +1163,11 @@ mod test {
         let cx = iface.context();
 
         let mut port_bound_socket = socket(buffer(1), buffer(0));
-        assert_eq!(port_bound_socket.bind(LOCAL_PORT), Ok(()));
+        assert_eq!(port_bound_socket.bind(LOCAL_PORT.into()), Ok(()));
         assert!(port_bound_socket.accepts(cx, &BAD_IP_REPR, &REMOTE_UDP_REPR));
 
         let mut ip_bound_socket = socket(buffer(1), buffer(0));
-        assert_eq!(ip_bound_socket.bind(LOCAL_END), Ok(()));
+        assert_eq!(ip_bound_socket.bind(LOCAL_END.into()), Ok(()));
         assert!(!ip_bound_socket.accepts(cx, &BAD_IP_REPR, &REMOTE_UDP_REPR));
     }
 
@@ -1119,14 +1175,14 @@ mod test {
     fn test_send_large_packet() {
         // buffer(4) creates a payload buffer of size 16*4
         let mut socket = socket(buffer(0), buffer(4));
-        assert_eq!(socket.bind(LOCAL_END), Ok(()));
+        assert_eq!(socket.bind(LOCAL_END.into()), Ok(()));
 
         let too_large = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefx";
         assert_eq!(
-            socket.send_slice(too_large, REMOTE_END),
+            socket.send_slice(too_large, REMOTE_END.into()),
             Err(SendError::BufferFull)
         );
-        assert_eq!(socket.send_slice(&too_large[..16 * 4], REMOTE_END), Ok(()));
+        assert_eq!(socket.send_slice(&too_large[..16 * 4], REMOTE_END.into()), Ok(()));
     }
 
     #[rstest]
@@ -1144,7 +1200,7 @@ mod test {
         let (mut iface, _, _) = setup(medium);
         let cx = iface.context();
 
-        assert_eq!(socket.bind(LOCAL_PORT), Ok(()));
+        assert_eq!(socket.bind(LOCAL_PORT.into()), Ok(()));
 
         let repr = UdpRepr {
             src_port: REMOTE_PORT,
@@ -1159,7 +1215,7 @@ mod test {
         let meta = Box::leak(Box::new([PacketMetadata::EMPTY]));
         let recv_buffer = PacketBuffer::new(&mut meta[..], vec![]);
         let mut socket = socket(recv_buffer, buffer(0));
-        assert_eq!(socket.bind(LOCAL_PORT), Ok(()));
+        assert_eq!(socket.bind(LOCAL_PORT.into()), Ok(()));
 
         assert!(socket.is_open());
         socket.close();
