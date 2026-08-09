@@ -11,6 +11,10 @@ use crate::storage::{Empty, Full};
 use crate::wire::{IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, UdpRepr};
 
 /// Metadata for a sent or received UDP packet.
+///
+/// Refined by the destination's IP version. `local_address`, when set, is constrained to that
+/// same version: a source and destination of different versions cannot form an IP packet.
+/// See [`Socket`] for the obligation this helps discharge.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[flux_rs::refined_by(dst_ty: int)]
@@ -118,10 +122,20 @@ impl core::error::Error for RecvError {}
 /// A UDP socket is bound to a specific endpoint, and owns transmit and receive
 /// packet buffers.
 ///
-/// Refined by the version of the address the socket is bound to, `-1` when it is bound to
-/// a bare port. The `tx_buffer` constraint is clause 1: a socket pinned to one address may
-/// only have queued datagrams of that version. At `-1` the disjunct is vacuous, which is
-/// what keeps a bare-port socket dual-stack.
+/// Refined by the IP version of the address the socket is bound to, or `-1` for a bare port.
+///
+/// Two facts together discharge `IpRepr::new`'s precondition — that its source and
+/// destination addresses are the same IP version — where `dispatch` calls it:
+///
+/// 1. **Here, on `tx_buffer`:** a socket bound to a specific address only ever has queued
+///    datagrams of that version. Vacuous at `-1`, which is what keeps a bare-port socket
+///    dual-stack rather than pinning it to whichever family it happens to send first.
+/// 2. **On [`UdpMetadata`]:** a datagram's `local_address`, when set, is the same version as
+///    that same datagram's destination.
+///
+/// `dispatch` takes the source address from `local_address` if set (fact 2), else from the
+/// socket's bound address (fact 1), else from `Context::get_source_address`, which returns
+/// an address of the destination's version by construction.
 ///
 /// `rx_buffer` is deliberately unconstrained — incoming metadata carries the *remote*
 /// endpoint, which has no relation to what we bound to.
