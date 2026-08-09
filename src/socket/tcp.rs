@@ -1017,6 +1017,7 @@ impl<'a> Socket<'a> {
     /// This function returns an error if the socket was open; see [is_open](#method.is_open).
     /// It also returns an error if the local or remote port is zero, or if the remote address
     /// is unspecified.
+    #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
     pub fn connect<T, U>(
         &mut self,
         cx: &mut Context,
@@ -1036,13 +1037,13 @@ impl<'a> Socket<'a> {
         if remote_endpoint.port == 0 || remote_endpoint.addr.is_unspecified() {
             return Err(ConnectError::Unaddressable);
         }
-        if local_endpoint.port == 0 {
+        if local_endpoint.port() == 0 {
             return Err(ConnectError::Unaddressable);
         }
 
         // If local address is not provided, choose it automatically.
         let local_endpoint = IpEndpoint {
-            addr: match local_endpoint.addr {
+            addr: match local_endpoint.addr() {
                 Some(addr) => {
                     if addr.is_unspecified() {
                         return Err(ConnectError::Unaddressable);
@@ -1053,7 +1054,7 @@ impl<'a> Socket<'a> {
                     .get_source_address(&remote_endpoint.addr)
                     .ok_or(ConnectError::Unaddressable)?,
             },
-            port: local_endpoint.port,
+            port: local_endpoint.port(),
         };
 
         if !local_endpoint.addr.same_version(&remote_endpoint.addr) {
@@ -1438,6 +1439,7 @@ impl<'a> Socket<'a> {
         }
     }
 
+    #[flux_rs::trusted(no, reason = "calls IpRepr::new")]
     pub(crate) fn reply(ip_repr: &IpRepr, repr: &TcpRepr) -> (IpRepr, TcpRepr<'static>) {
         let reply_repr = TcpRepr {
             src_port: repr.dst_port,
@@ -1463,6 +1465,7 @@ impl<'a> Socket<'a> {
         (ip_reply_repr, reply_repr)
     }
 
+    #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
     pub(crate) fn rst_reply(ip_repr: &IpRepr, repr: &TcpRepr) -> (IpRepr, TcpRepr<'static>) {
         debug_assert!(repr.control != TcpControl::Rst);
 
@@ -1479,6 +1482,7 @@ impl<'a> Socket<'a> {
         (ip_reply_repr, reply_repr)
     }
 
+    #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
     fn ack_reply(&mut self, ip_repr: &IpRepr, repr: &TcpRepr) -> (IpRepr, TcpRepr<'static>) {
         let (mut ip_reply_repr, mut reply_repr) = Self::reply(ip_repr, repr);
         reply_repr.timestamp = repr
@@ -1543,6 +1547,7 @@ impl<'a> Socket<'a> {
         (ip_reply_repr, reply_repr)
     }
 
+    #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
     fn challenge_ack_reply(
         &mut self,
         cx: &mut Context,
@@ -2449,6 +2454,7 @@ impl<'a> Socket<'a> {
     // Here it is proved -- both addresses come from the same `IpRepr`, whose accessors
     // are indexed by its version.
     #[flux_rs::sig(fn(&IpRepr[@v], u16, u16) -> Tuple[v])]
+    #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
     fn tuple_from_repr(ip_repr: &IpRepr, local_port: u16, remote_port: u16) -> Tuple {
         Tuple {
             local: IpEndpoint::new(ip_repr.dst_addr(), local_port),
@@ -2462,6 +2468,7 @@ impl<'a> Socket<'a> {
     // to show that `Tuple`'s invariant is enough to
     // guarantee that the `IpRepr` is well-formed (i.e.,
     // that it won't panic).
+    #[flux_rs::trusted(no, reason = "calls IpRepr::new")]
     #[flux_rs::sig(fn(Tuple[@v], u8) -> IpRepr)]
     fn ip_repr_for_tuple(tuple: Tuple, hop_limit: u8) -> IpRepr {
         IpRepr::new(
