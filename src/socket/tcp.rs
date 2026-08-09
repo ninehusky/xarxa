@@ -2482,8 +2482,6 @@ impl<'a> Socket<'a> {
 
     // FIXME(flux): same fixpoint blowup as `process` above (~680KB constraint, fixpoint
     // reaches 7GB RSS without terminating). Trusted until it is split up.
-    // TODO: one thing that's pretty critical we should do BEFORE MERGING
-    // is ensure that `dispatch` doesn't squish the Socket's invariant.
     #[flux_rs::trusted]
     pub(crate) fn dispatch<F, E>(&mut self, cx: &mut Context, emit: F) -> Result<(), E>
     where
