@@ -319,10 +319,15 @@ impl Interface {
 
     /// Set the HardwareAddress address of the interface.
     ///
+    /// The address must be unicast. This is a *verified precondition* rather than a
+    /// runtime check: the caller supplies a `HardwareAddress` whose refinement says it
+    /// is unicast, and this function no longer panics if it is not.
+    ///
     /// # Panics
-    /// This function panics if the address is not unicast, and if the medium is not Ethernet or
-    /// Ieee802154.
+    /// This function panics if the medium is not Ethernet or Ieee802154.
+    #[flux_rs::sig(fn(&mut Self, HardwareAddress[true]))]
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
+    #[flux_rs::trusted(no, reason = "sole caller of check_hardware_addr; discharges its precondition")]
     pub fn set_hardware_addr(&mut self, addr: HardwareAddress) {
         #[cfg(all(feature = "medium-ethernet", not(feature = "medium-ieee802154")))]
         assert!(self.inner.medium == Medium::Ethernet);
@@ -501,6 +506,7 @@ impl Interface {
     /// might have changed.
     ///
     /// This is guaranteed to always perform a bounded amount of work.
+    #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
     pub fn poll_egress(
         &mut self,
         timestamp: Instant,
@@ -695,6 +701,7 @@ impl Interface {
         })
     }
 
+    #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
     fn socket_egress(
         &mut self,
         device: &mut (impl Device + ?Sized),
@@ -859,12 +866,17 @@ impl InterfaceInner {
     }
 
     #[allow(unused)] // unused depending on which sockets are enabled
+    #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
+    #[flux_rs::sig(fn(&Self, &IpAddress[@v]) -> Option<IpAddress[v]>)]
     pub(crate) fn get_source_address(&self, dst_addr: &IpAddress) -> Option<IpAddress> {
         match dst_addr {
             #[cfg(feature = "proto-ipv4")]
-            IpAddress::Ipv4(addr) => self.get_source_address_ipv4(addr).map(|a| a.into()),
+            IpAddress::Ipv4(addr) => match self.get_source_address_ipv4(addr) {
+                Some(src) => Some(IpAddress::Ipv4(src)),
+                None => None,
+            },
             #[cfg(feature = "proto-ipv6")]
-            IpAddress::Ipv6(addr) => Some(self.get_source_address_ipv6(addr).into()),
+            IpAddress::Ipv6(addr) => Some(IpAddress::Ipv6(self.get_source_address_ipv6(addr))),
         }
     }
 
@@ -880,10 +892,25 @@ impl InterfaceInner {
         self.ip_addrs = addrs;
     }
 
+    /// Assert that a hardware address is unicast.
+    ///
+    /// The precondition `HardwareAddress[true]` discharges the check statically: with
+    /// a unicast-indexed address, `is_unicast` is known to return `true`, so the
+    /// branch below is dead and the panic can be dropped rather than merely made
+    /// cheaper.
+    ///
+    /// Note that nothing inside this crate calls the only caller of this function
+    /// (see [`Interface::set_hardware_addr`]), so the obligation is exported to
+    /// downstream callers rather than discharged here.
+    #[flux_rs::sig(fn(&HardwareAddress[true]))]
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
+    #[allow(unsafe_code)]
+    #[flux_rs::trusted(no, reason = "discharges the assert(false) licensing unreachable_unchecked")]
     fn check_hardware_addr(addr: &HardwareAddress) {
         if !addr.is_unicast() {
-            panic!("Hardware address {addr} is not unicast")
+            // If the assert never fires, Flux has shown this branch unreachable.
+            flux_rs::assert(false);
+            unsafe { core::hint::unreachable_unchecked() }
         }
     }
 
@@ -1254,7 +1281,7 @@ impl InterfaceInner {
                     (_, _) => unreachable!(),
                 }
             }
-            _ => (EthernetAddress([0; 6]), tx_token),
+            _ => (EthernetAddress::from_octets([0; 6]), tx_token),
         };
 
         // Emit function for the Ethernet header.

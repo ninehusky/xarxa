@@ -479,7 +479,7 @@ mod test {
             router_lifetime: Duration::from_secs(900),
             reachable_time: Duration::from_millis(900),
             retrans_time: Duration::from_millis(900),
-            lladdr: Some(EthernetAddress([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]).into()),
+            lladdr: Some(EthernetAddress::from_octets([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]).into()),
             mtu: None,
             prefix_info: None,
         })
@@ -548,7 +548,7 @@ mod test {
     fn test_redirect_lladdr_roundtrip() {
         // A Redirect's link-layer address is a Target LL option (type 2);
         // emit then parse must preserve it, not drop it to None.
-        let lladdr = EthernetAddress([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]).into();
+        let lladdr = EthernetAddress::from_octets([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]).into();
         let repr = Icmpv6Repr::Ndisc(Repr::Redirect {
             target_addr: MOCK_IP_ADDR_1,
             dest_addr: MOCK_IP_ADDR_2,

@@ -3,6 +3,7 @@ use super::*;
 use crate::socket::tcp::Socket;
 
 impl InterfaceInner {
+    #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
     pub(crate) fn process_tcp<'frame>(
         &mut self,
         sockets: &mut SocketSet,

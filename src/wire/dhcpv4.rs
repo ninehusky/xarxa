@@ -1032,7 +1032,8 @@ mod test {
     ];
 
     const IP_NULL: Ipv4Address = Ipv4Address::new(0, 0, 0, 0);
-    const CLIENT_MAC: EthernetAddress = EthernetAddress([0x0, 0x0b, 0x82, 0x01, 0xfc, 0x42]);
+    const CLIENT_MAC: EthernetAddress =
+        EthernetAddress::from_octets([0x0, 0x0b, 0x82, 0x01, 0xfc, 0x42]);
     const DHCP_SIZE: u16 = 1500;
 
     #[test]

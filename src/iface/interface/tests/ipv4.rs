@@ -461,8 +461,8 @@ fn test_handle_valid_arp_request(#[case] medium: Medium) {
 
     let local_ip_addr = Ipv4Address::new(0x7f, 0x00, 0x00, 0x01);
     let remote_ip_addr = Ipv4Address::new(0x7f, 0x00, 0x00, 0x02);
-    let local_hw_addr = EthernetAddress([0x02, 0x02, 0x02, 0x02, 0x02, 0x02]);
-    let remote_hw_addr = EthernetAddress([0x52, 0x54, 0x00, 0x00, 0x00, 0x00]);
+    let local_hw_addr = EthernetAddress::from_octets([0x02, 0x02, 0x02, 0x02, 0x02, 0x02]);
+    let remote_hw_addr = EthernetAddress::from_octets([0x52, 0x54, 0x00, 0x00, 0x00, 0x00]);
 
     let repr = ArpRepr::EthernetIpv4 {
         operation: ArpOperation::Request,
@@ -516,7 +516,7 @@ fn test_handle_other_arp_request(#[case] medium: Medium) {
     let mut eth_bytes = vec![0u8; 42];
 
     let remote_ip_addr = Ipv4Address::new(0x7f, 0x00, 0x00, 0x02);
-    let remote_hw_addr = EthernetAddress([0x52, 0x54, 0x00, 0x00, 0x00, 0x00]);
+    let remote_hw_addr = EthernetAddress::from_octets([0x52, 0x54, 0x00, 0x00, 0x00, 0x00]);
 
     let repr = ArpRepr::EthernetIpv4 {
         operation: ArpOperation::Request,
@@ -565,8 +565,8 @@ fn test_arp_flush_after_update_ip(#[case] medium: Medium) {
 
     let local_ip_addr = Ipv4Address::new(0x7f, 0x00, 0x00, 0x01);
     let remote_ip_addr = Ipv4Address::new(0x7f, 0x00, 0x00, 0x02);
-    let local_hw_addr = EthernetAddress([0x02, 0x02, 0x02, 0x02, 0x02, 0x02]);
-    let remote_hw_addr = EthernetAddress([0x52, 0x54, 0x00, 0x00, 0x00, 0x00]);
+    let local_hw_addr = EthernetAddress::from_octets([0x02, 0x02, 0x02, 0x02, 0x02, 0x02]);
+    let remote_hw_addr = EthernetAddress::from_octets([0x52, 0x54, 0x00, 0x00, 0x00, 0x00]);
 
     let repr = ArpRepr::EthernetIpv4 {
         operation: ArpOperation::Request,
@@ -1033,7 +1033,7 @@ fn test_raw_socket_with_udp_socket(#[case] medium: Medium) {
 
     // Bind the socket to port 68
     let socket = sockets.get_mut::<udp::Socket>(udp_socket_handle);
-    assert_eq!(socket.bind(68), Ok(()));
+    assert_eq!(socket.bind(68.into()), Ok(()));
     assert!(!socket.can_recv());
     assert!(socket.can_send());
 

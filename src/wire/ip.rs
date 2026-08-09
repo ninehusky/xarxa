@@ -11,10 +11,13 @@ use crate::wire::{Ipv6Address, Ipv6AddressExt, Ipv6Cidr, Ipv6Packet, Ipv6Repr};
 /// Internet protocol version.
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(version_ty: int)]
 pub enum Version {
     #[cfg(feature = "proto-ipv4")]
+    #[flux_rs::variant(Version[0])]
     Ipv4,
     #[cfg(feature = "proto-ipv6")]
+    #[flux_rs::variant(Version[1])]
     Ipv6,
 }
 
@@ -85,18 +88,23 @@ impl fmt::Display for Protocol {
 
 /// An internetworking address.
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+#[flux_rs::refined_by(address_ty: int)]
 pub enum Address {
     /// An IPv4 address.
     #[cfg(feature = "proto-ipv4")]
+    #[flux_rs::variant((Ipv4Address) -> Address[0])]
     Ipv4(Ipv4Address),
     /// An IPv6 address.
     #[cfg(feature = "proto-ipv6")]
+    #[flux_rs::variant((Ipv6Address) -> Address[1])]
     Ipv6(Ipv6Address),
 }
+
 
 impl Address {
     /// Create an address wrapping an IPv4 address with the given octets.
     #[cfg(feature = "proto-ipv4")]
+    #[flux_rs::sig(fn(u8, u8, u8, u8) -> Address[0])]
     pub const fn v4(a0: u8, a1: u8, a2: u8, a3: u8) -> Address {
         Address::Ipv4(Ipv4Address::new(a0, a1, a2, a3))
     }
@@ -104,6 +112,7 @@ impl Address {
     /// Create an address wrapping an IPv6 address with the given octets.
     #[cfg(feature = "proto-ipv6")]
     #[allow(clippy::too_many_arguments)]
+    #[flux_rs::sig(fn(u16, u16, u16, u16, u16, u16, u16, u16) -> Address[1])]
     pub const fn v6(
         a0: u16,
         a1: u16,
@@ -118,12 +127,39 @@ impl Address {
     }
 
     /// Return the protocol version.
+    #[flux_rs::sig(fn(&Address[@v]) -> Version[v])]
     pub const fn version(&self) -> Version {
         match self {
             #[cfg(feature = "proto-ipv4")]
             Address::Ipv4(_) => Version::Ipv4,
             #[cfg(feature = "proto-ipv6")]
             Address::Ipv6(_) => Version::Ipv6,
+        }
+    }
+
+    /// Query whether two addresses are the same IP version.
+    ///
+    /// Prefer this over comparing `version()` values: the derived `PartialEq` on
+    /// `Version` yields a plain `bool`, so Flux cannot relate the result back to the
+    /// addresses. The signature here states that relation explicitly, which is what
+    /// lets a caller's version guard discharge downstream obligations.
+    #[flux_rs::sig(fn(&Address[@a], &Address[@b]) -> bool[a == b])]
+    pub fn same_version(&self, other: &Address) -> bool {
+        // Scrutinised separately rather than as a tuple: Flux loses the refinement
+        // through tuple construction.
+        match self {
+            #[cfg(feature = "proto-ipv4")]
+            Address::Ipv4(_) => match other {
+                Address::Ipv4(_) => true,
+                #[cfg(feature = "proto-ipv6")]
+                Address::Ipv6(_) => false,
+            },
+            #[cfg(feature = "proto-ipv6")]
+            Address::Ipv6(_) => match other {
+                #[cfg(feature = "proto-ipv4")]
+                Address::Ipv4(_) => false,
+                Address::Ipv6(_) => true,
+            },
         }
     }
 
@@ -352,13 +388,16 @@ impl defmt::Format for Cidr {
 /// See also ['ListenEndpoint'], which allows not specifying the address
 /// in order to listen on a given port on any address.
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+#[flux_rs::refined_by(addr_ty: int)]
 pub struct Endpoint {
+    #[flux_rs::field(Address[addr_ty])]
     pub addr: Address,
     pub port: u16,
 }
 
 impl Endpoint {
     /// Create an endpoint address from given address and port.
+    #[flux_rs::sig(fn(Address[@v], u16) -> Endpoint[v])]
     pub const fn new(addr: Address, port: u16) -> Endpoint {
         Endpoint { addr, port }
     }
@@ -428,16 +467,65 @@ impl<T: Into<Address>> From<(T, u16)> for Endpoint {
 /// in order to listen on a given port at all our addresses.
 ///
 /// An endpoint can be constructed from a port, in which case the address is unspecified.
+/// Refined by the IP version of `addr`, with `-1` standing for "no address given".
+///
+/// `opaque` is load-bearing: the version lives behind an `Option`, and a parameter that
+/// only appears inside a generic argument is not value-determined, so the non-opaque
+/// spelling is rejected outright. Hiding the fields moves the contract onto the
+/// accessors below, which are the entire trusted surface.
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
+#[flux_rs::opaque]
+#[flux_rs::refined_by(addr_ty: int)]
 pub struct ListenEndpoint {
     pub addr: Option<Address>,
     pub port: u16,
 }
 
 impl ListenEndpoint {
+    /// The endpoint with no address and no port, indexed `-1`.
+    ///
+    /// Same value as `default()`, but the derived `Default` cannot carry an index through
+    /// an opaque struct, so callers that need `[-1]` must come through here.
+    #[flux_rs::trusted(reason = "opaque: constructs the unbound endpoint")]
+    #[flux_rs::sig(fn() -> ListenEndpoint[-1])]
+    pub const fn unspecified() -> ListenEndpoint {
+        ListenEndpoint {
+            addr: None,
+            port: 0,
+        }
+    }
+
     /// Query whether the endpoint has a specified address and port.
     pub const fn is_specified(&self) -> bool {
         self.addr.is_some() && self.port != 0
+    }
+
+    /// Whether an address was given. `-1` is the index reserved for "none".
+    #[flux_rs::trusted(reason = "opaque: relates addr_ty to the hidden Option")]
+    #[flux_rs::sig(fn(&ListenEndpoint[@t]) -> bool[t != -1])]
+    pub const fn has_addr(&self) -> bool {
+        self.addr.is_some()
+    }
+
+    /// The listening address, whose version is `addr_ty` when one is present.
+    ///
+    /// The payload carries `t != -1` as well as `v == t`. That is the axiom tying the
+    /// sentinel to the `Option`: an address is present exactly when `t` is not `-1`.
+    /// Without it a `Some` arm proves `v == t` but leaves `t == -1` open, so a
+    /// `t == -1 || ..` disjunction downstream never collapses. Expressing it this way
+    /// keeps it in the payload constraint rather than indexing the `Option`, which would
+    /// need `-Fstd-extern-specs`.
+    #[flux_rs::trusted(reason = "opaque: projects the hidden addr field")]
+    #[flux_rs::sig(fn(&ListenEndpoint[@t]) -> Option<Address{v: v == t && t != -1}>)]
+    pub const fn addr(&self) -> Option<Address> {
+        self.addr
+    }
+
+    /// The listening port. Carries no version information.
+    #[flux_rs::trusted(reason = "opaque: projects the hidden port field")]
+    #[flux_rs::sig(fn(&ListenEndpoint) -> u16)]
+    pub const fn port(&self) -> u16 {
+        self.port
     }
 }
 
@@ -488,13 +576,22 @@ impl defmt::Format for ListenEndpoint {
     }
 }
 
+/// See the note on `From<Endpoint>`: the assoc is what survives `.into()`.
+#[flux_rs::assoc(fn from_val(s: int, into: ListenEndpoint) -> bool { into == -1 })]
 impl From<u16> for ListenEndpoint {
+    #[flux_rs::trusted(reason = "opaque: a bare port binds no address")]
+    #[flux_rs::sig(fn(u16) -> ListenEndpoint[-1])]
     fn from(port: u16) -> ListenEndpoint {
         ListenEndpoint { addr: None, port }
     }
 }
 
+/// Ties the conversion's result index to the source, so `.into()` (which routes through the
+/// blanket `Into` spec, whose `from_val` defaults to `true`) does not lose the version.
+#[flux_rs::assoc(fn from_val(s: Endpoint, into: ListenEndpoint) -> bool { into == s })]
 impl From<Endpoint> for ListenEndpoint {
+    #[flux_rs::trusted(reason = "opaque: constructs a bound endpoint from a full one")]
+    #[flux_rs::sig(fn(Endpoint[@v]) -> ListenEndpoint[v])]
     fn from(endpoint: Endpoint) -> ListenEndpoint {
         ListenEndpoint {
             addr: Some(endpoint.addr),
@@ -518,10 +615,13 @@ impl<T: Into<Address>> From<(T, u16)> for ListenEndpoint {
 /// or IPv6 concrete high-level representation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(ip_ty: int)]
 pub enum Repr {
     #[cfg(feature = "proto-ipv4")]
+    #[flux_rs::variant((Ipv4Repr) -> Repr[0])]
     Ipv4(Ipv4Repr),
     #[cfg(feature = "proto-ipv6")]
+    #[flux_rs::variant((Ipv6Repr) -> Repr[1])]
     Ipv6(Ipv6Repr),
 }
 
@@ -599,6 +699,11 @@ impl Repr {
     /// # Panics
     ///
     /// Panics if `src_addr` and `dst_addr` are different IP version.
+    // The mismatched arms are discharged by Flux (see the `assert(false)` below), so the
+    // unchecked form is a-okay here.
+    #[allow(unsafe_code)]
+    #[flux_rs::trusted(no, reason = "discharges the assert(false) licensing unreachable_unchecked")]
+    #[flux_rs::sig(fn(Address[@v], Address[v], Protocol, usize, u8) -> Repr[v])]
     pub fn new(
         src_addr: Address,
         dst_addr: Address,
@@ -606,25 +711,43 @@ impl Repr {
         payload_len: usize,
         hop_limit: u8,
     ) -> Self {
-        match (src_addr, dst_addr) {
+        // Rewrote this to use a match statement on `src_addr`, `dst_addr` to avoid
+        // limitation on tracking refinements through tuples: see
+        // `https://github.com/flux-rs/flux/issues/1485`.
+        match src_addr {
             #[cfg(feature = "proto-ipv4")]
-            (Address::Ipv4(src_addr), Address::Ipv4(dst_addr)) => Self::Ipv4(Ipv4Repr {
-                src_addr,
-                dst_addr,
-                next_header,
-                payload_len,
-                hop_limit,
-            }),
+            Address::Ipv4(src_addr) => match dst_addr {
+                Address::Ipv4(dst_addr) => Self::Ipv4(Ipv4Repr {
+                    src_addr,
+                    dst_addr,
+                    next_header,
+                    payload_len,
+                    hop_limit,
+                }),
+                #[allow(unreachable_patterns)]
+                _ => {
+                    // If the bottom assert never fires, then Flux has determined
+                    // the panic unreachable.
+                    flux_rs::assert(false);
+                    unsafe { core::hint::unreachable_unchecked() }
+                },
+            },
             #[cfg(feature = "proto-ipv6")]
-            (Address::Ipv6(src_addr), Address::Ipv6(dst_addr)) => Self::Ipv6(Ipv6Repr {
-                src_addr,
-                dst_addr,
-                next_header,
-                payload_len,
-                hop_limit,
-            }),
-            #[allow(unreachable_patterns)]
-            _ => panic!("IP version mismatch: src={src_addr:?} dst={dst_addr:?}"),
+            Address::Ipv6(src_addr) => match dst_addr {
+                Address::Ipv6(dst_addr) => Self::Ipv6(Ipv6Repr {
+                    src_addr,
+                    dst_addr,
+                    next_header,
+                    payload_len,
+                    hop_limit,
+                }),
+                #[allow(unreachable_patterns)]
+                _ => {
+                    // Follows the same reasoning as above.
+                    flux_rs::assert(false);
+                    unsafe { core::hint::unreachable_unchecked() }
+                }
+            },
         }
     }
 
@@ -667,6 +790,7 @@ impl Repr {
     }
 
     /// Return the source address.
+    #[flux_rs::sig(fn(&Repr[@v]) -> Address[v])]
     pub const fn src_addr(&self) -> Address {
         match *self {
             #[cfg(feature = "proto-ipv4")]
@@ -677,6 +801,7 @@ impl Repr {
     }
 
     /// Return the destination address.
+    #[flux_rs::sig(fn(&Repr[@v]) -> Address[v])]
     pub const fn dst_addr(&self) -> Address {
         match *self {
             #[cfg(feature = "proto-ipv4")]
