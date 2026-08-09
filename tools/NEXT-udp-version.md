@@ -585,3 +585,70 @@ The root cause is (2): a refinement index cannot change through `&mut self`. Opt
 
 Option 1 is the only one that keeps the "no guards" property. Its cost is a public signature
 change on `bind`, which is Andrew's call and was never scoped.
+
+---
+
+# LANDED — all four `IpRepr::new` call sites discharge the precondition
+
+`panicked = 0` on the run these numbers come from. `cargo test --lib`: 674 passed.
+
+| call site | how it discharges |
+|---|---|
+| `tcp.rs:1458` (`reply`) | free — both addresses come off one `IpRepr[v]` |
+| `tcp.rs:2474` | free, same reason |
+| `dns.rs:626` | free — `get_source_address(&dst)` carries the version (canary: 26 errors, so genuinely checked) |
+| `udp.rs` (`dispatch`) | the two-clause `Socket` invariant, below |
+
+## Acid test — the claim is non-vacuous AND not over-conservative
+
+All three `panicked = 0`:
+
+| program | result |
+|---|---|
+| `bind(v4)` then `send(v6)` | **rejected** |
+| `bind(v4)` then `send(v4)` | **accepted** |
+| unbound socket, both families queued | **accepted** — dual-stack survives |
+
+## The API change
+
+`send`/`send_with`/`send_slice` take `UdpMetadata`; `bind` takes `IpListenEndpoint` — both
+instead of `impl Into<..>`. Downstream cost, measured:
+
+| | send sites | edits |
+|---|---|---|
+| embassy-net | 4 | **0** — `into_xarxa()` already returns `UdpMetadata` |
+| hubris (smoltcp) | 1 (`task/net/src/server.rs:781`) | **0** — already writes `.into()` |
+| xarxa tests | ~20 | mechanical `.into()` |
+
+## Four non-obvious things this needed
+
+1. **`send` must stay `&mut self`, not `&strg`.** It returns `&mut [u8]` *out of* `tx_buffer`;
+   `&strg` plus an escaping interior borrow gives `internal flux error: infer.rs:888`. It never
+   needed `&strg` — it doesn't change the index. Only `bind`/`close` do.
+2. **`send_with` needed its own wrapper** (`enqueue_payload`) — its generic `F` triggers the same
+   `&mut H` erasure as `dequeue_with`.
+3. **`.into()` ignores a `#[sig]` on `From::from`.** It routes through the blanket `Into` extern
+   spec whose `from_val` defaults to `true`, silently dropping the version. Fixed with a
+   *non-composed* assoc on `From<Endpoint>`/`From<u16> for ListenEndpoint`. (The earlier fixpoint
+   ICE came from a *composed* assoc projecting through `Into<IpEndpoint>` — simple ones are fine.)
+   Assoc params use sorts, not Rust types: `s: int`, not `s: u16`.
+4. **`Address::v4`/`v6` needed signatures** (`-> Address[0]` / `[1]`), or constructors carry no
+   version and every downstream obligation is unprovable.
+
+## Trusted surface, complete
+
+| item | why |
+|---|---|
+| `udp::{dequeue_payload, enqueue_payload, reset_tx_buffer}` | `&mut H` / `&mut` invariance erases the element predicate; each callback cannot see the header |
+| `ListenEndpoint::{unspecified, has_addr, addr, port}` | opaque projections + the `-1` sentinel axiom |
+| `From<Endpoint>` / `From<u16> for ListenEndpoint` | opaque construction |
+
+## What is NOT closed
+
+- **`IpRepr::new` still contains `unreachable_unchecked`, deliberately** — removing the panic
+  from codegen is the deliverable, not a wart. The guarantee is compile-time and binds only
+  Flux-checked callers; embassy-net does not run Flux today, so a caller there can still reach
+  the UB. State it that way; do **not** write "the UB is gone".
+- `dns.rs:581` / `dns.rs:617` — `possible out-of-bounds access`, surfaced by opting `dns::dispatch`
+  in. Unrelated to `IpRepr`; next task.
+- `mod.rs:726` — pre-existing internal flux error, untouched.

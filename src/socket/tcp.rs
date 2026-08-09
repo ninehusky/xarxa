@@ -1054,7 +1054,7 @@ impl<'a> Socket<'a> {
                     .get_source_address(&remote_endpoint.addr)
                     .ok_or(ConnectError::Unaddressable)?,
             },
-            port: local_endpoint.port,
+            port: local_endpoint.port(),
         };
 
         if !local_endpoint.addr.same_version(&remote_endpoint.addr) {

@@ -302,7 +302,7 @@ fn test_sixlowpan_udp_with_fragmentation() {
 
     {
         let socket = sockets.get_mut::<udp::Socket>(udp_socket_handle);
-        assert_eq!(socket.bind(6969), Ok(()));
+        assert_eq!(socket.bind(6969.into()), Ok(()));
         assert!(!socket.can_recv());
         assert!(socket.can_send());
     }

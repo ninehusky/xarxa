@@ -104,6 +104,7 @@ pub enum Address {
 impl Address {
     /// Create an address wrapping an IPv4 address with the given octets.
     #[cfg(feature = "proto-ipv4")]
+    #[flux_rs::sig(fn(u8, u8, u8, u8) -> Address[0])]
     pub const fn v4(a0: u8, a1: u8, a2: u8, a3: u8) -> Address {
         Address::Ipv4(Ipv4Address::new(a0, a1, a2, a3))
     }
@@ -111,6 +112,7 @@ impl Address {
     /// Create an address wrapping an IPv6 address with the given octets.
     #[cfg(feature = "proto-ipv6")]
     #[allow(clippy::too_many_arguments)]
+    #[flux_rs::sig(fn(u16, u16, u16, u16, u16, u16, u16, u16) -> Address[1])]
     pub const fn v6(
         a0: u16,
         a1: u16,
@@ -574,13 +576,22 @@ impl defmt::Format for ListenEndpoint {
     }
 }
 
+/// See the note on `From<Endpoint>`: the assoc is what survives `.into()`.
+#[flux_rs::assoc(fn from_val(s: int, into: ListenEndpoint) -> bool { into == -1 })]
 impl From<u16> for ListenEndpoint {
+    #[flux_rs::trusted(reason = "opaque: a bare port binds no address")]
+    #[flux_rs::sig(fn(u16) -> ListenEndpoint[-1])]
     fn from(port: u16) -> ListenEndpoint {
         ListenEndpoint { addr: None, port }
     }
 }
 
+/// Ties the conversion's result index to the source, so `.into()` (which routes through the
+/// blanket `Into` spec, whose `from_val` defaults to `true`) does not lose the version.
+#[flux_rs::assoc(fn from_val(s: Endpoint, into: ListenEndpoint) -> bool { into == s })]
 impl From<Endpoint> for ListenEndpoint {
+    #[flux_rs::trusted(reason = "opaque: constructs a bound endpoint from a full one")]
+    #[flux_rs::sig(fn(Endpoint[@v]) -> ListenEndpoint[v])]
     fn from(endpoint: Endpoint) -> ListenEndpoint {
         ListenEndpoint {
             addr: Some(endpoint.addr),
