@@ -488,9 +488,6 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// report, and the NDISC types other than router advertisement. Set the type first
     /// with [set_msg_type].
     ///
-    /// Every caller in this crate discharges that. Downstream the obligation is exported,
-    /// and violating it is undefined behaviour rather than a panic.
-    ///
     /// [set_msg_type]: #method.set_msg_type
     // The remaining arms are discharged by Flux (see the `assert(false)` below), so the
     // unchecked form is a-okay here. The `requires` codes are MldQuery, RouterSolicit,
