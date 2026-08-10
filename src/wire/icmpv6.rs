@@ -489,9 +489,6 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// with [set_msg_type].
     ///
     /// [set_msg_type]: #method.set_msg_type
-    // The remaining arms are discharged by Flux (see the `assert(false)` below), so the
-    // unchecked form is a-okay here. The `requires` codes are MldQuery, RouterSolicit,
-    // NeighborSolicit, NeighborAdvert, Redirect, MldReport.
     #[allow(unsafe_code)]
     #[flux_rs::trusted(no, reason = "discharges the assert(false) licensing unreachable_unchecked")]
     #[flux_rs::sig(fn(&mut Packet<T>[@code])
