@@ -471,9 +471,6 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     /// Set the message code field.
-    //
-    // The index is repeated on both sides so the message type survives the call; without
-    // it a following `clear_reserved` loses its precondition.
     #[flux_rs::trusted(no, reason = "the preserved index is a link clear_reserved's proof rests on")]
     #[flux_rs::sig(fn(&mut Packet<T>[@code], u8))]
     #[inline]
