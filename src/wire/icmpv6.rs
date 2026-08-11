@@ -716,40 +716,53 @@ impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
+///
+/// Refined by the message type octet `emit` writes, exactly as `NdiscRepr` is. The
+/// `Ndisc` and `Mld` variants inherit the index of the representation they wrap, so
+/// `emit`'s single buffer precondition follows the message type through the nesting.
+#[flux_rs::refined_by(code: int)]
 pub enum Repr<'a> {
+    #[flux_rs::variant({DstUnreachable, Ipv6Repr, &[u8]} -> Repr[0x01])]
     DstUnreachable {
         reason: DstUnreachable,
         header: Ipv6Repr,
         data: &'a [u8],
     },
+    #[flux_rs::variant({u32, Ipv6Repr, &[u8]} -> Repr[0x02])]
     PktTooBig {
         mtu: u32,
         header: Ipv6Repr,
         data: &'a [u8],
     },
+    #[flux_rs::variant({TimeExceeded, Ipv6Repr, &[u8]} -> Repr[0x03])]
     TimeExceeded {
         reason: TimeExceeded,
         header: Ipv6Repr,
         data: &'a [u8],
     },
+    #[flux_rs::variant({ParamProblem, u32, Ipv6Repr, &[u8]} -> Repr[0x04])]
     ParamProblem {
         reason: ParamProblem,
         pointer: u32,
         header: Ipv6Repr,
         data: &'a [u8],
     },
+    #[flux_rs::variant({u16, u16, &[u8]} -> Repr[0x80])]
     EchoRequest {
         ident: u16,
         seq_no: u16,
         data: &'a [u8],
     },
+    #[flux_rs::variant({u16, u16, &[u8]} -> Repr[0x81])]
     EchoReply {
         ident: u16,
         seq_no: u16,
         data: &'a [u8],
     },
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
+    #[flux_rs::variant((NdiscRepr[@c]) -> Repr[c])]
     Ndisc(NdiscRepr<'a>),
+    #[flux_rs::variant((MldRepr[@c]) -> Repr[c])]
     Mld(MldRepr<'a>),
     #[cfg(feature = "proto-rpl")]
     Rpl(RplRepr<'a>),
@@ -758,6 +771,7 @@ pub enum Repr<'a> {
 impl<'a> Repr<'a> {
     /// Parse an Internet Control Message Protocol version 6 packet and return
     /// a high-level representation.
+    #[flux_rs::trusted(no, reason = "carries check_len's length evidence to the accessors below")]
     pub fn parse<T>(
         src_addr: &Ipv6Address,
         dst_addr: &Ipv6Address,
@@ -767,7 +781,11 @@ impl<'a> Repr<'a> {
     where
         T: AsRef<[u8]> + ?Sized,
     {
-        packet.check_len()?;
+        // See `NdiscRepr::parse`: `?` would discard check_len's return refinement.
+        match packet.check_len() {
+            Err(e) => return Err(e),
+            Ok(()) => {}
+        }
 
         fn create_packet_from_payload<'a, T>(packet: &Packet<&'a T>) -> Result<(&'a [u8], Ipv6Repr)>
         where
@@ -873,6 +891,11 @@ impl<'a> Repr<'a> {
 
     /// Emit a high-level representation into an Internet Control Message Protocol version 6
     /// packet.
+    #[flux_rs::trusted(no, reason = "the one buffer precondition the setters below rest on")]
+    #[flux_rs::sig(fn(&Repr[@code], &Ipv6Address, &Ipv6Address,
+                      packet: &strg Packet<&mut T>[@old], &ChecksumCapabilities)
+        requires <&mut T as AsMut<[u8]>>::idx(old.buf) >= header_len(code)
+        ensures packet: Packet<&mut T>{p: p.buf == old.buf})]
     pub fn emit<T>(
         &self,
         src_addr: &Ipv6Address,
