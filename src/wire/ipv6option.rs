@@ -111,7 +111,9 @@ impl From<Type> for FailureType {
 /// A read/write wrapper around an IPv6 Extension Header Option.
 #[derive(Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(buf: T)]
 pub struct Ipv6Option<T: AsRef<[u8]>> {
+    #[flux_rs::field(T[buf])]
     buffer: T,
 }
 
@@ -160,6 +162,15 @@ impl<T: AsRef<[u8]>> Ipv6Option<T> {
     /// The result of this check is invalidated by calling [set_data_len].
     ///
     /// [set_data_len]: #method.set_data_len
+    //
+    // `>= 1` is ALL this function establishes unconditionally, and that is a fact
+    // about the code, not a weakness of the annotation: the Pad1 arm returns `Ok`
+    // after only `len >= field::LENGTH`. The stronger `len >= data[LENGTH] + 2`
+    // that the other arms establish is conditional on the option type, which is a
+    // byte read out of the buffer that Flux cannot relate to the buffer's length.
+    // So `check_len` discharges `option_type`, and NOT `data_len` / `data`.
+    #[flux_rs::trusted(no, reason = "establishes the option_type precondition in the return type")]
+    #[flux_rs::sig(fn(&Ipv6Option<T>[@buf]) -> Result<()>{ok: ok => <T as AsRef<[u8]>>::idx(buf) > field::TYPE})]
     pub fn check_len(&self) -> Result<()> {
         let data = self.buffer.as_ref();
         let len = data.len();
@@ -192,6 +203,9 @@ impl<T: AsRef<[u8]>> Ipv6Option<T> {
 
     /// Return the option type.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the option type read is in bounds")]
+    #[flux_rs::sig(fn(&Ipv6Option<T>[@buf]) -> Type
+        requires <T as AsRef<[u8]>>::idx(buf) > field::TYPE)]
     pub fn option_type(&self) -> Type {
         let data = self.buffer.as_ref();
         Type::from(data[field::TYPE])
@@ -202,6 +216,9 @@ impl<T: AsRef<[u8]>> Ipv6Option<T> {
     /// # Panics
     /// This function panics if this is an 1-byte padding option.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the data length read is in bounds")]
+    #[flux_rs::sig(fn(&Ipv6Option<T>[@buf]) -> u8
+        requires <T as AsRef<[u8]>>::idx(buf) > field::LENGTH)]
     pub fn data_len(&self) -> u8 {
         let data = self.buffer.as_ref();
         data[field::LENGTH]
@@ -214,6 +231,15 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Ipv6Option<&'a T> {
     /// # Panics
     /// This function panics if this is an 1-byte padding option.
     #[inline]
+    // NOT PROVEN, for two independent reasons, both measured.
+    // (1) `field::DATA(len).end` is `self.data_len() + 2`, and `data_len` is a byte
+    //     read out of the buffer; nothing relates it to the buffer's length without
+    //     a struct invariant Flux has no way to establish here.
+    // (2) The impl block instantiates the struct parameter with `&T` / `&mut T` for
+    //     a `?Sized` generic, which Flux gives the UNIT sort, so the wrapper index
+    //     carries no length at all. Probe: even the vacuously-maximal
+    //     `requires <&mut T as AsMut<[u8]>>::idx(buf) >= 257` (a `u8` len can force
+    //     at most 257) still reports "a precondition cannot be proved".
     pub fn data(&self) -> &'a [u8] {
         let len = self.data_len();
         let data = self.buffer.as_ref();
@@ -224,6 +250,9 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Ipv6Option<&'a T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Ipv6Option<T> {
     /// Set the option type.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the option type write is in bounds")]
+    #[flux_rs::sig(fn(&mut Ipv6Option<T>[@buf], Type)
+        requires <T as AsMut<[u8]>>::idx(buf) > field::TYPE)]
     pub fn set_option_type(&mut self, value: Type) {
         let data = self.buffer.as_mut();
         data[field::TYPE] = value.into();
@@ -234,6 +263,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Ipv6Option<T> {
     /// # Panics
     /// This function panics if this is an 1-byte padding option.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the data length write is in bounds")]
+    #[flux_rs::sig(fn(&mut Ipv6Option<T>[@buf], u8)
+        requires <T as AsMut<[u8]>>::idx(buf) > field::LENGTH)]
     pub fn set_data_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         data[field::LENGTH] = value;
@@ -246,6 +278,15 @@ impl<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> Ipv6Option<&mut T> {
     /// # Panics
     /// This function panics if this is an 1-byte padding option.
     #[inline]
+    // NOT PROVEN, for two independent reasons, both measured.
+    // (1) `field::DATA(len).end` is `self.data_len() + 2`, and `data_len` is a byte
+    //     read out of the buffer; nothing relates it to the buffer's length without
+    //     a struct invariant Flux has no way to establish here.
+    // (2) The impl block instantiates the struct parameter with `&T` / `&mut T` for
+    //     a `?Sized` generic, which Flux gives the UNIT sort, so the wrapper index
+    //     carries no length at all. Probe: even the vacuously-maximal
+    //     `requires <&mut T as AsMut<[u8]>>::idx(buf) >= 257` (a `u8` len can force
+    //     at most 257) still reports "a precondition cannot be proved".
     pub fn data_mut(&mut self) -> &mut [u8] {
         let len = self.data_len();
         let data = self.buffer.as_mut();
@@ -284,11 +325,27 @@ pub enum Repr<'a> {
 
 impl<'a> Repr<'a> {
     /// Parse an IPv6 Extension Header Option and return a high-level representation.
+    // The `match` on `check_len` discharges `option_type` locally -- with the
+    // original `frame.check_len()?;` that call reported "a precondition cannot be
+    // proved" too. `Err(e) => return Err(e)` is what `?` compiles to here: xarxa
+    // has one error type, so `?`'s `From::from` is the identity.
+    //
+    // The cone does NOT terminate here. `data_len` needs `len > 1`, which
+    // `check_len` only establishes on the non-Pad1 path, so the `requires` below
+    // carries that obligation to `parse`'s callers rather than absorbing it.
+    // What is left after that is `opt.data()`, and only that -- see the NOT PROVEN
+    // note on `data`.
+    #[flux_rs::trusted(no, reason = "carries the data_len obligation to parse's callers")]
+    #[flux_rs::sig(fn(&Ipv6Option<&T>[@buf]) -> Result<Repr>
+        requires <&T as AsRef<[u8]>>::idx(buf) > field::LENGTH)]
     pub fn parse<T>(opt: &Ipv6Option<&'a T>) -> Result<Repr<'a>>
     where
         T: AsRef<[u8]> + ?Sized,
     {
-        opt.check_len()?;
+        match opt.check_len() {
+            Err(e) => return Err(e),
+            Ok(()) => {}
+        }
         match opt.option_type() {
             Type::Pad1 => Ok(Repr::Pad1),
             Type::PadN => Ok(Repr::PadN(opt.data_len())),
@@ -332,6 +389,13 @@ impl<'a> Repr<'a> {
     }
 
     /// Emit a high-level representation into an IPv6 Extension Header Option.
+    // `emit` has no `check_len`, so there is nothing local to establish the bound
+    // and the obligation goes to the callers. That discharges every
+    // `set_option_type` / `set_data_len` here; the residue is `data_mut`, and only
+    // that -- see the NOT PROVEN note on `data_mut`.
+    #[flux_rs::trusted(no, reason = "carries the setter obligations to emit's callers")]
+    #[flux_rs::sig(fn(&Repr, &mut Ipv6Option<&mut T>[@buf])
+        requires <&mut T as AsMut<[u8]>>::idx(buf) > field::LENGTH)]
     pub fn emit<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized>(&self, opt: &mut Ipv6Option<&'a mut T>) {
         match *self {
             Repr::Pad1 => opt.set_option_type(Type::Pad1),
