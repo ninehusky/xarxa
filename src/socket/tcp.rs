@@ -1594,11 +1594,34 @@ impl<'a> Socket<'a> {
         }
     }
 
-    // FIXME(flux): fixpoint chokes on this function; it's ~700 lines of code that
-    // seem far larger than any other function in the crate. fixpoint grows
-    // to the point where it runs out of memory and never terminates -- we're
-    // trusting for now until we can refactor into smaller functions.
-    #[flux_rs::trusted(reason = "Fixpoint chokes (see above documentation)")]
+    // FIXME(flux): this function is trusted because its obligations are not
+    // dischargeable yet, NOT because fixpoint cannot handle it. An earlier note here
+    // claimed fixpoint grows without bound and never terminates on this body; that is
+    // no longer true. Measured with `trusted(no)` and the `listen_endpoint.port()`
+    // accessor below in place: the whole crate check finishes in 31s with a 1.4GB peak
+    // and reports 13 errors inside this body (61 total, up from 48).
+    //
+    // Two of those 13 are the RingBuffer preconditions, and neither is a local fact:
+    //
+    //   * `self.tx_buffer.dequeue_allocated(ack_len)` needs `ack_len <= tx_buffer.len()`.
+    //     `ack_len = ack_number - (local_seq_no + sent_syn)` is bounded by the
+    //     acceptability test above only through `SeqNumber`'s *wrapping* `Sub`/`PartialOrd`.
+    //     `ack_number <= local_seq_no + unacknowledged` implies the arithmetic bound only
+    //     under "the window never wraps", which is a protocol assumption, not a fact
+    //     fixpoint can derive. Discharging it means refining `SeqNumber` and axiomatizing
+    //     its modular order.
+    //
+    //   * `self.rx_buffer.enqueue_unallocated(contig_len)` needs
+    //     `contig_len <= rx_buffer.window()`. `contig_len` comes from the assembler and is
+    //     bounded by `payload_offset + payload_len <= window_end - window_start`, but
+    //     `window_end - window_start <= rx_buffer.window()` is a Socket-level invariant
+    //     over `remote_last_ack`, `remote_last_win`, `remote_win_shift`, `remote_seq_no`
+    //     and `rx_buffer.capacity()` that only the ACK-sending path maintains. It is not
+    //     stated anywhere, so nothing local implies it.
+    //
+    // Until those two invariants exist, opting this function in would only surface the
+    // obligations, not discharge them.
+    #[flux_rs::trusted(reason = "obligations need SeqNumber and Socket-level invariants")]
     pub(crate) fn process(
         &mut self,
         cx: &mut Context,
@@ -1901,7 +1924,7 @@ impl<'a> Socket<'a> {
             // Here we need to additionally check `listen_endpoint`, because we want to make sure
             // that SYN-RECEIVED was actually converted from the LISTEN state (another possible
             // reason is TCP simultaneous open).
-            (State::SynReceived, TcpControl::Rst) if self.listen_endpoint.port != 0 => {
+            (State::SynReceived, TcpControl::Rst) if self.listen_endpoint.port() != 0 => {
                 tcp_trace!("received RST");
                 self.tuple = None;
                 self.set_state(State::Listen);

@@ -147,6 +147,24 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     }
 }
 
+// FIXME(flux): the struct invariant above is ASSUMED on entry to the four `*_with`
+// mutators (`{en,de}queue_{one,many}_with`) but is NOT proven to be MAINTAINED by them:
+// their `self.length` / `self.read_at` writes are reported as "assignment might be
+// unsafe". Stating the obligation needs `fn(self: &mut Self[@r], ..) ensures self: Self`,
+// and that ICEs flux (650d309447) on any function whose return value borrows out of
+// `self` -- which is every one of these, since the interface is zero-copy:
+//
+//   * unconstrained index (`ensures self: Self`)  -> `UnsolvedEvar`, flux-infer/src/infer.rs:416
+//   * determined index (`ensures self: Self[..]`) -> "incompatible types",
+//     flux-infer/src/infer.rs:888, reporting `storage: †ManagedSlice`. The field is still
+//     blocked by the borrow the result holds, so `self` cannot be folded back at exit.
+//
+// The closure is incidental: `fn(self: &mut Self[@r]) -> &mut T ensures self: Self` ICEs
+// identically with no closure anywhere, and `&strg` behaves the same as `&mut`. Dropping
+// the input index instead (`fn(&mut Self, F)`) avoids the ICE but re-unpacks a fresh
+// index at every read of `self`, so `!is_full()` no longer implies `cap > 0` and
+// `get_idx_unchecked`'s precondition stops verifying -- strictly worse than today.
+
 /// This is the "discrete" ring buffer interface: it operates with single elements,
 /// and boundary conditions (empty/full) are errors.
 impl<'a, T: 'a> RingBuffer<'a, T> {
@@ -210,6 +228,14 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
         self.dequeue_one_with(Ok)?
     }
 }
+
+// FIXME(flux): on top of the maintenance blocker above, the `assert!(size <= max_size)`
+// in the two functions below is a real panic site: `size` is whatever `f` returned and
+// nothing constrains it. Discharging it needs the documented "# Panics" contract written
+// as a refined bound, `where F: FnOnce(&mut [T][@n]) -> (usize{v: v <= n}, R)`. That is a
+// spec-only change, but it makes every caller owe the bound, and today no caller is opted
+// into checking (packet_buffer.rs has 0 of 29 functions checked), so adding it would move
+// the obligation somewhere nobody is looking rather than discharge it.
 
 /// This is the "continuous" ring buffer interface: it operates with element slices,
 /// and boundary conditions (empty/full) simply result in empty slices.
