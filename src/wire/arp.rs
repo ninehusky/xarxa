@@ -24,7 +24,9 @@ enum_with_unknown! {
 /// A read/write wrapper around an Address Resolution Protocol packet buffer.
 #[derive(Debug, PartialEq, Eq, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(buf: T)]
 pub struct Packet<T: AsRef<[u8]>> {
+    #[flux_rs::field(T[buf])]
     buffer: T,
 }
 
@@ -33,10 +35,13 @@ mod field {
 
     use crate::wire::field::*;
 
+    #[flux_rs::constant(core::ops::Range { start: 0, end: 2 })]
     pub const HTYPE: Field = 0..2;
+    #[flux_rs::constant(core::ops::Range { start: 2, end: 4 })]
     pub const PTYPE: Field = 2..4;
     pub const HLEN: usize = 4;
     pub const PLEN: usize = 5;
+    #[flux_rs::constant(core::ops::Range { start: 6, end: 8 })]
     pub const OPER: Field = 6..8;
 
     #[inline]
@@ -171,6 +176,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the hardware type field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the hardware type write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], Hardware)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::HTYPE.end)]
     pub fn set_hardware_type(&mut self, value: Hardware) {
         let data = self.buffer.as_mut();
         NetworkEndian::write_u16(&mut data[field::HTYPE], value.into())
@@ -178,6 +186,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the protocol type field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the protocol type write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], Protocol)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::PTYPE.end)]
     pub fn set_protocol_type(&mut self, value: Protocol) {
         let data = self.buffer.as_mut();
         NetworkEndian::write_u16(&mut data[field::PTYPE], value.into())
@@ -185,6 +196,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the hardware length field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the hardware length write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], u8)
+        requires <T as AsMut<[u8]>>::idx(buf) > field::HLEN)]
     pub fn set_hardware_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         data[field::HLEN] = value
@@ -192,6 +206,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the protocol length field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the protocol length write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], u8)
+        requires <T as AsMut<[u8]>>::idx(buf) > field::PLEN)]
     pub fn set_protocol_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         data[field::PLEN] = value
@@ -199,6 +216,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the operation field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the operation write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], Operation)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::OPER.end)]
     pub fn set_operation(&mut self, value: Operation) {
         let data = self.buffer.as_mut();
         NetworkEndian::write_u16(&mut data[field::OPER], value.into())
@@ -208,6 +228,11 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     ///
     /// # Panics
     /// The function panics if `value` is not `self.hardware_len()` long.
+    // NOT PROVEN: `copy_from_slice` requires `value.len() == self.hardware_len()`,
+    // and `hardware_len` is a byte read out of the buffer that Flux cannot see. This
+    // signature adds no precondition -- it only pins the refined `Packet` index so
+    // callers type-check; the panic obligation is still discharged by `default_trusted`.
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], &[u8]))]
     pub fn set_source_hardware_addr(&mut self, value: &[u8]) {
         let (hardware_len, protocol_len) = (self.hardware_len(), self.protocol_len());
         let data = self.buffer.as_mut();
@@ -218,6 +243,11 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     ///
     /// # Panics
     /// The function panics if `value` is not `self.protocol_len()` long.
+    // NOT PROVEN: `copy_from_slice` requires `value.len() == self.hardware_len()`,
+    // and `hardware_len` is a byte read out of the buffer that Flux cannot see. This
+    // signature adds no precondition -- it only pins the refined `Packet` index so
+    // callers type-check; the panic obligation is still discharged by `default_trusted`.
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], &[u8]))]
     pub fn set_source_protocol_addr(&mut self, value: &[u8]) {
         let (hardware_len, protocol_len) = (self.hardware_len(), self.protocol_len());
         let data = self.buffer.as_mut();
@@ -228,6 +258,11 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     ///
     /// # Panics
     /// The function panics if `value` is not `self.hardware_len()` long.
+    // NOT PROVEN: `copy_from_slice` requires `value.len() == self.hardware_len()`,
+    // and `hardware_len` is a byte read out of the buffer that Flux cannot see. This
+    // signature adds no precondition -- it only pins the refined `Packet` index so
+    // callers type-check; the panic obligation is still discharged by `default_trusted`.
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], &[u8]))]
     pub fn set_target_hardware_addr(&mut self, value: &[u8]) {
         let (hardware_len, protocol_len) = (self.hardware_len(), self.protocol_len());
         let data = self.buffer.as_mut();
@@ -238,6 +273,11 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     ///
     /// # Panics
     /// The function panics if `value` is not `self.protocol_len()` long.
+    // NOT PROVEN: `copy_from_slice` requires `value.len() == self.hardware_len()`,
+    // and `hardware_len` is a byte read out of the buffer that Flux cannot see. This
+    // signature adds no precondition -- it only pins the refined `Packet` index so
+    // callers type-check; the panic obligation is still discharged by `default_trusted`.
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], &[u8]))]
     pub fn set_target_protocol_addr(&mut self, value: &[u8]) {
         let (hardware_len, protocol_len) = (self.hardware_len(), self.protocol_len());
         let data = self.buffer.as_mut();
@@ -245,7 +285,10 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 }
 
+#[flux_rs::assoc(fn idx(s: Self) -> int { <T as AsRef<[u8]>>::idx(s.buf) })]
 impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
+    #[flux_rs::trusted(no, reason = "carries the buffer length through the AsRef impl")]
+    #[flux_rs::sig(fn(&Packet<T>[@s]) -> &[u8][<T as AsRef<[u8]>>::idx(s.buf)])]
     fn as_ref(&self) -> &[u8] {
         self.buffer.as_ref()
     }
@@ -301,6 +344,9 @@ impl Repr {
     }
 
     /// Emit a high-level representation into an Address Resolution Protocol packet.
+    #[flux_rs::trusted(no, reason = "propagates the accessor bounds obligations to callers")]
+    #[flux_rs::sig(fn(&Repr, &mut Packet<T>[@buf])
+        requires <T as AsMut<[u8]>>::idx(buf) >= 28)]
     pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, packet: &mut Packet<T>) {
         match *self {
             Repr::EthernetIpv4 {

@@ -1,15 +1,81 @@
+#[allow(unused_imports)]
+use byteorder::{BigEndian, ByteOrder};
 use flux_rs::*;
 
+// ---------------------------------------------------------------------------
+// byteorder specs.
+//
+// `byteorder` is a third-party crate with no MIR available to Flux, so every
+// `NetworkEndian::{read,write}_*` is reported `MightPanic(NoMIRAvailable)` and
+// nothing on our side can discharge it. `BigEndian`'s bodies are all
+// `buf[..N]`, so the sole panic condition is `buf.len() < N`; the `requires`
+// below states exactly that and `#[no_panic]` records that it is the only one.
+// `NetworkEndian` is a type alias for `BigEndian`, so these cover both spellings.
+// ---------------------------------------------------------------------------
+
+#[extern_spec(byteorder)]
+impl ByteOrder for BigEndian {
+    #[no_panic]
+    #[sig(fn(&[u8][@n]) -> u16 requires n >= 2)]
+    fn read_u16(buf: &[u8]) -> u16;
+
+    #[no_panic]
+    #[sig(fn(&[u8][@n]) -> u32 requires n >= 4)]
+    fn read_u32(buf: &[u8]) -> u32;
+
+    #[no_panic]
+    #[sig(fn(&mut [u8][@n], u16) requires n >= 2)]
+    fn write_u16(buf: &mut [u8], n: u16);
+
+    #[no_panic]
+    #[sig(fn(&mut [u8][@n], u32) requires n >= 4)]
+    fn write_u32(buf: &mut [u8], n: u32);
+}
+
+// `idx` is the length (more precisely, the refinement index) of the borrowed
+// view. Impls that carry one define it; everything else falls back to the
+// uninterpreted `opaque_idx`, which says nothing but keeps the function total.
+// A total function is what lets a *foreign* impl -- notably the `&T`/`&mut T`
+// auto-deref blankets, whose generic parameter list contains an elided lifetime
+// that an `extern_spec` cannot name -- be used without a definition of its own.
+flux_rs::defs! {
+    fn opaque_idx<A, B>(s: A) -> B;
+}
+
 #[extern_spec(core::convert)]
+#[assoc(fn idx(s: Self) -> T { opaque_idx(s) })]
 trait AsRef<T> {
     #[no_panic]
+    #[sig(fn(&Self[@s]) -> &T[<Self as AsRef<T>>::idx(s)])]
     fn as_ref(&self) -> &T;
 }
 
 #[extern_spec(core::convert)]
+#[assoc(fn idx(s: Self) -> T { opaque_idx(s) })]
 trait AsMut<T> {
     #[no_panic]
+    #[sig(fn(&mut Self[@s]) -> &mut T[<Self as AsMut<T>>::idx(s)])]
     fn as_mut(&mut self) -> &mut T;
+}
+
+// The core impls that ground `AsRef::idx` / `AsMut::idx` at the concrete buffer
+// types `wire` instantiates its packet wrappers with (`&[u8]`, `&mut [u8]`,
+// `[u8; N]`, ...). Without these the associated refinement stays uninterpreted
+// and no length obligation can be discharged at a concrete call site.
+#[extern_spec(core::convert)]
+impl<T> AsRef<[T]> for [T] {
+    #![assoc(fn idx(s: int) -> int { s })]
+    #[no_panic]
+    #[sig(fn(&[T][@n]) -> &[T][n])]
+    fn as_ref(&self) -> &[T];
+}
+
+#[extern_spec(core::convert)]
+impl<T> AsMut<[T]> for [T] {
+    #![assoc(fn idx(s: int) -> int { s })]
+    #[no_panic]
+    #[sig(fn(&mut [T][@n]) -> &mut [T][n])]
+    fn as_mut(&mut self) -> &mut [T];
 }
 
 #[extern_spec(core::convert)]
@@ -53,7 +119,10 @@ trait Index<Idx> {
 }
 
 #[extern_spec(core::ops)]
-trait IndexMut<Idx> where Self: Index<Idx> {
+trait IndexMut<Idx>
+where
+    Self: Index<Idx>,
+{
     #[sig(fn(self: &mut Self[@v], index: Idx { <Self as Index<Idx>>::in_bounds(v, index) }) -> &mut Self::Output{out: <Self as Index<Idx>>::output_pred(v, index, out)})]
     fn index_mut(&mut self, index: Idx) -> &mut Self::Output;
 }
