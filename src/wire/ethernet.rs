@@ -71,6 +71,8 @@ impl Address {
     ///
     /// # Panics
     /// The function panics if `data` is not six octets long.
+    #[flux_rs::trusted(no, reason = "proves the six-octet copy_from_slice cannot panic")]
+    #[flux_rs::sig(fn(&[u8][6]) -> Address)]
     pub fn from_bytes(data: &[u8]) -> Address {
         let mut bytes = [0; 6];
         bytes.copy_from_slice(data);
@@ -194,9 +196,13 @@ pub struct Frame<T: AsRef<[u8]>> {
 mod field {
     use crate::wire::field::*;
 
+    #[flux_rs::constant(core::ops::Range { start: 0, end: 6 })]
     pub const DESTINATION: Field = 0..6;
+    #[flux_rs::constant(core::ops::Range { start: 6, end: 12 })]
     pub const SOURCE: Field = 6..12;
+    #[flux_rs::constant(core::ops::Range { start: 12, end: 14 })]
     pub const ETHERTYPE: Field = 12..14;
+    #[flux_rs::constant(core::ops::RangeFrom { start: 14 })]
     pub const PAYLOAD: Rest = 14..;
 }
 
@@ -221,6 +227,14 @@ impl<T: AsRef<[u8]>> Frame<T> {
 
     /// Ensure that no accessor method will panic if called.
     /// Returns `Err(Error)` if the buffer is too short.
+    //
+    // The doc comment above is the whole specification, and the return type now
+    // states it: `Ok` implies the buffer is at least a header long, which is
+    // exactly the precondition every accessor below requires. A caller that
+    // matches on the `Ok` arm discharges those preconditions locally instead of
+    // propagating a `requires` of its own -- see `Repr::parse`.
+    #[flux_rs::trusted(no, reason = "establishes the accessor precondition in the return type")]
+    #[flux_rs::sig(fn(&Frame<T>[@buf]) -> Result<()>{ok: ok => <T as AsRef<[u8]>>::idx(buf) >= HEADER_LEN})]
     pub fn check_len(&self) -> Result<()> {
         let len = self.buffer.as_ref().len();
         if len < HEADER_LEN { Err(Error) } else { Ok(()) }
@@ -244,6 +258,9 @@ impl<T: AsRef<[u8]>> Frame<T> {
 
     /// Return the destination address field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the destination address read is in bounds")]
+    #[flux_rs::sig(fn(&Frame<T>[@buf]) -> Address
+        requires <T as AsRef<[u8]>>::idx(buf) >= field::DESTINATION.end)]
     pub fn dst_addr(&self) -> Address {
         let data = self.buffer.as_ref();
         Address::from_bytes(&data[field::DESTINATION])
@@ -251,6 +268,9 @@ impl<T: AsRef<[u8]>> Frame<T> {
 
     /// Return the source address field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the source address read is in bounds")]
+    #[flux_rs::sig(fn(&Frame<T>[@buf]) -> Address
+        requires <T as AsRef<[u8]>>::idx(buf) >= field::SOURCE.end)]
     pub fn src_addr(&self) -> Address {
         let data = self.buffer.as_ref();
         Address::from_bytes(&data[field::SOURCE])
@@ -258,6 +278,9 @@ impl<T: AsRef<[u8]>> Frame<T> {
 
     /// Return the EtherType field, without checking for 802.1Q.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the ethertype read is in bounds")]
+    #[flux_rs::sig(fn(&Frame<T>[@buf]) -> EtherType
+        requires <T as AsRef<[u8]>>::idx(buf) >= field::ETHERTYPE.end)]
     pub fn ethertype(&self) -> EtherType {
         let data = self.buffer.as_ref();
         let raw = NetworkEndian::read_u16(&data[field::ETHERTYPE]);
@@ -268,6 +291,15 @@ impl<T: AsRef<[u8]>> Frame<T> {
 impl<'a, T: AsRef<[u8]> + ?Sized> Frame<&'a T> {
     /// Return a pointer to the payload, without checking for 802.1Q.
     #[inline]
+    // NOT PROVEN. `Frame<&'a T>` instantiates the struct parameter with `&T` for a
+    // `?Sized` generic `T`, and Flux gives that the UNIT sort: `buf.buf` is `()`, so
+    // the frame index carries no length and there is nothing a `requires` here can
+    // say. (Measured: `requires false` verifies, so the precondition does reach the
+    // body; `requires <&T as AsRef<[u8]>>::idx(buf) >= 14` does not discharge it,
+    // because the blanket `AsRef for &T` impl has no spec and falls back to the
+    // uninterpreted `opaque_idx`.) This line compiles to no panic site in the
+    // firmware, so it is not one of the file's 7; the obligation stays with
+    // `default_trusted`.
     pub fn payload(&self) -> &'a [u8] {
         let data = self.buffer.as_ref();
         &data[field::PAYLOAD]
@@ -277,6 +309,9 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Frame<&'a T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
     /// Set the destination address field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the destination address write is in bounds")]
+    #[flux_rs::sig(fn(&mut Frame<T>[@buf], Address)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::DESTINATION.end)]
     pub fn set_dst_addr(&mut self, value: Address) {
         let data = self.buffer.as_mut();
         data[field::DESTINATION].copy_from_slice(value.as_bytes())
@@ -284,6 +319,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
 
     /// Set the source address field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the source address write is in bounds")]
+    #[flux_rs::sig(fn(&mut Frame<T>[@buf], Address)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::SOURCE.end)]
     pub fn set_src_addr(&mut self, value: Address) {
         let data = self.buffer.as_mut();
         data[field::SOURCE].copy_from_slice(value.as_bytes())
@@ -291,6 +329,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
 
     /// Set the EtherType field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the ethertype write is in bounds")]
+    #[flux_rs::sig(fn(&mut Frame<T>[@buf], EtherType)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::ETHERTYPE.end)]
     pub fn set_ethertype(&mut self, value: EtherType) {
         let data = self.buffer.as_mut();
         NetworkEndian::write_u16(&mut data[field::ETHERTYPE], value.into())
@@ -298,6 +339,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
 
     /// Return a mutable pointer to the payload.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the payload slice is in bounds")]
+    #[flux_rs::sig(fn(&mut Frame<T>[@buf]) -> &mut [u8]
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::PAYLOAD.start)]
     pub fn payload_mut(&mut self) -> &mut [u8] {
         let data = self.buffer.as_mut();
         &mut data[field::PAYLOAD]
@@ -371,8 +415,23 @@ pub struct Repr {
 
 impl Repr {
     /// Parse an Ethernet II frame and return a high-level representation.
+    //
+    // THE CONE TERMINATES HERE, and the `match` is why. `check_len`'s return type
+    // says `Ok` implies the buffer is at least `HEADER_LEN` long, which is exactly
+    // what the three accessors below require -- but `?` discards that evidence
+    // (measured: with `frame.check_len()?;` all three accessor calls report "a
+    // precondition cannot be proved"). Matching on the result keeps it, so `parse`
+    // discharges the obligation locally and needs no `requires` of its own.
+    //
+    // `Err(e) => return Err(e)` is exactly what `?` compiles to here: xarxa has one
+    // error type (`wire::Result<T> = Result<T, Error>`), so `?`'s `From::from` is
+    // the identity. Runtime behaviour is unchanged.
+    #[flux_rs::trusted(no, reason = "the accessor preconditions are established by check_len")]
     pub fn parse<T: AsRef<[u8]> + ?Sized>(frame: &Frame<&T>) -> Result<Repr> {
-        frame.check_len()?;
+        match frame.check_len() {
+            Err(e) => return Err(e),
+            Ok(()) => {}
+        }
         Ok(Repr {
             src_addr: frame.src_addr(),
             dst_addr: frame.dst_addr(),
@@ -381,11 +440,24 @@ impl Repr {
     }
 
     /// Return the length of a header that will be emitted from this high-level representation.
+    #[flux_rs::trusted(no, reason = "pins the constant so emit's assert is provable")]
+    #[flux_rs::sig(fn(&Repr) -> usize[HEADER_LEN])]
     pub const fn buffer_len(&self) -> usize {
         HEADER_LEN
     }
 
     /// Emit a high-level representation into an Ethernet II frame.
+    //
+    // Both bounds are needed and they are genuinely different facts: the `assert!`
+    // reads the buffer through `AsRef` and the three setters write it through
+    // `AsMut`, and `AsRef::idx` and `AsMut::idx` are unrelated associated
+    // refinements. With the `AsRef` half stated the `assert!` is proven dead, so
+    // this function has no residual panic obligation of its own -- it propagates
+    // one, to its callers.
+    #[flux_rs::trusted(no, reason = "proves the assert dead and the three setter bounds")]
+    #[flux_rs::sig(fn(&Repr, &mut Frame<T>[@buf])
+        requires <T as AsMut<[u8]>>::idx(buf) >= HEADER_LEN
+              && <T as AsRef<[u8]>>::idx(buf) >= HEADER_LEN)]
     pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, frame: &mut Frame<T>) {
         assert!(frame.buffer.as_ref().len() >= self.buffer_len());
         frame.set_src_addr(self.src_addr);
