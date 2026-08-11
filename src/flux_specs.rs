@@ -32,16 +32,63 @@ impl ByteOrder for BigEndian {
     fn write_u32(buf: &mut [u8], n: u32);
 }
 
+// `idx` is the length (more precisely, the refinement index) of the borrowed
+// view. Impls that carry one define it; everything else falls back to the
+// uninterpreted `opaque_idx`, which says nothing but keeps the function total.
+// A total function is what lets a *foreign* impl -- notably the `&T`/`&mut T`
+// auto-deref blankets, whose generic parameter list contains an elided lifetime
+// that an `extern_spec` cannot name -- be used without a definition of its own.
+flux_rs::defs! {
+    fn opaque_idx<A, B>(s: A) -> B;
+}
+
 #[extern_spec(core::convert)]
+#[assoc(fn idx(s: Self) -> T { opaque_idx(s) })]
 trait AsRef<T> {
     #[no_panic]
+    #[sig(fn(&Self[@s]) -> &T[<Self as AsRef<T>>::idx(s)])]
     fn as_ref(&self) -> &T;
 }
 
 #[extern_spec(core::convert)]
+#[assoc(fn idx(s: Self) -> T { opaque_idx(s) })]
 trait AsMut<T> {
     #[no_panic]
+    #[sig(fn(&mut Self[@s]) -> &mut T[<Self as AsMut<T>>::idx(s)])]
     fn as_mut(&mut self) -> &mut T;
+}
+
+// The core impls that ground `AsRef::idx` / `AsMut::idx` at the concrete buffer
+// types `wire` instantiates its packet wrappers with (`&[u8]`, `&mut [u8]`,
+// `[u8; N]`, ...). Without these the associated refinement stays uninterpreted
+// and no length obligation can be discharged at a concrete call site.
+#[extern_spec(core::convert)]
+impl<T> AsRef<[T]> for [T] {
+    #![assoc(fn idx(s: int) -> int { s })]
+    #[no_panic]
+    #[sig(fn(&[T][@n]) -> &[T][n])]
+    fn as_ref(&self) -> &[T];
+}
+
+#[extern_spec(core::convert)]
+impl<T> AsMut<[T]> for [T] {
+    #![assoc(fn idx(s: int) -> int { s })]
+    #[no_panic]
+    #[sig(fn(&mut [T][@n]) -> &mut [T][n])]
+    fn as_mut(&mut self) -> &mut [T];
+}
+
+// `Result`'s `is_ok` index, copied from flux-core's `result.rs`. A `check_len`
+// whose doc says "ensure that no accessor method will panic if called" can then
+// say exactly that in its return type -- `Ok` implies the buffer is at least a
+// header long -- instead of pushing a precondition onto every one of its callers.
+#[extern_spec]
+#[refined_by(is_ok: bool)]
+enum Result<T, E> {
+    #[variant((T) -> Result<T, E>[true])]
+    Ok(T),
+    #[variant((E) -> Result<T, E>[false])]
+    Err(E),
 }
 
 #[extern_spec(core::convert)]
