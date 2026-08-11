@@ -243,21 +243,26 @@ pub(super) mod field {
     //   - https://tools.ietf.org/html/rfc3810
     //   - https://tools.ietf.org/html/rfc3810
     // Multicast Listener Query message
+    #[flux_rs::constant(core::ops::Range { start: 4, end: 6 })]
     pub const MAX_RESP_CODE: Field = 4..6;
     pub const QUERY_RESV: Field = 6..8;
     pub const QUERY_MCAST_ADDR: Field = 8..24;
     pub const SQRV: usize = 24;
     pub const QQIC: usize = 25;
+    #[flux_rs::constant(core::ops::Range { start: 26, end: 28 })]
     pub const QUERY_NUM_SRCS: Field = 26..28;
 
     // Multicast Listener Report Message
     pub const RECORD_RESV: Field = 4..6;
+    #[flux_rs::constant(core::ops::Range { start: 6, end: 8 })]
     pub const NR_MCAST_RCRDS: Field = 6..8;
 
     // Multicast Address Record Offsets
     pub const RECORD_TYPE: usize = 0;
     pub const AUX_DATA_LEN: usize = 1;
+    #[flux_rs::constant(core::ops::Range { start: 2, end: 4 })]
     pub const RECORD_NUM_SRCS: Field = 2..4;
+    #[flux_rs::constant(core::ops::Range { start: 4, end: 20 })]
     pub const RECORD_MCAST_ADDR: Field = 4..20;
 }
 
