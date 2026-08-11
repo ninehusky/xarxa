@@ -124,3 +124,71 @@ impl<T, I: SliceIndex<[T]>> core::ops::IndexMut<I> for [T] {
     #[sig(fn(&mut Self[@len], {I[@idx] | <Self as core::ops::Index<I>>::in_bounds(len, idx)}) -> &mut I::Output{out: <I as SliceIndex<[T]>>::output_pred(idx, len, out)})]
     fn index_mut(&mut self, index: I) -> &mut I::Output;
 }
+
+// `[T]::len` / `[T]::is_empty`, copied from flux-core's `slice/mod.rs`.
+#[extern_spec(core::slice)]
+impl<T> [T] {
+    #[no_panic]
+    #[sig(fn(&Self[@n]) -> usize[n])]
+    fn len(&self) -> usize;
+
+    #[no_panic]
+    #[sig(fn(&Self[@n]) -> bool[n == 0])]
+    fn is_empty(&self) -> bool;
+
+    // Not in flux-core; written here. `copy_from_slice` panics exactly when the
+    // two lengths differ, so `n == m` is the whole of its panic precondition.
+    #[no_panic]
+    #[sig(fn(&mut Self[@n], &[T][@m]) requires n == m)]
+    fn copy_from_slice(&mut self, src: &[T])
+    where
+        T: Copy;
+}
+
+// ---------------------------------------------------------------------------
+// `managed::ManagedSlice` length.
+// ---------------------------------------------------------------------------
+
+#[extern_spec(core::ops)]
+#[assoc(fn as_deref(v: Self, target: Self::Target) -> bool { true })]
+trait Deref {
+    #[sig(fn(self: &Self[@v]) -> &Self::Target{target: Self::as_deref(v, target)})]
+    fn deref(&self) -> &Self::Target;
+}
+
+#[extern_spec(core::ops)]
+trait DerefMut: Deref {
+    #[sig(fn(self: &mut Self[@v]) -> &mut Self::Target{target: Self::as_deref(v, target)})]
+    fn deref_mut(&mut self) -> &mut Self::Target;
+}
+
+#[extern_spec(managed)]
+#[refined_by(len: int)]
+#[invariant(len >= 0)]
+enum ManagedSlice<'a, T> {
+    #[variant((&mut [T][@n]) -> ManagedSlice<T>[n])]
+    Borrowed(&'a mut [T]),
+}
+
+
+#[extern_spec(managed)]
+#[assoc(fn as_deref(v: Self, target: int) -> bool { v.len == target })]
+impl<'a, T> core::ops::Deref for ManagedSlice<'a, T> {
+    #[no_panic]
+    #[sig(fn(self: &Self[@v]) -> &<ManagedSlice<T> as core::ops::Deref>::Target[v])]
+    fn deref(&'a self) -> &'a <ManagedSlice<'a, T> as core::ops::Deref>::Target;
+}
+
+#[extern_spec(managed)]
+impl<'a, T> core::ops::DerefMut for ManagedSlice<'a, T> {
+    #[no_panic]
+    #[sig(fn(self: &mut Self[@v]) -> &mut <ManagedSlice<T> as core::ops::Deref>::Target[v])]
+    fn deref_mut(&'a mut self) -> &'a mut <ManagedSlice<'a, T> as core::ops::Deref>::Target;
+}
+
+// `core::cmp::min` / `max` at `usize`: needed to bound the ring buffer's
+// clamped window computations.
+#[extern_spec(core::cmp)]
+#[no_panic]
+#[sig(fn(T[@a], T[@b]) -> T{v: v <= a && v <= b && (v == a || v == b)})]
+fn min<T: Ord>(v1: T, v2: T) -> T;
