@@ -501,6 +501,7 @@ impl core::fmt::Display for HardwareAddress {
 #[flux_rs::assoc(fn from_val(s: EthernetAddress, into: HardwareAddress) -> bool { into == (s % 2 == 0) })]
 impl From<EthernetAddress> for HardwareAddress {
     #[flux_rs::sig(fn(EthernetAddress[@o0]) -> HardwareAddress[o0 % 2 == 0])]
+    #[flux_rs::trusted(no, reason = "discharges from_bytes' length bound")]
     fn from(addr: EthernetAddress) -> Self {
         HardwareAddress::Ethernet(addr)
     }
@@ -508,6 +509,7 @@ impl From<EthernetAddress> for HardwareAddress {
 
 #[cfg(feature = "medium-ieee802154")]
 impl From<Ieee802154Address> for HardwareAddress {
+    #[flux_rs::trusted(no, reason = "discharges from_bytes' length bound")]
     fn from(addr: Ieee802154Address) -> Self {
         HardwareAddress::Ieee802154(addr)
     }
@@ -621,6 +623,7 @@ impl From<Ieee802154Address> for RawHardwareAddress {
 
 #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
 impl From<HardwareAddress> for RawHardwareAddress {
+    #[flux_rs::trusted(no, reason = "discharges from_bytes' length bound")]
     fn from(addr: HardwareAddress) -> Self {
         Self::from_bytes(addr.as_bytes())
     }
