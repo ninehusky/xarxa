@@ -184,6 +184,15 @@ impl<T> SliceIndex<[T]> for core::ops::RangeTo<usize> {}
 #[flux::assoc(fn output_pred(r: Self, len: int, out: int) -> bool { out == len - r.start })]
 impl<T> SliceIndex<[T]> for core::ops::RangeFrom<usize> {}
 
+// Not in flux-core. `s[..]` cannot be out of bounds and yields the whole slice.
+// Without this, `&data[..]` is "associated refinement `in_bounds` is missing from
+// implementation", which aborts checking of the whole enclosing function -- so it
+// hides every other obligation in that body rather than just its own.
+#[extern_spec(core::slice)]
+#[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { true })]
+#[flux::assoc(fn output_pred(r: Self, len: int, out: int) -> bool { out == len })]
+impl<T> SliceIndex<[T]> for core::ops::RangeFull {}
+
 #[extern_spec(core::slice)]
 impl<T, I: SliceIndex<[T]>> core::ops::Index<I> for [T] {
     #![assoc(
@@ -223,3 +232,8 @@ impl<T> [T] {
     where
         T: Copy;
 }
+
+// `cmp::min` is the whole reason `icmpv4::Repr::emit`'s bounded copies are bounded.
+#[extern_spec(core::cmp)]
+#[sig(fn(T[@a], T[@b]) -> T{v: v <= a && v <= b})]
+fn min<T: Ord>(v1: T, v2: T) -> T;
