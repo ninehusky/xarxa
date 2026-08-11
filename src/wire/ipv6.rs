@@ -381,6 +381,8 @@ pub const HEADER_LEN: usize = field::DST_ADDR.end;
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Create a raw octet buffer with an IPv6 packet structure.
     #[inline]
+    #[flux_rs::trusted(no, reason = "carries the buffer into the wrapper's index")]
+    #[flux_rs::sig(fn(T[@b]) -> Packet<T>[b])]
     pub const fn new_unchecked(buffer: T) -> Packet<T> {
         Packet { buffer }
     }
@@ -390,9 +392,16 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// [new_unchecked]: #method.new_unchecked
     /// [check_len]: #method.check_len
     #[inline]
+    #[flux_rs::trusted(no, reason = "carries check_len's length evidence into the Ok payload")]
+    #[flux_rs::sig(fn(T[@b]) -> core::result::Result<Packet<T>[b], Error>{r:
+        r => <T as AsRef<[u8]>>::idx(b) >= field::DST_ADDR.end})]
     pub fn new_checked(buffer: T) -> Result<Packet<T>> {
         let packet = Self::new_unchecked(buffer);
-        packet.check_len()?;
+        // `match`, not `?`: see `Repr::parse`.
+        match packet.check_len() {
+            Err(e) => return Err(e),
+            Ok(()) => {}
+        }
         Ok(packet)
     }
 
@@ -471,6 +480,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the payload length added to the known header length.
     #[inline]
+    #[flux_rs::trusted(no, reason = "forwards payload_len's bounds obligation")]
+    #[flux_rs::sig(fn(&Packet<T>[@buf]) -> usize
+        requires <T as AsRef<[u8]>>::idx(buf) >= field::LENGTH.end)]
     pub fn total_len(&self) -> usize {
         self.header_len() + self.payload_len() as usize
     }
