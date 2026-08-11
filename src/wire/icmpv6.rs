@@ -192,15 +192,40 @@ impl fmt::Display for TimeExceeded {
     }
 }
 
+// Refinement-level mirror of `Packet::header_len`, as a function of the message
+// type octet. `check_len`'s doc -- "ensure that no accessor method will panic if
+// called" -- is exactly the claim that the buffer is at least this long, so this
+// is the precondition the accessors below carry. Kept in sync with the runtime
+// `header_len` by that function's own `sig`, which Flux checks.
+flux_rs::defs! {
+    fn header_len(code: int) -> int {
+        if code == 0x01 { 8 }       // DstUnreachable  -> UNUSED.end
+        else if code == 0x02 { 8 }  // PktTooBig       -> MTU.end
+        else if code == 0x03 { 8 }  // TimeExceeded    -> UNUSED.end
+        else if code == 0x04 { 8 }  // ParamProblem    -> POINTER.end
+        else if code == 0x80 { 8 }  // EchoRequest     -> ECHO_SEQNO.end
+        else if code == 0x81 { 8 }  // EchoReply       -> ECHO_SEQNO.end
+        else if code == 0x82 { 28 } // MldQuery        -> QUERY_NUM_SRCS.end
+        else if code == 0x85 { 8 }  // RouterSolicit   -> UNUSED.end
+        else if code == 0x86 { 16 } // RouterAdvert    -> RETRANS_TM.end
+        else if code == 0x87 { 24 } // NeighborSolicit -> TARGET_ADDR.end
+        else if code == 0x88 { 24 } // NeighborAdvert  -> TARGET_ADDR.end
+        else if code == 0x89 { 40 } // Redirect        -> DEST_ADDR.end
+        else if code == 0x8f { 8 }  // MldReport       -> NR_MCAST_RCRDS.end
+        else { 4 }                  // anything else   -> CHECKSUM.end
+    }
+}
+
 /// A read/write wrapper around an Internet Control Message Protocol version 6 packet buffer.
 #[derive(Debug, PartialEq, Eq, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[flux_rs::refined_by(code: int)]
+#[flux_rs::refined_by(code: int, buf: T)]
 pub struct Packet<T: AsRef<[u8]>> {
     /// Mirrors `buffer[field::TYPE]`, which Flux cannot see. `new_unchecked` reads it out
     /// of the buffer and `set_msg_type` writes both; nothing else in `wire` writes octet 0.
     #[flux_rs::field(Message[code])]
     ty: Message,
+    #[flux_rs::field(T[buf])]
     pub(super) buffer: T,
 }
 
@@ -211,12 +236,18 @@ pub(super) mod field {
     // ICMPv6: See https://tools.ietf.org/html/rfc4443
     pub const TYPE: usize = 0;
     pub const CODE: usize = 1;
+    #[flux_rs::constant(core::ops::Range { start: 2, end: 4 })]
     pub const CHECKSUM: Field = 2..4;
 
+    #[flux_rs::constant(core::ops::Range { start: 4, end: 8 })]
     pub const UNUSED: Field = 4..8;
+    #[flux_rs::constant(core::ops::Range { start: 4, end: 8 })]
     pub const MTU: Field = 4..8;
+    #[flux_rs::constant(core::ops::Range { start: 4, end: 8 })]
     pub const POINTER: Field = 4..8;
+    #[flux_rs::constant(core::ops::Range { start: 4, end: 6 })]
     pub const ECHO_IDENT: Field = 4..6;
+    #[flux_rs::constant(core::ops::Range { start: 6, end: 8 })]
     pub const ECHO_SEQNO: Field = 6..8;
 
     pub const HEADER_END: usize = 8;
@@ -225,38 +256,51 @@ pub(super) mod field {
     // Router Advertisement message offsets
     pub const CUR_HOP_LIMIT: usize = 4;
     pub const ROUTER_FLAGS: usize = 5;
+    #[flux_rs::constant(core::ops::Range { start: 6, end: 8 })]
     pub const ROUTER_LT: Field = 6..8;
+    #[flux_rs::constant(core::ops::Range { start: 8, end: 12 })]
     pub const REACHABLE_TM: Field = 8..12;
+    #[flux_rs::constant(core::ops::Range { start: 12, end: 16 })]
     pub const RETRANS_TM: Field = 12..16;
 
     // Neighbor Solicitation message offsets
+    #[flux_rs::constant(core::ops::Range { start: 8, end: 24 })]
     pub const TARGET_ADDR: Field = 8..24;
 
     // Neighbor Advertisement message offsets
     pub const NEIGH_FLAGS: usize = 4;
 
     // Redirected Header message offsets
+    #[flux_rs::constant(core::ops::Range { start: 24, end: 40 })]
     pub const DEST_ADDR: Field = 24..40;
 
     // MLD:
     //   - https://tools.ietf.org/html/rfc3810
     //   - https://tools.ietf.org/html/rfc3810
     // Multicast Listener Query message
+    #[flux_rs::constant(core::ops::Range { start: 4, end: 6 })]
     pub const MAX_RESP_CODE: Field = 4..6;
+    #[flux_rs::constant(core::ops::Range { start: 6, end: 8 })]
     pub const QUERY_RESV: Field = 6..8;
+    #[flux_rs::constant(core::ops::Range { start: 8, end: 24 })]
     pub const QUERY_MCAST_ADDR: Field = 8..24;
     pub const SQRV: usize = 24;
     pub const QQIC: usize = 25;
+    #[flux_rs::constant(core::ops::Range { start: 26, end: 28 })]
     pub const QUERY_NUM_SRCS: Field = 26..28;
 
     // Multicast Listener Report Message
+    #[flux_rs::constant(core::ops::Range { start: 4, end: 6 })]
     pub const RECORD_RESV: Field = 4..6;
+    #[flux_rs::constant(core::ops::Range { start: 6, end: 8 })]
     pub const NR_MCAST_RCRDS: Field = 6..8;
 
     // Multicast Address Record Offsets
     pub const RECORD_TYPE: usize = 0;
     pub const AUX_DATA_LEN: usize = 1;
+    #[flux_rs::constant(core::ops::Range { start: 2, end: 4 })]
     pub const RECORD_NUM_SRCS: Field = 2..4;
+    #[flux_rs::constant(core::ops::Range { start: 4, end: 20 })]
     pub const RECORD_MCAST_ADDR: Field = 4..20;
 }
 
@@ -360,7 +404,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the message type field.
     #[flux_rs::trusted(no, reason = "backs Packet's code index")]
-    #[flux_rs::sig(fn(&Packet<T>[@code]) -> Message[code])]
+    #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> Message[code])]
     #[inline]
     pub fn msg_type(&self) -> Message {
         self.ty
@@ -368,6 +412,8 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the message code field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the msg_code read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> u8 requires <T as AsRef<[u8]>>::idx(buf) > field::CODE)]
     pub fn msg_code(&self) -> u8 {
         let data = self.buffer.as_ref();
         data[field::CODE]
@@ -375,6 +421,8 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the checksum field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the checksum read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> u16 requires <T as AsRef<[u8]>>::idx(buf) >= field::CHECKSUM.end)]
     pub fn checksum(&self) -> u16 {
         let data = self.buffer.as_ref();
         NetworkEndian::read_u16(&data[field::CHECKSUM])
@@ -382,6 +430,8 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the identifier field (for echo request and reply packets).
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the echo ident read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> u16 requires <T as AsRef<[u8]>>::idx(buf) >= field::ECHO_IDENT.end)]
     pub fn echo_ident(&self) -> u16 {
         let data = self.buffer.as_ref();
         NetworkEndian::read_u16(&data[field::ECHO_IDENT])
@@ -389,6 +439,8 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the sequence number field (for echo request and reply packets).
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the echo seqno read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> u16 requires <T as AsRef<[u8]>>::idx(buf) >= field::ECHO_SEQNO.end)]
     pub fn echo_seq_no(&self) -> u16 {
         let data = self.buffer.as_ref();
         NetworkEndian::read_u16(&data[field::ECHO_SEQNO])
@@ -396,6 +448,8 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the MTU field (for packet too big messages).
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the MTU read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> u32 requires <T as AsRef<[u8]>>::idx(buf) >= field::MTU.end)]
     pub fn pkt_too_big_mtu(&self) -> u32 {
         let data = self.buffer.as_ref();
         NetworkEndian::read_u32(&data[field::MTU])
@@ -403,6 +457,8 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the pointer field (for parameter problem messages).
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the pointer read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> u32 requires <T as AsRef<[u8]>>::idx(buf) >= field::POINTER.end)]
     pub fn param_problem_ptr(&self) -> u32 {
         let data = self.buffer.as_ref();
         NetworkEndian::read_u32(&data[field::POINTER])
@@ -410,6 +466,8 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the header length. The result depends on the value of
     /// the message type field.
+    #[flux_rs::trusted(no, reason = "ties the runtime header_len to its refinement mirror")]
+    #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> usize[header_len(code)])]
     pub fn header_len(&self) -> usize {
         match self.msg_type() {
             Message::DstUnreachable => field::UNUSED.end,
@@ -429,7 +487,10 @@ impl<T: AsRef<[u8]>> Packet<T> {
             // include the last 32 bits of the ICMPv6 header in
             // `header_bytes`. This must be done so that these bytes
             // can be accessed in the `payload`.
-            _ => field::CHECKSUM.end,
+            //
+            // Spelled out rather than left to a `_`: Flux only narrows the code
+            // index for named patterns.
+            Message::RplControl | Message::Unknown(_) => field::CHECKSUM.end,
         }
     }
 
@@ -453,6 +514,13 @@ impl<T: AsRef<[u8]>> Packet<T> {
 impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
     /// Return a pointer to the type-specific data.
     #[inline]
+    // NOT verified. The obligation is `header_len(code) <= buffer.len()`, and
+    // stating it needs the projection `<&T as AsRef<[u8]>>::idx(buf)`: naming a
+    // reference type in a qualified refinement path ICEs Flux
+    // (`flux-fhir-analysis/src/conv/struct_compat.rs:154: unfilled region hole`).
+    // Routing it through `<Self as AsRef<[u8]>>::idx` parses, but Flux does not
+    // then equate that projection with the length `self.buffer.as_ref()` returns,
+    // so the body still fails. Left trusted; see the report.
     pub fn payload(&self) -> &'a [u8] {
         let data = self.buffer.as_ref();
         &data[self.header_len()..]
@@ -461,8 +529,13 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
 
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the message type field.
-    #[flux_rs::trusted(no, reason = "the `ensures` is the link clear_reserved's proof rests on")]
-    #[flux_rs::sig(fn(self: &strg Packet<T>, Message[@code]) ensures self: Packet<T>[code])]
+    #[flux_rs::trusted(
+        no,
+        reason = "the `ensures` is the link clear_reserved's proof rests on"
+    )]
+    #[flux_rs::sig(fn(self: &strg Packet<T>[@old], Message[@code])
+        requires <T as AsMut<[u8]>>::idx(old.buf) > field::TYPE
+        ensures self: Packet<T>[code, old.buf])]
     #[inline]
     pub fn set_msg_type(&mut self, value: Message) {
         self.ty = value;
@@ -471,8 +544,12 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     /// Set the message code field.
-    #[flux_rs::trusted(no, reason = "the preserved index is a link clear_reserved's proof rests on")]
-    #[flux_rs::sig(fn(&mut Packet<T>[@code], u8))]
+    #[flux_rs::trusted(
+        no,
+        reason = "the preserved index is a link clear_reserved's proof rests on"
+    )]
+    #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf], u8)
+        requires <T as AsMut<[u8]>>::idx(buf) > field::CODE)]
     #[inline]
     pub fn set_msg_code(&mut self, value: u8) {
         let data = self.buffer.as_mut();
@@ -487,10 +564,14 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     ///
     /// [set_msg_type]: #method.set_msg_type
     #[allow(unsafe_code)]
-    #[flux_rs::trusted(no, reason = "discharges the assert(false) licensing unreachable_unchecked")]
-    #[flux_rs::sig(fn(&mut Packet<T>[@code])
-        requires code == 0x82 || code == 0x85 || code == 0x87
-              || code == 0x88 || code == 0x89 || code == 0x8f)]
+    #[flux_rs::trusted(
+        no,
+        reason = "discharges the assert(false) licensing unreachable_unchecked"
+    )]
+    #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf])
+        requires (code == 0x82 || code == 0x85 || code == 0x87
+               || code == 0x88 || code == 0x89 || code == 0x8f)
+              && <T as AsMut<[u8]>>::idx(buf) >= header_len(code))]
     #[inline]
     pub fn clear_reserved(&mut self) {
         match self.msg_type() {
@@ -529,6 +610,8 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the checksum write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf], u16) requires <T as AsMut<[u8]>>::idx(buf) >= field::CHECKSUM.end)]
     pub fn set_checksum(&mut self, value: u16) {
         let data = self.buffer.as_mut();
         NetworkEndian::write_u16(&mut data[field::CHECKSUM], value)
@@ -539,6 +622,8 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// # Panics
     /// This function may panic if this packet is not an echo request or reply packet.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the echo ident write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf], u16) requires <T as AsMut<[u8]>>::idx(buf) >= field::ECHO_IDENT.end)]
     pub fn set_echo_ident(&mut self, value: u16) {
         let data = self.buffer.as_mut();
         NetworkEndian::write_u16(&mut data[field::ECHO_IDENT], value)
@@ -549,6 +634,8 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// # Panics
     /// This function may panic if this packet is not an echo request or reply packet.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the echo seqno write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf], u16) requires <T as AsMut<[u8]>>::idx(buf) >= field::ECHO_SEQNO.end)]
     pub fn set_echo_seq_no(&mut self, value: u16) {
         let data = self.buffer.as_mut();
         NetworkEndian::write_u16(&mut data[field::ECHO_SEQNO], value)
@@ -559,6 +646,8 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// # Panics
     /// This function may panic if this packet is not an packet too big packet.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the MTU write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf], u32) requires <T as AsMut<[u8]>>::idx(buf) >= field::MTU.end)]
     pub fn set_pkt_too_big_mtu(&mut self, value: u32) {
         let data = self.buffer.as_mut();
         NetworkEndian::write_u32(&mut data[field::MTU], value)
@@ -569,12 +658,16 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// # Panics
     /// This function may panic if this packet is not a parameter problem message.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the pointer write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf], u32) requires <T as AsMut<[u8]>>::idx(buf) >= field::POINTER.end)]
     pub fn set_param_problem_ptr(&mut self, value: u32) {
         let data = self.buffer.as_mut();
         NetworkEndian::write_u32(&mut data[field::POINTER], value)
     }
 
     /// Compute and fill in the header checksum.
+    #[flux_rs::trusted(no, reason = "proves the checksum write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf], &Ipv6Address, &Ipv6Address) requires <T as AsMut<[u8]>>::idx(buf) >= field::CHECKSUM.end)]
     pub fn fill_checksum(&mut self, src_addr: &Ipv6Address, dst_addr: &Ipv6Address) {
         self.set_checksum(0);
         let checksum = {
@@ -594,6 +687,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Return a mutable pointer to the type-specific data.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the payload split point is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf]) -> &mut [u8][<T as AsMut<[u8]>>::idx(buf) - header_len(code)]
+        requires <T as AsMut<[u8]>>::idx(buf) >= header_len(code))]
     pub fn payload_mut(&mut self) -> &mut [u8] {
         let range = self.header_len()..;
         let data = self.buffer.as_mut();
@@ -601,7 +697,10 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 }
 
+#[flux_rs::assoc(fn idx(s: Self) -> int { <T as AsRef<[u8]>>::idx(s.buf) })]
 impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
+    #[flux_rs::trusted(no, reason = "carries the buffer length through the AsRef impl")]
+    #[flux_rs::sig(fn(&Packet<T>[@s]) -> &[u8][<T as AsRef<[u8]>>::idx(s.buf)])]
     fn as_ref(&self) -> &[u8] {
         self.buffer.as_ref()
     }

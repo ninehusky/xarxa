@@ -185,7 +185,9 @@ impl defmt::Format for Address {
 /// A read/write wrapper around an Ethernet II frame buffer.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(buf: T)]
 pub struct Frame<T: AsRef<[u8]>> {
+    #[flux_rs::field(T[buf])]
     buffer: T,
 }
 
@@ -302,7 +304,10 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
     }
 }
 
+#[flux_rs::assoc(fn idx(s: Self) -> int { <T as AsRef<[u8]>>::idx(s.buf) })]
 impl<T: AsRef<[u8]>> AsRef<[u8]> for Frame<T> {
+    #[flux_rs::trusted(no, reason = "carries the buffer length through the AsRef impl")]
+    #[flux_rs::sig(fn(&Frame<T>[@s]) -> &[u8][<T as AsRef<[u8]>>::idx(s.buf)])]
     fn as_ref(&self) -> &[u8] {
         self.buffer.as_ref()
     }
