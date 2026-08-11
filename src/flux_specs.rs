@@ -13,6 +13,20 @@ use flux_rs::*;
 // `NetworkEndian` is a type alias for `BigEndian`, so these cover both spellings.
 // ---------------------------------------------------------------------------
 
+// `read_u24` / `write_u24` are *provided* methods on the `ByteOrder` trait, so
+// `impl ByteOrder for BigEndian` does not define them and an `extern_spec` on the
+// impl is rejected ("not defined in extern trait impl"). Spec them on the trait.
+#[extern_spec(byteorder)]
+trait ByteOrder {
+    #[no_panic]
+    #[sig(fn(&[u8][@n]) -> u32 requires n >= 3)]
+    fn read_u24(buf: &[u8]) -> u32;
+
+    #[no_panic]
+    #[sig(fn(&mut [u8][@n], u32) requires n >= 3)]
+    fn write_u24(buf: &mut [u8], n: u32);
+}
+
 #[extern_spec(byteorder)]
 impl ByteOrder for BigEndian {
     #[no_panic]

@@ -355,9 +355,11 @@ mod field {
     use crate::wire::field::*;
     // 4-bit version number, 8-bit traffic class, and the
     // 20-bit flow label.
+    #[flux_rs::constant(core::ops::Range { start: 0, end: 4 })]
     pub const VER_TC_FLOW: Field = 0..4;
     // 16-bit value representing the length of the payload.
     // Note: Options are included in this length.
+    #[flux_rs::constant(core::ops::Range { start: 4, end: 6 })]
     pub const LENGTH: Field = 4..6;
     // 8-bit value identifying the type of header following this
     // one. Note: The same numbers are used in IPv4.
@@ -366,8 +368,10 @@ mod field {
     // packet. The packet is discarded when the value is 0.
     pub const HOP_LIMIT: usize = 7;
     // IPv6 address of the source node.
+    #[flux_rs::constant(core::ops::Range { start: 8, end: 24 })]
     pub const SRC_ADDR: Field = 8..24;
     // IPv6 address of the destination node.
+    #[flux_rs::constant(core::ops::Range { start: 24, end: 40 })]
     pub const DST_ADDR: Field = 24..40;
 }
 
@@ -399,6 +403,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
     ///
     /// [set_payload_len]: #method.set_payload_len
     #[inline]
+    #[flux_rs::trusted(no, reason = "states the length guarantee in the return type")]
+    #[flux_rs::sig(fn(&Packet<T>[@buf]) -> core::result::Result<(), Error>{r:
+        r => <T as AsRef<[u8]>>::idx(buf) >= field::DST_ADDR.end})]
     pub fn check_len(&self) -> Result<()> {
         let len = self.buffer.as_ref().len();
         if len < field::DST_ADDR.end || len < self.total_len() {
@@ -424,6 +431,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the version field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the version read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@buf]) -> u8
+        requires <T as AsRef<[u8]>>::idx(buf) > field::VER_TC_FLOW.start)]
     pub fn version(&self) -> u8 {
         let data = self.buffer.as_ref();
         data[field::VER_TC_FLOW.start] >> 4
@@ -431,6 +441,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the traffic class.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the traffic class read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@buf]) -> u8
+        requires <T as AsRef<[u8]>>::idx(buf) >= 2)]
     pub fn traffic_class(&self) -> u8 {
         let data = self.buffer.as_ref();
         ((NetworkEndian::read_u16(&data[0..2]) & 0x0ff0) >> 4) as u8
@@ -438,6 +451,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the flow label field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the flow label read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@buf]) -> u32
+        requires <T as AsRef<[u8]>>::idx(buf) >= field::VER_TC_FLOW.end)]
     pub fn flow_label(&self) -> u32 {
         let data = self.buffer.as_ref();
         NetworkEndian::read_u24(&data[1..4]) & 0x000fffff
@@ -445,6 +461,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the payload length field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the payload length read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@buf]) -> u16
+        requires <T as AsRef<[u8]>>::idx(buf) >= field::LENGTH.end)]
     pub fn payload_len(&self) -> u16 {
         let data = self.buffer.as_ref();
         NetworkEndian::read_u16(&data[field::LENGTH])
@@ -458,6 +477,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the next header field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the next header read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@buf]) -> Protocol
+        requires <T as AsRef<[u8]>>::idx(buf) > field::NXT_HDR)]
     pub fn next_header(&self) -> Protocol {
         let data = self.buffer.as_ref();
         Protocol::from(data[field::NXT_HDR])
@@ -465,6 +487,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the hop limit field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the hop limit read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@buf]) -> u8
+        requires <T as AsRef<[u8]>>::idx(buf) > field::HOP_LIMIT)]
     pub fn hop_limit(&self) -> u8 {
         let data = self.buffer.as_ref();
         data[field::HOP_LIMIT]
@@ -486,6 +511,10 @@ impl<T: AsRef<[u8]>> Packet<T> {
 }
 
 impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
+    // NOT PROVEN: the range is `header_len()..total_len()`, and `total_len()` is
+    // `40 + payload_len()`, a value read out of the buffer that Flux cannot relate
+    // to the buffer's length. `check_len` rules it out at runtime, but the evidence
+    // is a fact about the bytes, not about `idx`. Still discharged by `default_trusted`.
     /// Return a pointer to the payload.
     #[inline]
     pub fn payload(&self) -> &'a [u8] {
@@ -498,6 +527,9 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the version field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the version write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], u8)
+        requires <T as AsMut<[u8]>>::idx(buf) > field::VER_TC_FLOW.start)]
     pub fn set_version(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         // Make sure to retain the lower order bits which contain
@@ -507,6 +539,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the traffic class field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves both traffic class writes are in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], u8)
+        requires <T as AsMut<[u8]>>::idx(buf) > 1)]
     pub fn set_traffic_class(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         // Put the higher order 4-bits of value in the lower order
@@ -519,6 +554,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the flow label field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves both flow label writes are in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], u32)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::VER_TC_FLOW.end)]
     pub fn set_flow_label(&mut self, value: u32) {
         let data = self.buffer.as_mut();
         // Retain the lower order 4-bits of the traffic class
@@ -528,6 +566,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the payload length field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the payload length write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], u16)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::LENGTH.end)]
     pub fn set_payload_len(&mut self, value: u16) {
         let data = self.buffer.as_mut();
         NetworkEndian::write_u16(&mut data[field::LENGTH], value);
@@ -535,6 +576,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the next header field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the next header write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], Protocol)
+        requires <T as AsMut<[u8]>>::idx(buf) > field::NXT_HDR)]
     pub fn set_next_header(&mut self, value: Protocol) {
         let data = self.buffer.as_mut();
         data[field::NXT_HDR] = value.into();
@@ -542,6 +586,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the hop limit field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the hop limit write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], u8)
+        requires <T as AsMut<[u8]>>::idx(buf) > field::HOP_LIMIT)]
     pub fn set_hop_limit(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         data[field::HOP_LIMIT] = value;
@@ -549,6 +596,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the source address field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the source address write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], Address)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::SRC_ADDR.end)]
     pub fn set_src_addr(&mut self, value: Address) {
         let data = self.buffer.as_mut();
         data[field::SRC_ADDR].copy_from_slice(&value.octets());
@@ -556,11 +606,16 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the destination address field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the destination address write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], Address)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::DST_ADDR.end)]
     pub fn set_dst_addr(&mut self, value: Address) {
         let data = self.buffer.as_mut();
         data[field::DST_ADDR].copy_from_slice(&value.octets());
     }
 
+    // NOT PROVEN: same as `payload` -- the range end is `total_len()`, read out of
+    // the buffer.
     /// Return a mutable pointer to the payload.
     #[inline]
     pub fn payload_mut(&mut self) -> &mut [u8] {
@@ -608,9 +663,19 @@ pub struct Repr {
 
 impl Repr {
     /// Parse an Internet Protocol version 6 packet and return a high-level representation.
+    #[flux_rs::trusted(no, reason = "carries check_len's length evidence to the accessors")]
     pub fn parse<T: AsRef<[u8]> + ?Sized>(packet: &Packet<&T>) -> Result<Repr> {
-        // Ensure basic accessors will work
-        packet.check_len()?;
+        // Ensure basic accessors will work.
+        //
+        // Written as an explicit `match` rather than `?` because Flux drops the
+        // `Result` index across the `Try`/`FromResidual` desugaring, and that index
+        // is the whole of `check_len`'s guarantee. `wire::Result` has a single error
+        // type, so `?`'s `From::from` is the identity and this is exactly equivalent
+        // at runtime.
+        match packet.check_len() {
+            Err(e) => return Err(e),
+            Ok(()) => {}
+        }
         if packet.version() != 6 {
             return Err(Error);
         }
@@ -630,6 +695,9 @@ impl Repr {
     }
 
     /// Emit a high-level representation into an Internet Protocol version 6 packet.
+    #[flux_rs::trusted(no, reason = "propagates the setter bounds obligations to callers")]
+    #[flux_rs::sig(fn(&Repr, &mut Packet<T>[@buf])
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::DST_ADDR.end)]
     pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, packet: &mut Packet<T>) {
         // Make no assumptions about the original state of the packet buffer.
         // Make sure to set every byte.
