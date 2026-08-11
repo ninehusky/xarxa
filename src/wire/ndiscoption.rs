@@ -50,7 +50,9 @@ bitflags! {
 /// [NDISC Option]: https://tools.ietf.org/html/rfc4861#section-4.6
 #[derive(Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(buf: T)]
 pub struct NdiscOption<T: AsRef<[u8]>> {
+    #[flux_rs::field(T[buf])]
     buffer: T,
 }
 
@@ -108,12 +110,16 @@ mod field {
     // Flags field of prefix header.
     pub const FLAGS: usize = 3;
     // Valid lifetime.
+    #[flux_rs::constant(core::ops::Range { start: 4, end: 8 })]
     pub const VALID_LT: Field = 4..8;
     // Preferred lifetime.
+    #[flux_rs::constant(core::ops::Range { start: 8, end: 12 })]
     pub const PREF_LT: Field = 8..12;
     // Reserved bits
+    #[flux_rs::constant(core::ops::Range { start: 12, end: 16 })]
     pub const PREF_RESERVED: Field = 12..16;
     // Prefix
+    #[flux_rs::constant(core::ops::Range { start: 16, end: 32 })]
     pub const PREFIX: Field = 16..32;
 
     // Redirected Header Option fields.
@@ -128,6 +134,7 @@ mod field {
     //  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
     // Reserved bits.
+    #[flux_rs::constant(core::ops::Range { start: 2, end: 8 })]
     pub const REDIRECTED_RESERVED: Field = 2..8;
     pub const REDIR_MIN_SZ: usize = 48;
 
@@ -139,6 +146,7 @@ mod field {
     //  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
     //  MTU
+    #[flux_rs::constant(core::ops::Range { start: 4, end: 8 })]
     pub const MTU: Field = 4..8;
 }
 
@@ -284,6 +292,9 @@ impl<'a, T: AsRef<[u8]> + ?Sized> NdiscOption<&'a T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
     /// Set the option type.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the option type write is in bounds")]
+    #[flux_rs::sig(fn(&mut NdiscOption<T>[@buf], Type)
+        requires <T as AsMut<[u8]>>::idx(buf) > field::TYPE)]
     pub fn set_option_type(&mut self, value: Type) {
         let data = self.buffer.as_mut();
         data[field::TYPE] = value.into();
@@ -291,6 +302,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
 
     /// Set the option data length.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the data length write is in bounds")]
+    #[flux_rs::sig(fn(&mut NdiscOption<T>[@buf], u8)
+        requires <T as AsMut<[u8]>>::idx(buf) > field::LENGTH)]
     pub fn set_data_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         data[field::LENGTH] = value;
@@ -301,6 +315,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
     /// Set the Source/Target Link-layer Address.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the link-layer address write is in bounds")]
+    #[flux_rs::sig(fn(&mut NdiscOption<T>[@buf], RawHardwareAddress[@n])
+        requires <T as AsMut<[u8]>>::idx(buf) >= 2 + n)]
     pub fn set_link_layer_addr(&mut self, addr: RawHardwareAddress) {
         let data = self.buffer.as_mut();
         data[2..2 + addr.len()].copy_from_slice(addr.as_bytes())
@@ -311,6 +328,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
     /// Set the MTU value.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the MTU write is in bounds")]
+    #[flux_rs::sig(fn(&mut NdiscOption<T>[@buf], u32)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::MTU.end)]
     pub fn set_mtu(&mut self, value: u32) {
         let data = self.buffer.as_mut();
         NetworkEndian::write_u32(&mut data[field::MTU], value);
@@ -347,6 +367,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
 
     /// Clear the reserved bits.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the reserved-bits write is in bounds")]
+    #[flux_rs::sig(fn(&mut NdiscOption<T>[@buf])
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::PREF_RESERVED.end)]
     pub fn clear_prefix_reserved(&mut self) {
         let data = self.buffer.as_mut();
         NetworkEndian::write_u32(&mut data[field::PREF_RESERVED], 0);
@@ -354,6 +377,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
 
     /// Set the prefix.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the prefix write is in bounds")]
+    #[flux_rs::sig(fn(&mut NdiscOption<T>[@buf], Ipv6Address)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::PREFIX.end)]
     pub fn set_prefix(&mut self, addr: Ipv6Address) {
         let data = self.buffer.as_mut();
         data[field::PREFIX].copy_from_slice(&addr.octets());
@@ -372,6 +398,13 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
 
 impl<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> NdiscOption<&mut T> {
     /// Return a mutable pointer to the option data.
+    // NOT PROVEN. `field::DATA(len)` is `2..len * 8` where `len` is the octet at
+    // `field::LENGTH`, read out of the buffer. Flux cannot see it, so the bound
+    // can only be stated against a refinement-level mirror of that octet -- the
+    // `code: int` trick `icmpv6::Packet` uses. A mirror needs a real struct
+    // field, and the only place to fill it is `new_unchecked`, which is a
+    // `pub const fn`: reading `buffer.as_ref()[1]` is not possible in a const
+    // body, so the mirror costs `const` on a public constructor. Left alone.
     #[inline]
     pub fn data_mut(&mut self) -> &mut [u8] {
         let len = self.data_len();

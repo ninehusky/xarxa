@@ -524,7 +524,10 @@ pub const MAX_HARDWARE_ADDRESS_LEN: usize = 8;
 #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(len: int)]
+#[flux_rs::invariant(len <= MAX_HARDWARE_ADDRESS_LEN)]
 pub struct RawHardwareAddress {
+    #[flux_rs::field(u8[len])]
     len: u8,
     data: [u8; MAX_HARDWARE_ADDRESS_LEN],
 }
@@ -535,6 +538,8 @@ impl RawHardwareAddress {
     ///
     /// # Panics
     /// Panics if `addr.len() > MAX_HARDWARE_ADDRESS_LEN`.
+    #[flux_rs::trusted(no, reason = "establishes the len <= MAX invariant the accessors rest on")]
+    #[flux_rs::sig(fn(&[u8][@n]) -> RawHardwareAddress[n] requires n <= MAX_HARDWARE_ADDRESS_LEN)]
     pub fn from_bytes(addr: &[u8]) -> Self {
         let mut data = [0u8; MAX_HARDWARE_ADDRESS_LEN];
         data[..addr.len()].copy_from_slice(addr);
@@ -545,10 +550,14 @@ impl RawHardwareAddress {
         }
     }
 
+    #[flux_rs::trusted(no, reason = "carries the address length to callers")]
+    #[flux_rs::sig(fn(&RawHardwareAddress[@n]) -> &[u8][n])]
     pub fn as_bytes(&self) -> &[u8] {
         &self.data[..self.len as usize]
     }
 
+    #[flux_rs::trusted(no, reason = "carries the address length to callers")]
+    #[flux_rs::sig(fn(&RawHardwareAddress[@n]) -> usize[n])]
     pub const fn len(&self) -> usize {
         self.len as usize
     }

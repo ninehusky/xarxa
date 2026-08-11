@@ -132,7 +132,10 @@ trait Index<Idx> {
 }
 
 #[extern_spec(core::ops)]
-trait IndexMut<Idx> where Self: Index<Idx> {
+trait IndexMut<Idx>
+where
+    Self: Index<Idx>,
+{
     #[sig(fn(self: &mut Self[@v], index: Idx { <Self as Index<Idx>>::in_bounds(v, index) }) -> &mut Self::Output{out: <Self as Index<Idx>>::output_pred(v, index, out)})]
     fn index_mut(&mut self, index: Idx) -> &mut Self::Output;
 }
@@ -211,6 +214,39 @@ impl<T, I: SliceIndex<[T]>> core::ops::IndexMut<I> for [T] {
     #[no_panic]
     #[sig(fn(&mut Self[@len], {I[@idx] | <Self as core::ops::Index<I>>::in_bounds(len, idx)}) -> &mut I::Output{out: <I as SliceIndex<[T]>>::output_pred(idx, len, out)})]
     fn index_mut(&mut self, index: I) -> &mut I::Output;
+}
+
+// Array indexing, copied from flux-core's `array/mod.rs`. Needed because
+// `RawHardwareAddress` stores its octets in a `[u8; MAX_HARDWARE_ADDRESS_LEN]`;
+// without this every `arr[..n]` is `MightPanic(NoMIRAvailable)`. `#[no_panic]`
+// is ours: the delegation to `[T]`'s `in_bounds` is the whole panic condition.
+#[extern_spec(core::array)]
+impl<T, I, const N: usize> core::ops::Index<I> for [T; N]
+where
+    [T]: core::ops::Index<I>,
+{
+    #![assoc(
+        fn in_bounds(len: (), idx: I) -> bool {
+            <[T] as core::ops::Index<I>>::in_bounds(N, idx)
+        }
+
+        fn output_pred(len: (), idx: I, out: <[T] as core::ops::Index<I>>::Output) -> bool {
+            <[T] as core::ops::Index<I>>::output_pred(N, idx, out)
+        }
+    )]
+    #[no_panic]
+    #[sig(fn(&Self, {I[@idx] | <[T] as core::ops::Index<I>>::in_bounds(N, idx)}) -> &<[T; N] as core::ops::Index<I>>::Output{out: <[T] as core::ops::Index<I>>::output_pred(N, idx, out)})]
+    fn index(&self, index: I) -> &<[T; N] as core::ops::Index<I>>::Output;
+}
+
+#[extern_spec(core::array)]
+impl<T, I, const N: usize> core::ops::IndexMut<I> for [T; N]
+where
+    [T]: core::ops::IndexMut<I>,
+{
+    #[no_panic]
+    #[sig(fn(&mut Self, {I[@idx] | <[T] as core::ops::Index<I>>::in_bounds(N, idx)}) -> &mut <[T; N] as core::ops::Index<I>>::Output{out: <[T] as core::ops::Index<I>>::output_pred(N, idx, out)})]
+    fn index_mut(&mut self, index: I) -> &mut <[T; N] as core::ops::Index<I>>::Output;
 }
 
 // `[T]::len` / `[T]::is_empty`, copied from flux-core's `slice/mod.rs`.
