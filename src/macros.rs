@@ -38,58 +38,6 @@ macro_rules! net_debug {
 }
 
 macro_rules! enum_with_unknown {
-    // Opt-in variant: also index the enum by its wire code, so a signature can name a
-    // particular constant. Identical to the plain arm below otherwise.
-    (
-        #[refined]
-        $( #[$enum_attr:meta] )*
-        pub enum $name:ident($ty:ty) {
-            $(
-              $( #[$variant_attr:meta] )*
-              $variant:ident = $value:literal
-            ),+ $(,)?
-        }
-    ) => {
-        #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
-        #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-        #[flux_rs::refined_by(code: int)]
-        $( #[$enum_attr] )*
-        pub enum $name {
-            $(
-              $( #[$variant_attr] )*
-              #[flux_rs::variant($name[$value])]
-              $variant
-            ),*,
-            // `Unknown` is the fallthrough of `From<$ty>`, so its payload is never a named
-            // code. Saying so makes the code injective, which is what lets a `match` on a
-            // known code rule the other arms out.
-            #[flux_rs::variant({{$ty[@c] | $( c != $value && )* true }} -> $name[c])]
-            Unknown($ty)
-        }
-
-        impl ::core::convert::From<$ty> for $name {
-            #[flux_rs::trusted(no, reason = "backs the code index")]
-            #[flux_rs::sig(fn($ty[@c]) -> $name[c])]
-            fn from(value: $ty) -> Self {
-                match value {
-                    $( $value => $name::$variant ),*,
-                    other => $name::Unknown(other)
-                }
-            }
-        }
-
-        impl ::core::convert::From<$name> for $ty {
-            #[flux_rs::trusted(no, reason = "backs the code index")]
-            #[flux_rs::sig(fn($name[@c]) -> $ty[c])]
-            fn from(value: $name) -> Self {
-                match value {
-                    $( $name::$variant => $value ),*,
-                    $name::Unknown(other) => other
-                }
-            }
-        }
-    };
-
     (
         $( #[$enum_attr:meta] )*
         pub enum $name:ident($ty:ty) {

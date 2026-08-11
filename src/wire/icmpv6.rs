@@ -15,38 +15,105 @@ use crate::wire::{IpProtocol, Ipv6Address, Ipv6Packet, Ipv6Repr};
 /// Error packets must not exceed min MTU
 const MAX_ERROR_PACKET_LEN: usize = IPV6_MIN_MTU - IPV6_HEADER_LEN;
 
-enum_with_unknown! {
-    #[refined]
-    /// Internet protocol control message type.
-    pub enum Message(u8) {
-        /// Destination Unreachable.
-        DstUnreachable  = 0x01,
-        /// Packet Too Big.
-        PktTooBig       = 0x02,
-        /// Time Exceeded.
-        TimeExceeded    = 0x03,
-        /// Parameter Problem.
-        ParamProblem    = 0x04,
-        /// Echo Request
-        EchoRequest     = 0x80,
-        /// Echo Reply
-        EchoReply       = 0x81,
-        /// Multicast Listener Query
-        MldQuery        = 0x82,
-        /// Router Solicitation
-        RouterSolicit   = 0x85,
-        /// Router Advertisement
-        RouterAdvert    = 0x86,
-        /// Neighbor Solicitation
-        NeighborSolicit = 0x87,
-        /// Neighbor Advertisement
-        NeighborAdvert  = 0x88,
-        /// Redirect
-        Redirect        = 0x89,
-        /// Multicast Listener Report
-        MldReport       = 0x8f,
-        /// RPL Control Message
-        RplControl      = 0x9b,
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(code: int)]
+/// Internet protocol control message type.
+pub enum Message {
+    /// Destination Unreachable.
+    #[flux_rs::variant(Message[0x01])]
+    DstUnreachable,
+    /// Packet Too Big.
+    #[flux_rs::variant(Message[0x02])]
+    PktTooBig,
+    /// Time Exceeded.
+    #[flux_rs::variant(Message[0x03])]
+    TimeExceeded,
+    /// Parameter Problem.
+    #[flux_rs::variant(Message[0x04])]
+    ParamProblem,
+    /// Echo Request
+    #[flux_rs::variant(Message[0x80])]
+    EchoRequest,
+    /// Echo Reply
+    #[flux_rs::variant(Message[0x81])]
+    EchoReply,
+    /// Multicast Listener Query
+    #[flux_rs::variant(Message[0x82])]
+    MldQuery,
+    /// Router Solicitation
+    #[flux_rs::variant(Message[0x85])]
+    RouterSolicit,
+    /// Router Advertisement
+    #[flux_rs::variant(Message[0x86])]
+    RouterAdvert,
+    /// Neighbor Solicitation
+    #[flux_rs::variant(Message[0x87])]
+    NeighborSolicit,
+    /// Neighbor Advertisement
+    #[flux_rs::variant(Message[0x88])]
+    NeighborAdvert,
+    /// Redirect
+    #[flux_rs::variant(Message[0x89])]
+    Redirect,
+    /// Multicast Listener Report
+    #[flux_rs::variant(Message[0x8f])]
+    MldReport,
+    /// RPL Control Message
+    #[flux_rs::variant(Message[0x9b])]
+    RplControl,
+    // `Unknown` is the fallthrough of `From<u8>`, so its payload is never a named
+    // code. Saying so makes the code injective, which is what lets a `match` on a
+    // known code rule the other arms out.
+    #[flux_rs::variant({{u8[@c] | c != 0x01 && c != 0x02 && c != 0x03 && c != 0x04 && c != 0x80 && c != 0x81 && c != 0x82 && c != 0x85 && c != 0x86 && c != 0x87 && c != 0x88 && c != 0x89 && c != 0x8f && c != 0x9b }} -> Message[c])]
+    Unknown(u8),
+}
+
+impl ::core::convert::From<u8> for Message {
+    #[flux_rs::trusted(no, reason = "backs the code index")]
+    #[flux_rs::sig(fn(u8[@c]) -> Message[c])]
+    fn from(value: u8) -> Self {
+        match value {
+            0x01 => Message::DstUnreachable,
+            0x02 => Message::PktTooBig,
+            0x03 => Message::TimeExceeded,
+            0x04 => Message::ParamProblem,
+            0x80 => Message::EchoRequest,
+            0x81 => Message::EchoReply,
+            0x82 => Message::MldQuery,
+            0x85 => Message::RouterSolicit,
+            0x86 => Message::RouterAdvert,
+            0x87 => Message::NeighborSolicit,
+            0x88 => Message::NeighborAdvert,
+            0x89 => Message::Redirect,
+            0x8f => Message::MldReport,
+            0x9b => Message::RplControl,
+            other => Message::Unknown(other),
+        }
+    }
+}
+
+impl ::core::convert::From<Message> for u8 {
+    #[flux_rs::trusted(no, reason = "backs the code index")]
+    #[flux_rs::sig(fn(Message[@c]) -> u8[c])]
+    fn from(value: Message) -> Self {
+        match value {
+            Message::DstUnreachable => 0x01,
+            Message::PktTooBig => 0x02,
+            Message::TimeExceeded => 0x03,
+            Message::ParamProblem => 0x04,
+            Message::EchoRequest => 0x80,
+            Message::EchoReply => 0x81,
+            Message::MldQuery => 0x82,
+            Message::RouterSolicit => 0x85,
+            Message::RouterAdvert => 0x86,
+            Message::NeighborSolicit => 0x87,
+            Message::NeighborAdvert => 0x88,
+            Message::Redirect => 0x89,
+            Message::MldReport => 0x8f,
+            Message::RplControl => 0x9b,
+            Message::Unknown(other) => other,
+        }
     }
 }
 
