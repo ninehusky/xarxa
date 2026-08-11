@@ -19,9 +19,13 @@ mod field {
 
     use crate::wire::field::*;
 
+    #[flux_rs::constant(core::ops::Range { start: 0, end: 2 })]
     pub const SRC_PORT: Field = 0..2;
+    #[flux_rs::constant(core::ops::Range { start: 2, end: 4 })]
     pub const DST_PORT: Field = 2..4;
+    #[flux_rs::constant(core::ops::Range { start: 4, end: 6 })]
     pub const LENGTH: Field = 4..6;
+    #[flux_rs::constant(core::ops::Range { start: 6, end: 8 })]
     pub const CHECKSUM: Field = 6..8;
 
     pub const fn PAYLOAD(length: u16) -> Field {
@@ -29,6 +33,7 @@ mod field {
     }
 }
 
+#[flux_rs::constant(8)]
 pub const HEADER_LEN: usize = field::CHECKSUM.end;
 
 #[allow(clippy::len_without_is_empty)]
@@ -56,6 +61,8 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// The result of this check is invalidated by calling [set_len].
     ///
     /// [set_len]: #method.set_len
+    #[flux_rs::trusted(no, reason = "certifies the buffer length the accessors rest on")]
+    #[flux_rs::sig(fn(&Packet<T>[@buf]) -> Result<()>{ok: ok => <T as AsRef<[u8]>>::idx(buf) >= HEADER_LEN})]
     pub fn check_len(&self) -> Result<()> {
         let buffer_len = self.buffer.as_ref().len();
         if buffer_len < HEADER_LEN {
@@ -91,6 +98,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the length field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the length read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@buf]) -> u16
+        requires <T as AsRef<[u8]>>::idx(buf) >= field::LENGTH.end)]
     pub fn len(&self) -> u16 {
         let data = self.buffer.as_ref();
         NetworkEndian::read_u16(&data[field::LENGTH])
@@ -98,6 +108,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the checksum field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the checksum read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@buf]) -> u16
+        requires <T as AsRef<[u8]>>::idx(buf) >= field::CHECKSUM.end)]
     pub fn checksum(&self) -> u16 {
         let data = self.buffer.as_ref();
         NetworkEndian::read_u16(&data[field::CHECKSUM])
@@ -128,6 +141,15 @@ impl<T: AsRef<[u8]>> Packet<T> {
     ///
     /// # Fuzzing
     /// This function always returns `true` when fuzzing.
+    // NOT PROVEN. The index is `self.len()`, a u16 read out of the buffer, so the
+    // obligation is `self.len() <= buffer.len()` -- a fact about buffer CONTENTS,
+    // which `refined_by(buf: T)` cannot see (for `&[u8]` the index is just the
+    // length, so two buffers of equal length are indistinguishable). The template
+    // that solves this (icmpv6) mirrors the field into a real struct field and
+    // keeps it in sync through `set_*`; that is unavailable here because
+    // `Packet::new_unchecked` is a `const fn` and cannot run a `read_u16`.
+    // `check_len`'s own doc records the same hazard: "the result of this check is
+    // invalidated by calling set_len".
     pub fn verify_checksum(&self, src_addr: &IpAddress, dst_addr: &IpAddress) -> bool {
         if cfg!(fuzzing) {
             return true;
@@ -152,6 +174,15 @@ impl<T: AsRef<[u8]>> Packet<T> {
 impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
     /// Return a pointer to the payload.
     #[inline]
+    // NOT PROVEN. The index is `self.len()`, a u16 read out of the buffer, so the
+    // obligation is `self.len() <= buffer.len()` -- a fact about buffer CONTENTS,
+    // which `refined_by(buf: T)` cannot see (for `&[u8]` the index is just the
+    // length, so two buffers of equal length are indistinguishable). The template
+    // that solves this (icmpv6) mirrors the field into a real struct field and
+    // keeps it in sync through `set_*`; that is unavailable here because
+    // `Packet::new_unchecked` is a `const fn` and cannot run a `read_u16`.
+    // `check_len`'s own doc records the same hazard: "the result of this check is
+    // invalidated by calling set_len".
     pub fn payload(&self) -> &'a [u8] {
         let length = self.len();
         let data = self.buffer.as_ref();
@@ -162,6 +193,9 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the source port field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the source port write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], u16)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::SRC_PORT.end)]
     pub fn set_src_port(&mut self, value: u16) {
         let data = self.buffer.as_mut();
         NetworkEndian::write_u16(&mut data[field::SRC_PORT], value)
@@ -169,6 +203,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the destination port field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the destination port write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], u16)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::DST_PORT.end)]
     pub fn set_dst_port(&mut self, value: u16) {
         let data = self.buffer.as_mut();
         NetworkEndian::write_u16(&mut data[field::DST_PORT], value)
@@ -176,6 +213,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the length field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the length write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], u16)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::LENGTH.end)]
     pub fn set_len(&mut self, value: u16) {
         let data = self.buffer.as_mut();
         NetworkEndian::write_u16(&mut data[field::LENGTH], value)
@@ -183,6 +223,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the checksum field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the checksum write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], u16)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::CHECKSUM.end)]
     pub fn set_checksum(&mut self, value: u16) {
         let data = self.buffer.as_mut();
         NetworkEndian::write_u16(&mut data[field::CHECKSUM], value)
@@ -193,6 +236,15 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// # Panics
     /// This function panics unless `src_addr` and `dst_addr` belong to the same family,
     /// and that family is IPv4 or IPv6.
+    // NOT PROVEN. The index is `self.len()`, a u16 read out of the buffer, so the
+    // obligation is `self.len() <= buffer.len()` -- a fact about buffer CONTENTS,
+    // which `refined_by(buf: T)` cannot see (for `&[u8]` the index is just the
+    // length, so two buffers of equal length are indistinguishable). The template
+    // that solves this (icmpv6) mirrors the field into a real struct field and
+    // keeps it in sync through `set_*`; that is unavailable here because
+    // `Packet::new_unchecked` is a `const fn` and cannot run a `read_u16`.
+    // `check_len`'s own doc records the same hazard: "the result of this check is
+    // invalidated by calling set_len".
     pub fn fill_checksum(&mut self, src_addr: &IpAddress, dst_addr: &IpAddress) {
         self.set_checksum(0);
         let checksum = {
@@ -211,6 +263,15 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Return a mutable pointer to the payload.
     #[inline]
+    // NOT PROVEN. The index is `self.len()`, a u16 read out of the buffer, so the
+    // obligation is `self.len() <= buffer.len()` -- a fact about buffer CONTENTS,
+    // which `refined_by(buf: T)` cannot see (for `&[u8]` the index is just the
+    // length, so two buffers of equal length are indistinguishable). The template
+    // that solves this (icmpv6) mirrors the field into a real struct field and
+    // keeps it in sync through `set_*`; that is unavailable here because
+    // `Packet::new_unchecked` is a `const fn` and cannot run a `read_u16`.
+    // `check_len`'s own doc records the same hazard: "the result of this check is
+    // invalidated by calling set_len".
     pub fn payload_mut(&mut self) -> &mut [u8] {
         let length = self.len();
         let data = self.buffer.as_mut();
@@ -236,6 +297,13 @@ pub struct Repr {
 
 impl Repr {
     /// Parse an User Datagram Protocol packet and return a high-level representation.
+    // NOT CHECKED. Two things block it, and neither is a missing refinement:
+    //  - `checksum_caps.udp.rx()` is a call into `xarxa_driver`, which Flux
+    //    reports `MightPanic(NoMIRAvailable)`; nothing in this crate can discharge it.
+    //  - the buffer-length evidence `check_len` returns does not survive `?`.
+    //    Flux drops the `Result` index across the `Try`/`FromResidual` desugaring,
+    //    so `packet.checksum()` below cannot see that `check_len` already succeeded.
+    // Left trusted: opting it in would only add two errors, not remove a panic.
     pub fn parse<T>(
         packet: &Packet<&T>,
         src_addr: &IpAddress,
@@ -277,6 +345,9 @@ impl Repr {
     /// This never calculates the checksum, and is intended for internal-use only,
     /// not for packets that are going to be actually sent over the network. For
     /// example, when decompressing 6lowpan.
+    #[flux_rs::trusted(no, reason = "propagates the setter bounds obligations to callers")]
+    #[flux_rs::sig(fn(&Repr, &mut Packet<&mut T>[@buf], usize)
+        requires <&mut T as AsMut<[u8]>>::idx(buf) >= HEADER_LEN)]
     pub(crate) fn emit_header<T>(&self, packet: &mut Packet<&mut T>, payload_len: usize)
     where
         T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,
@@ -288,6 +359,12 @@ impl Repr {
     }
 
     /// Emit a high-level representation into an User Datagram Protocol packet.
+    // NOT CHECKED, for the same reason as `parse`: `checksum_caps.udp.tx()` is a
+    // call into `xarxa_driver` (`MightPanic(NoMIRAvailable)`) and the
+    // `emit_payload` closure is `MightPanic(NotInCallGraph)`. Both are outside
+    // this crate's reach, so opting in would add two errors and remove no panic.
+    // `emit_header` above is the same setter sequence without either, and it is
+    // checked -- it is what carries the setters' bounds obligations to a caller.
     pub fn emit<T>(
         &self,
         packet: &mut Packet<&mut T>,
