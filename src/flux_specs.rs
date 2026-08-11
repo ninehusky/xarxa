@@ -1,4 +1,36 @@
+#[allow(unused_imports)]
+use byteorder::{BigEndian, ByteOrder};
 use flux_rs::*;
+
+// ---------------------------------------------------------------------------
+// byteorder specs.
+//
+// `byteorder` is a third-party crate with no MIR available to Flux, so every
+// `NetworkEndian::{read,write}_*` is reported `MightPanic(NoMIRAvailable)` and
+// nothing on our side can discharge it. `BigEndian`'s bodies are all
+// `buf[..N]`, so the sole panic condition is `buf.len() < N`; the `requires`
+// below states exactly that and `#[no_panic]` records that it is the only one.
+// `NetworkEndian` is a type alias for `BigEndian`, so these cover both spellings.
+// ---------------------------------------------------------------------------
+
+#[extern_spec(byteorder)]
+impl ByteOrder for BigEndian {
+    #[no_panic]
+    #[sig(fn(&[u8][@n]) -> u16 requires n >= 2)]
+    fn read_u16(buf: &[u8]) -> u16;
+
+    #[no_panic]
+    #[sig(fn(&[u8][@n]) -> u32 requires n >= 4)]
+    fn read_u32(buf: &[u8]) -> u32;
+
+    #[no_panic]
+    #[sig(fn(&mut [u8][@n], u16) requires n >= 2)]
+    fn write_u16(buf: &mut [u8], n: u16);
+
+    #[no_panic]
+    #[sig(fn(&mut [u8][@n], u32) requires n >= 4)]
+    fn write_u32(buf: &mut [u8], n: u32);
+}
 
 #[extern_spec(core::convert)]
 trait AsRef<T> {
@@ -123,4 +155,24 @@ impl<T, I: SliceIndex<[T]>> core::ops::IndexMut<I> for [T] {
     #[no_panic]
     #[sig(fn(&mut Self[@len], {I[@idx] | <Self as core::ops::Index<I>>::in_bounds(len, idx)}) -> &mut I::Output{out: <I as SliceIndex<[T]>>::output_pred(idx, len, out)})]
     fn index_mut(&mut self, index: I) -> &mut I::Output;
+}
+
+// `[T]::len` / `[T]::is_empty`, copied from flux-core's `slice/mod.rs`.
+#[extern_spec(core::slice)]
+impl<T> [T] {
+    #[no_panic]
+    #[sig(fn(&Self[@n]) -> usize[n])]
+    fn len(&self) -> usize;
+
+    #[no_panic]
+    #[sig(fn(&Self[@n]) -> bool[n == 0])]
+    fn is_empty(&self) -> bool;
+
+    // Not in flux-core; written here. `copy_from_slice` panics exactly when the
+    // two lengths differ, so `n == m` is the whole of its panic precondition.
+    #[no_panic]
+    #[sig(fn(&mut Self[@n], &[T][@m]) requires n == m)]
+    fn copy_from_slice(&mut self, src: &[T])
+    where
+        T: Copy;
 }
