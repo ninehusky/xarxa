@@ -39,6 +39,9 @@ enum_with_unknown! {
 /// [RFC 3810 § 5.1]: https://tools.ietf.org/html/rfc3010#section-5.1
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Return the maximum response code field.
+    #[flux_rs::trusted(no, reason = "proves the max-resp-code read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> u16
+        requires <T as AsRef<[u8]>>::idx(buf) >= field::MAX_RESP_CODE.end)]
     #[inline]
     pub fn max_resp_code(&self) -> u16 {
         let data = self.buffer.as_ref();
@@ -53,6 +56,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the Suppress Router-Side Processing flag.
+    #[flux_rs::trusted(no, reason = "proves the S/QRV octet read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> bool
+        requires <T as AsRef<[u8]>>::idx(buf) > field::SQRV)]
     #[inline]
     pub fn s_flag(&self) -> bool {
         let data = self.buffer.as_ref();
@@ -60,6 +66,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the Querier's Robustness Variable.
+    #[flux_rs::trusted(no, reason = "proves the S/QRV octet read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> u8
+        requires <T as AsRef<[u8]>>::idx(buf) > field::SQRV)]
     #[inline]
     pub fn qrv(&self) -> u8 {
         let data = self.buffer.as_ref();
@@ -67,6 +76,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the Querier's Query Interval Code.
+    #[flux_rs::trusted(no, reason = "proves the QQIC read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> u8
+        requires <T as AsRef<[u8]>>::idx(buf) > field::QQIC)]
     #[inline]
     pub fn qqic(&self) -> u8 {
         let data = self.buffer.as_ref();
@@ -74,6 +86,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return number of sources.
+    #[flux_rs::trusted(no, reason = "proves the query source-count read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> u16
+        requires <T as AsRef<[u8]>>::idx(buf) >= field::QUERY_NUM_SRCS.end)]
     #[inline]
     pub fn num_srcs(&self) -> u16 {
         let data = self.buffer.as_ref();
@@ -87,6 +102,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
 /// [RFC 3810 § 5.2]: https://tools.ietf.org/html/rfc3010#section-5.2
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Return the number of Multicast Address Records.
+    #[flux_rs::trusted(no, reason = "proves the record-count read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> u16
+        requires <T as AsRef<[u8]>>::idx(buf) >= field::NR_MCAST_RCRDS.end)]
     #[inline]
     pub fn nr_mcast_addr_rcrds(&self) -> u16 {
         let data = self.buffer.as_ref();
@@ -100,6 +118,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
 /// [RFC 3810 § 5.1]: https://tools.ietf.org/html/rfc3010#section-5.1
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the maximum response code field.
+    #[flux_rs::trusted(no, reason = "proves the max-resp-code write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf], u16)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::MAX_RESP_CODE.end)]
     #[inline]
     pub fn set_max_resp_code(&mut self, code: u16) {
         let data = self.buffer.as_mut();
@@ -114,6 +135,10 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     /// Set the Suppress Router-Side Processing flag.
+    #[flux_rs::trusted(no, reason = "proves the S/QRV octet write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf])
+        requires <T as AsMut<[u8]>>::idx(buf) > field::SQRV
+              && <T as AsRef<[u8]>>::idx(buf) > field::SQRV)]
     #[inline]
     pub fn set_s_flag(&mut self) {
         let data = self.buffer.as_mut();
@@ -122,6 +147,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     /// Clear the Suppress Router-Side Processing flag.
+    #[flux_rs::trusted(no, reason = "proves the S/QRV octet write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf])
+        requires <T as AsMut<[u8]>>::idx(buf) > field::SQRV)]
     #[inline]
     pub fn clear_s_flag(&mut self) {
         let data = self.buffer.as_mut();
@@ -137,6 +165,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     /// Set the Querier's Query Interval Code.
+    #[flux_rs::trusted(no, reason = "proves the QQIC write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf], u8)
+        requires <T as AsMut<[u8]>>::idx(buf) > field::QQIC)]
     #[inline]
     pub fn set_qqic(&mut self, value: u8) {
         let data = self.buffer.as_mut();
@@ -144,6 +175,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     /// Set number of sources.
+    #[flux_rs::trusted(no, reason = "proves the query source-count write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf], u16)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::QUERY_NUM_SRCS.end)]
     #[inline]
     pub fn set_num_srcs(&mut self, value: u16) {
         let data = self.buffer.as_mut();
@@ -157,6 +191,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 /// [RFC 3810 § 5.2]: https://tools.ietf.org/html/rfc3010#section-5.2
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the number of Multicast Address Records.
+    #[flux_rs::trusted(no, reason = "proves the record-count write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf], u16)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::NR_MCAST_RCRDS.end)]
     #[inline]
     pub fn set_nr_mcast_addr_rcrds(&mut self, value: u16) {
         let data = self.buffer.as_mut();
@@ -167,12 +204,16 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 /// A read/write wrapper around an MLDv2 Listener Report Message Address Record.
 #[derive(Debug, PartialEq, Eq, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(buf: T)]
 pub struct AddressRecord<T: AsRef<[u8]>> {
+    #[flux_rs::field(T[buf])]
     buffer: T,
 }
 
 impl<T: AsRef<[u8]>> AddressRecord<T> {
     /// Imbue a raw octet buffer with a Address Record structure.
+    #[flux_rs::trusted(no, reason = "carries the buffer's length index into the wrapper")]
+    #[flux_rs::sig(fn(T[@buf]) -> AddressRecord<T>[buf])]
     pub const fn new_unchecked(buffer: T) -> Self {
         Self { buffer }
     }
@@ -181,14 +222,30 @@ impl<T: AsRef<[u8]>> AddressRecord<T> {
     ///
     /// [new_unchecked]: #method.new_unchecked
     /// [check_len]: #method.check_len
+    /// The `?` is spelled out as a `match`: Flux does not carry a refinement on the
+    /// `Ok` payload through `Try`, so `check_len()?` would drop the length fact that
+    /// `check_len` just established. xarxa has a single error type, so `From` is the
+    /// identity and this is the same code at runtime.
+    #[flux_rs::trusted(no, reason = "propagates check_len's length fact to the caller")]
+    #[flux_rs::sig(fn(T[@buf]) -> Result<AddressRecord<T>[buf]>{r:
+        r => <T as AsRef<[u8]>>::idx(buf) >= field::RECORD_MCAST_ADDR.end})]
     pub fn new_checked(buffer: T) -> Result<Self> {
         let packet = Self::new_unchecked(buffer);
-        packet.check_len()?;
-        Ok(packet)
+        match packet.check_len() {
+            Err(e) => Err(e),
+            Ok(()) => Ok(packet),
+        }
     }
 
     /// Ensure that no accessor method will panic if called.
     /// Returns `Err(Error::Truncated)` if the buffer is too short.
+    ///
+    /// The `Ok` case carries the length fact in the return type, so a caller that
+    /// inspects the `Result` -- see `AddressRecordRepr::parse` -- discharges every
+    /// accessor precondition locally instead of pushing it onto *its* callers.
+    #[flux_rs::trusted(no, reason = "states check_len's doc comment as a refinement")]
+    #[flux_rs::sig(fn(&AddressRecord<T>[@buf]) -> Result<()>{r:
+        r => <T as AsRef<[u8]>>::idx(buf) >= field::RECORD_MCAST_ADDR.end})]
     pub fn check_len(&self) -> Result<()> {
         let len = self.buffer.as_ref().len();
         if len < field::RECORD_MCAST_ADDR.end {
@@ -210,6 +267,9 @@ impl<T: AsRef<[u8]>> AddressRecord<T> {
 /// [RFC 3810 § 5.2]: https://tools.ietf.org/html/rfc3010#section-5.2
 impl<T: AsRef<[u8]>> AddressRecord<T> {
     /// Return the record type for the given sources.
+    #[flux_rs::trusted(no, reason = "proves the record-type read is in bounds")]
+    #[flux_rs::sig(fn(&AddressRecord<T>[@buf]) -> RecordType
+        requires <T as AsRef<[u8]>>::idx(buf) > field::RECORD_TYPE)]
     #[inline]
     pub fn record_type(&self) -> RecordType {
         let data = self.buffer.as_ref();
@@ -217,6 +277,9 @@ impl<T: AsRef<[u8]>> AddressRecord<T> {
     }
 
     /// Return the length of the auxiliary data.
+    #[flux_rs::trusted(no, reason = "proves the aux-data-len read is in bounds")]
+    #[flux_rs::sig(fn(&AddressRecord<T>[@buf]) -> u8
+        requires <T as AsRef<[u8]>>::idx(buf) > field::AUX_DATA_LEN)]
     #[inline]
     pub fn aux_data_len(&self) -> u8 {
         let data = self.buffer.as_ref();
@@ -224,6 +287,9 @@ impl<T: AsRef<[u8]>> AddressRecord<T> {
     }
 
     /// Return the number of sources field.
+    #[flux_rs::trusted(no, reason = "proves the record source-count read is in bounds")]
+    #[flux_rs::sig(fn(&AddressRecord<T>[@buf]) -> u16
+        requires <T as AsRef<[u8]>>::idx(buf) >= field::RECORD_NUM_SRCS.end)]
     #[inline]
     pub fn num_srcs(&self) -> u16 {
         let data = self.buffer.as_ref();
@@ -253,6 +319,9 @@ impl<'a, T: AsRef<[u8]> + ?Sized> AddressRecord<&'a T> {
 /// [RFC 3810 § 5.2]: https://tools.ietf.org/html/rfc3010#section-5.2
 impl<T: AsMut<[u8]> + AsRef<[u8]>> AddressRecord<T> {
     /// Return the record type for the given sources.
+    #[flux_rs::trusted(no, reason = "proves the record-type write is in bounds")]
+    #[flux_rs::sig(fn(&mut AddressRecord<T>[@buf], RecordType)
+        requires <T as AsMut<[u8]>>::idx(buf) > field::RECORD_TYPE)]
     #[inline]
     pub fn set_record_type(&mut self, rty: RecordType) {
         let data = self.buffer.as_mut();
@@ -260,6 +329,9 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> AddressRecord<T> {
     }
 
     /// Return the length of the auxiliary data.
+    #[flux_rs::trusted(no, reason = "proves the aux-data-len write is in bounds")]
+    #[flux_rs::sig(fn(&mut AddressRecord<T>[@buf], u8)
+        requires <T as AsMut<[u8]>>::idx(buf) > field::AUX_DATA_LEN)]
     #[inline]
     pub fn set_aux_data_len(&mut self, len: u8) {
         let data = self.buffer.as_mut();
@@ -267,6 +339,9 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> AddressRecord<T> {
     }
 
     /// Return the number of sources field.
+    #[flux_rs::trusted(no, reason = "proves the record source-count write is in bounds")]
+    #[flux_rs::sig(fn(&mut AddressRecord<T>[@buf], u16)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::RECORD_NUM_SRCS.end)]
     #[inline]
     pub fn set_num_srcs(&mut self, num_srcs: u16) {
         let data = self.buffer.as_mut();
@@ -318,6 +393,9 @@ impl<'a> AddressRecordRepr<'a> {
     }
 
     /// Parse an MLDv2 address record and return a high-level representation.
+    #[flux_rs::trusted(no, reason = "follows the accessor length obligations to a caller")]
+    #[flux_rs::sig(fn(record: &AddressRecord<&T>[@buf]) -> Result<Self>
+        requires <&T as AsRef<[u8]>>::idx(buf) >= field::RECORD_MCAST_ADDR.end)]
     pub fn parse<T>(record: &AddressRecord<&'a T>) -> Result<Self>
     where
         T: AsRef<[u8]> + ?Sized,
@@ -338,6 +416,9 @@ impl<'a> AddressRecordRepr<'a> {
     }
 
     /// Emit a high-level representation into an MLDv2 address record.
+    #[flux_rs::trusted(no, reason = "follows the accessor length obligations to a caller")]
+    #[flux_rs::sig(fn(&Self, record: &mut AddressRecord<T>[@buf])
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::RECORD_MCAST_ADDR.end)]
     pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, record: &mut AddressRecord<T>) {
         record.set_record_type(self.record_type);
         record.set_aux_data_len(self.aux_data_len);
@@ -372,6 +453,9 @@ pub enum Repr<'a> {
 
 impl<'a> Repr<'a> {
     /// Parse an MLDv2 packet and return a high-level representation.
+    #[flux_rs::trusted(no, reason = "follows the accessor length obligations to a caller")]
+    #[flux_rs::sig(fn(packet: &Packet<&T>[@code, @buf]) -> Result<Repr>
+        requires <&T as AsRef<[u8]>>::idx(buf) >= field::QUERY_NUM_SRCS.end)]
     pub fn parse<T>(packet: &Packet<&'a T>) -> Result<Repr<'a>>
     where
         T: AsRef<[u8]> + ?Sized,
@@ -406,6 +490,9 @@ impl<'a> Repr<'a> {
 
     /// Emit a high-level representation into an MLDv2 packet.
     #[flux_rs::trusted(no, reason = "discharges clear_reserved's message-type precondition")]
+    #[flux_rs::sig(fn(&Self, packet: &strg Packet<&mut T>[@code, @buf])
+        requires <&mut T as AsMut<[u8]>>::idx(buf) >= field::QUERY_NUM_SRCS.end
+        ensures packet: Packet<&mut T>)]
     pub fn emit<T>(&self, packet: &mut Packet<&mut T>)
     where
         T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,

@@ -174,11 +174,15 @@ mod field {
 
     pub const TYPE: usize = 0;
     pub const CODE: usize = 1;
+    #[flux_rs::constant(core::ops::Range { start: 2, end: 4 })]
     pub const CHECKSUM: Field = 2..4;
 
+    #[flux_rs::constant(core::ops::Range { start: 4, end: 8 })]
     pub const UNUSED: Field = 4..8;
 
+    #[flux_rs::constant(core::ops::Range { start: 4, end: 6 })]
     pub const ECHO_IDENT: Field = 4..6;
+    #[flux_rs::constant(core::ops::Range { start: 6, end: 8 })]
     pub const ECHO_SEQNO: Field = 6..8;
 
     pub const HEADER_END: usize = 8;
@@ -186,6 +190,8 @@ mod field {
 
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Imbue a raw octet buffer with ICMPv4 packet structure.
+    #[flux_rs::trusted(no, reason = "carries the buffer's length index into the wrapper")]
+    #[flux_rs::sig(fn(T[@buf]) -> Packet<T>[buf])]
     pub const fn new_unchecked(buffer: T) -> Packet<T> {
         Packet { buffer }
     }
@@ -194,10 +200,19 @@ impl<T: AsRef<[u8]>> Packet<T> {
     ///
     /// [new_unchecked]: #method.new_unchecked
     /// [check_len]: #method.check_len
+    /// The `?` is spelled out as a `match`: Flux does not carry a refinement on the
+    /// `Ok` payload through `Try`, so `check_len()?` would drop the length fact that
+    /// `check_len` just established. xarxa has a single error type, so `From` is the
+    /// identity and this is the same code at runtime.
+    #[flux_rs::trusted(no, reason = "propagates check_len's length fact to the caller")]
+    #[flux_rs::sig(fn(T[@buf]) -> Result<Packet<T>[buf]>{r:
+        r => <T as AsRef<[u8]>>::idx(buf) >= field::HEADER_END})]
     pub fn new_checked(buffer: T) -> Result<Packet<T>> {
         let packet = Self::new_unchecked(buffer);
-        packet.check_len()?;
-        Ok(packet)
+        match packet.check_len() {
+            Err(e) => Err(e),
+            Ok(()) => Ok(packet),
+        }
     }
 
     /// Ensure that no accessor method will panic if called.
@@ -206,6 +221,13 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// The result of this check is invalidated by calling [set_header_len].
     ///
     /// [set_header_len]: #method.set_header_len
+    ///
+    /// The `Ok` case carries the length fact in the return type, so a caller that
+    /// inspects the `Result` discharges the accessor preconditions locally instead
+    /// of pushing them onto *its* callers.
+    #[flux_rs::trusted(no, reason = "states check_len's doc comment as a refinement")]
+    #[flux_rs::sig(fn(&Packet<T>[@buf]) -> Result<()>{r:
+        r => <T as AsRef<[u8]>>::idx(buf) >= field::HEADER_END})]
     pub fn check_len(&self) -> Result<()> {
         let len = self.buffer.as_ref().len();
         if len < field::HEADER_END {
@@ -221,6 +243,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the message type field.
+    #[flux_rs::trusted(no, reason = "proves the msg_type read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@buf]) -> Message
+        requires <T as AsRef<[u8]>>::idx(buf) > field::TYPE)]
     #[inline]
     pub fn msg_type(&self) -> Message {
         let data = self.buffer.as_ref();
@@ -228,6 +253,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the message code field.
+    #[flux_rs::trusted(no, reason = "proves the msg_code read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@buf]) -> u8
+        requires <T as AsRef<[u8]>>::idx(buf) > field::CODE)]
     #[inline]
     pub fn msg_code(&self) -> u8 {
         let data = self.buffer.as_ref();
@@ -235,6 +263,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the checksum field.
+    #[flux_rs::trusted(no, reason = "proves the checksum read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@buf]) -> u16
+        requires <T as AsRef<[u8]>>::idx(buf) >= field::CHECKSUM.end)]
     #[inline]
     pub fn checksum(&self) -> u16 {
         let data = self.buffer.as_ref();
@@ -245,6 +276,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
     ///
     /// # Panics
     /// This function may panic if this packet is not an echo request or reply packet.
+    #[flux_rs::trusted(no, reason = "proves the echo ident read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@buf]) -> u16
+        requires <T as AsRef<[u8]>>::idx(buf) >= field::ECHO_IDENT.end)]
     #[inline]
     pub fn echo_ident(&self) -> u16 {
         let data = self.buffer.as_ref();
@@ -255,6 +289,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
     ///
     /// # Panics
     /// This function may panic if this packet is not an echo request or reply packet.
+    #[flux_rs::trusted(no, reason = "proves the echo seqno read is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@buf]) -> u16
+        requires <T as AsRef<[u8]>>::idx(buf) >= field::ECHO_SEQNO.end)]
     #[inline]
     pub fn echo_seq_no(&self) -> u16 {
         let data = self.buffer.as_ref();
@@ -263,6 +300,14 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the header length.
     /// The result depends on the value of the message type field.
+    ///
+    /// Every arm is `field::HEADER_END`, so the dependence is nominal: the return
+    /// type is the constant 8. That is what lets `data_mut` be proved without a
+    /// mirror of the type octet in the struct -- and so without `new_unchecked`
+    /// giving up its `const`.
+    #[flux_rs::trusted(no, reason = "ties the runtime header_len to the constant 8")]
+    #[flux_rs::sig(fn(&Packet<T>[@buf]) -> usize[field::HEADER_END]
+        requires <T as AsRef<[u8]>>::idx(buf) > field::TYPE)]
     pub fn header_len(&self) -> usize {
         match self.msg_type() {
             Message::EchoRequest => field::ECHO_SEQNO.end,
@@ -297,6 +342,9 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
 
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the message type field.
+    #[flux_rs::trusted(no, reason = "proves the msg_type write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], Message)
+        requires <T as AsMut<[u8]>>::idx(buf) > field::TYPE)]
     #[inline]
     pub fn set_msg_type(&mut self, value: Message) {
         let data = self.buffer.as_mut();
@@ -304,6 +352,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     /// Set the message code field.
+    #[flux_rs::trusted(no, reason = "proves the msg_code write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], u8)
+        requires <T as AsMut<[u8]>>::idx(buf) > field::CODE)]
     #[inline]
     pub fn set_msg_code(&mut self, value: u8) {
         let data = self.buffer.as_mut();
@@ -311,6 +362,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     /// Set the checksum field.
+    #[flux_rs::trusted(no, reason = "proves the checksum write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], u16)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::CHECKSUM.end)]
     #[inline]
     pub fn set_checksum(&mut self, value: u16) {
         let data = self.buffer.as_mut();
@@ -321,6 +375,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     ///
     /// # Panics
     /// This function may panic if this packet is not an echo request or reply packet.
+    #[flux_rs::trusted(no, reason = "proves the echo ident write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], u16)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::ECHO_IDENT.end)]
     #[inline]
     pub fn set_echo_ident(&mut self, value: u16) {
         let data = self.buffer.as_mut();
@@ -331,10 +388,33 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     ///
     /// # Panics
     /// This function may panic if this packet is not an echo request or reply packet.
+    #[flux_rs::trusted(no, reason = "proves the echo seqno write is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf], u16)
+        requires <T as AsMut<[u8]>>::idx(buf) >= field::ECHO_SEQNO.end)]
     #[inline]
     pub fn set_echo_seq_no(&mut self, value: u16) {
         let data = self.buffer.as_mut();
         NetworkEndian::write_u16(&mut data[field::ECHO_SEQNO], value)
+    }
+
+    /// Return a mutable pointer to the type-specific data.
+    ///
+    /// Stated over `Packet<T>` rather than `Packet<&mut T>`: the buffer length of a
+    /// `&mut T` is only reachable through the auto-deref `AsMut` blanket, whose
+    /// elided lifetime an `extern_spec` cannot name, so on the `&mut T` form
+    /// `self.buffer.as_mut()` has no expressible length. This form is a superset --
+    /// `T` instantiates to `&mut U` at every call site -- and matches how
+    /// `icmpv6::Packet::payload_mut` is already declared.
+    #[flux_rs::trusted(no, reason = "proves the payload split point is in bounds")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@buf])
+        -> &mut [u8][<T as AsMut<[u8]>>::idx(buf) - field::HEADER_END]
+        requires <T as AsRef<[u8]>>::idx(buf) > field::TYPE
+              && <T as AsMut<[u8]>>::idx(buf) >= field::HEADER_END)]
+    #[inline]
+    pub fn data_mut(&mut self) -> &mut [u8] {
+        let range = self.header_len()..;
+        let data = self.buffer.as_mut();
+        &mut data[range]
     }
 
     /// Compute and fill in the header checksum.
@@ -345,16 +425,6 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
             !checksum::data(data)
         };
         self.set_checksum(checksum)
-    }
-}
-
-impl<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> Packet<&mut T> {
-    /// Return a mutable pointer to the type-specific data.
-    #[inline]
-    pub fn data_mut(&mut self) -> &mut [u8] {
-        let range = self.header_len()..;
-        let data = self.buffer.as_mut();
-        &mut data[range]
     }
 }
 
@@ -397,6 +467,7 @@ pub enum Repr<'a> {
 impl<'a> Repr<'a> {
     /// Parse an Internet Control Message Protocol version 4 packet and return
     /// a high-level representation.
+    #[flux_rs::trusted(no, reason = "follows the accessor length obligations to a caller")]
     pub fn parse<T>(
         packet: &Packet<&'a T>,
         checksum_caps: &ChecksumCapabilities,
@@ -404,7 +475,12 @@ impl<'a> Repr<'a> {
     where
         T: AsRef<[u8]> + ?Sized,
     {
-        packet.check_len()?;
+        // `?` spelled out as a `match`, so `check_len`'s length fact survives; see
+        // `new_checked`. Same code at runtime.
+        match packet.check_len() {
+            Err(e) => return Err(e),
+            Ok(()) => {}
+        }
 
         // Valid checksum is expected.
         if checksum_caps.icmpv4.rx() && !packet.verify_checksum() {
@@ -489,6 +565,10 @@ impl<'a> Repr<'a> {
 
     /// Emit a high-level representation into an Internet Control Message Protocol version 4
     /// packet.
+    #[flux_rs::trusted(no, reason = "follows the accessor length obligations to a caller")]
+    #[flux_rs::sig(fn(&Self, packet: &mut Packet<&mut T>[@buf], &ChecksumCapabilities)
+        requires <&mut T as AsRef<[u8]>>::idx(buf) >= field::HEADER_END
+              && <&mut T as AsMut<[u8]>>::idx(buf) >= field::HEADER_END)]
     pub fn emit<T>(&self, packet: &mut Packet<&mut T>, checksum_caps: &ChecksumCapabilities)
     where
         T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,
