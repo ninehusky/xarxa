@@ -124,3 +124,72 @@ impl<T, I: SliceIndex<[T]>> core::ops::IndexMut<I> for [T] {
     #[sig(fn(&mut Self[@len], {I[@idx] | <Self as core::ops::Index<I>>::in_bounds(len, idx)}) -> &mut I::Output{out: <I as SliceIndex<[T]>>::output_pred(idx, len, out)})]
     fn index_mut(&mut self, index: I) -> &mut I::Output;
 }
+
+// ---------------------------------------------------------------------------
+// `managed::ManagedSlice`, refined by its length.
+//
+// ADDED FOR src/iface/socket_set.rs. `SocketSet` keeps its slots in a
+// `ManagedSlice`, so `self.sockets[i]` is a `Deref` to `[T]` followed by the
+// slice `Index` above. Without a length on the `ManagedSlice` the slice coming
+// out of `deref` has an unknown length and `i < len` cannot be stated, and
+// `deref`/`deref_mut` are additionally reported `MightPanic(NoMIRAvailable)`
+// because `managed` is not compiled by Flux. Their bodies (managed 0.8.0,
+// src/slice.rs) are a single `match` returning a reference; the `#[no_panic]`
+// below asserts that and nothing more.
+//
+// Three Flux quirks are load-bearing in how this is written:
+//   * `#[variant(...)]` rejects lifetime arguments, hence `&mut [T]` and
+//     `ManagedSlice<T>` rather than the `'a`-carrying spellings.
+//   * the method signature has to be restated on the impl, not left to the
+//     trait: with no method entry the impl's associated refinement is never
+//     consulted. But extern_spec rewrites `&self` into a named parameter, and
+//     rustc then cannot elide the output lifetime of a `Self` type that has a
+//     lifetime parameter (E0106), so the receiver is written `&'a self`.
+//   * inside the impl, `Self::Target` does not resolve and
+//     `<Self as core::ops::Deref>::Target` ICEs the driver
+//     ("unexpected DefKind in AliasTy: Impl { of_trait: true }"), so the
+//     associated type is spelled out through the concrete self type.
+// ---------------------------------------------------------------------------
+
+// KNOWN GAP: this covers `managed`'s no-`alloc` shape only. With `alloc` on,
+// `ManagedSlice` also has `Owned(Vec<T>)`, and Flux rejects an extern_spec
+// enum that does not list every variant -- so `cargo flux check --features
+// alloc` reports one extra error here. Giving `Owned` a length needs a length
+// for `Vec`, whose extern_spec cannot be written without the unstable
+// `allocator_api` feature (`Vec`'s real generics are `<T, A: Allocator =
+// Global>`). The firmware these panic sites are measured in does not enable
+// `alloc`.
+#[extern_spec(managed)]
+#[refined_by(len: int)]
+enum ManagedSlice<'a, T> {
+    #[variant((&mut [T][@n]) -> ManagedSlice<T>[n])]
+    Borrowed(&'a mut [T]),
+}
+
+#[extern_spec(core::ops)]
+trait Deref {
+    #![assoc(fn as_deref(v: Self, target: Self::Target) -> bool { true })]
+
+    #[sig(fn(self: &Self[@v]) -> &Self::Target{target: <Self as Deref>::as_deref(v, target)})]
+    fn deref(&self) -> &Self::Target;
+}
+
+#[extern_spec(core::ops)]
+trait DerefMut: Deref {
+    #[sig(fn(self: &mut Self[@v]) -> &mut Self::Target{target: <Self as Deref>::as_deref(v, target)})]
+    fn deref_mut(&mut self) -> &mut Self::Target;
+}
+
+#[extern_spec(managed)]
+impl<'a, T> core::ops::Deref for ManagedSlice<'a, T> {
+    #[no_panic]
+    #[sig(fn(self: &Self[@v]) -> &<ManagedSlice<T> as core::ops::Deref>::Target{target: target == v})]
+    fn deref(&'a self) -> &'a <ManagedSlice<'a, T> as core::ops::Deref>::Target;
+}
+
+#[extern_spec(managed)]
+impl<'a, T> core::ops::DerefMut for ManagedSlice<'a, T> {
+    #[no_panic]
+    #[sig(fn(self: &mut Self[@v]) -> &mut <ManagedSlice<T> as core::ops::Deref>::Target{target: target == v})]
+    fn deref_mut(&'a mut self) -> &'a mut <ManagedSlice<'a, T> as core::ops::Deref>::Target;
+}
