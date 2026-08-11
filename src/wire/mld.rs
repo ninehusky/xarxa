@@ -349,7 +349,9 @@ impl<'a> AddressRecordRepr<'a> {
 /// A high-level representation of an MLDv2 packet header.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(code: int)]
 pub enum Repr<'a> {
+    #[flux_rs::variant({u16, Ipv6Address, bool, u8, u8, u16, &[u8]} -> Repr[0x82])]
     Query {
         max_resp_code: u16,
         mcast_addr: Ipv6Address,
@@ -359,10 +361,12 @@ pub enum Repr<'a> {
         num_srcs: u16,
         data: &'a [u8],
     },
+    #[flux_rs::variant({u16, &[u8]} -> Repr[0x8f])]
     Report {
         nr_mcast_addr_rcrds: u16,
         data: &'a [u8],
     },
+    #[flux_rs::variant((&[AddressRecordRepr]) -> Repr[0x8f])]
     ReportRecordReprs(&'a [AddressRecordRepr<'a>]),
 }
 

@@ -163,7 +163,9 @@ pub struct Socket<'a> {
 /// where `H` is behind `&` or returned by value, keep it fine.) Since `f` here never
 /// receives the header, it cannot observe or modify it, and `dequeue_with` only removes
 /// packets — so every remaining element still satisfies whatever predicate it arrived with.
-#[flux_rs::trusted(reason = "dequeue_with's H erases the element predicate; f cannot touch the header")]
+#[flux_rs::trusted(
+    reason = "dequeue_with's H erases the element predicate; f cannot touch the header"
+)]
 #[flux_rs::sig(fn(IpListenEndpoint[@t],
                   &mut crate::storage::PacketBuffer<UdpMetadata{m: t == -1 || m.dst_ty == t}>,
                   F) -> Result<Result<R, E>, Empty>)]
@@ -199,7 +201,9 @@ fn reset_tx_buffer(buf: &mut PacketBuffer<'_>, _old: IpListenEndpoint, _new: IpL
 /// Rust type, erasing the element predicate. The header goes in by value and `f` only ever
 /// sees the payload, so the predicate the caller proves for `meta` is the one the buffer ends
 /// up holding.
-#[flux_rs::trusted(reason = "enqueue_with_infallible's H erases the element predicate; f cannot touch the header")]
+#[flux_rs::trusted(
+    reason = "enqueue_with_infallible's H erases the element predicate; f cannot touch the header"
+)]
 #[flux_rs::sig(fn(IpListenEndpoint[@t],
                   &mut crate::storage::PacketBuffer<UdpMetadata{m: t == -1 || m.dst_ty == t}>,
                   usize,
@@ -217,9 +221,6 @@ where
 {
     buf.enqueue_with_infallible(max_size, meta, f)
 }
-
-
-
 
 impl<'a> Socket<'a> {
     /// Create an UDP socket with the given buffers.
@@ -412,11 +413,7 @@ impl<'a> Socket<'a> {
     #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     #[flux_rs::sig(fn(self: &mut Socket[@t], usize, UdpMetadata{m: t == -1 || m.dst_ty == t})
                      -> Result<&mut [u8], SendError>)]
-    pub fn send(
-        &mut self,
-        size: usize,
-        meta: UdpMetadata,
-    ) -> Result<&mut [u8], SendError> {
+    pub fn send(&mut self, size: usize, meta: UdpMetadata) -> Result<&mut [u8], SendError> {
         if self.endpoint.port() == 0 {
             return Err(SendError::Unaddressable);
         }
@@ -487,11 +484,7 @@ impl<'a> Socket<'a> {
     #[flux_rs::trusted(no, reason = "checking Socket invariant")]
     #[flux_rs::sig(fn(self: &mut Socket[@t], &[u8], UdpMetadata{m: t == -1 || m.dst_ty == t})
                      -> Result<(), SendError>)]
-    pub fn send_slice(
-        &mut self,
-        data: &[u8],
-        meta: UdpMetadata,
-    ) -> Result<(), SendError> {
+    pub fn send_slice(&mut self, data: &[u8], meta: UdpMetadata) -> Result<(), SendError> {
         self.send(data.len(), meta)?.copy_from_slice(data);
         Ok(())
     }
@@ -1196,7 +1189,10 @@ mod test {
             socket.send_slice(too_large, REMOTE_END.into()),
             Err(SendError::BufferFull)
         );
-        assert_eq!(socket.send_slice(&too_large[..16 * 4], REMOTE_END.into()), Ok(()));
+        assert_eq!(
+            socket.send_slice(&too_large[..16 * 4], REMOTE_END.into()),
+            Ok(())
+        );
     }
 
     #[rstest]

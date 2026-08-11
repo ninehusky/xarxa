@@ -327,7 +327,10 @@ impl Interface {
     /// This function panics if the medium is not Ethernet or Ieee802154.
     #[flux_rs::sig(fn(&mut Self, HardwareAddress[true]))]
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
-    #[flux_rs::trusted(no, reason = "sole caller of check_hardware_addr; discharges its precondition")]
+    #[flux_rs::trusted(
+        no,
+        reason = "sole caller of check_hardware_addr; discharges its precondition"
+    )]
     pub fn set_hardware_addr(&mut self, addr: HardwareAddress) {
         #[cfg(all(feature = "medium-ethernet", not(feature = "medium-ieee802154")))]
         assert!(self.inner.medium == Medium::Ethernet);
@@ -905,7 +908,10 @@ impl InterfaceInner {
     #[flux_rs::sig(fn(&HardwareAddress[true]))]
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
     #[allow(unsafe_code)]
-    #[flux_rs::trusted(no, reason = "discharges the assert(false) licensing unreachable_unchecked")]
+    #[flux_rs::trusted(
+        no,
+        reason = "discharges the assert(false) licensing unreachable_unchecked"
+    )]
     fn check_hardware_addr(addr: &HardwareAddress) {
         if !addr.is_unicast() {
             // If the assert never fires, Flux has shown this branch unreachable.
