@@ -33,6 +33,7 @@ bitflags! {
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Return the current hop limit field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the field access is in bounds")]
     #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> u8 requires <T as AsRef<[u8]>>::idx(buf) > field::CUR_HOP_LIMIT)]
     pub fn current_hop_limit(&self) -> u8 {
         let data = self.buffer.as_ref();
@@ -41,6 +42,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the Router Advertisement flags.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the field access is in bounds")]
     #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> RouterFlags requires <T as AsRef<[u8]>>::idx(buf) > field::ROUTER_FLAGS)]
     pub fn router_flags(&self) -> RouterFlags {
         let data = self.buffer.as_ref();
@@ -49,6 +51,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the router lifetime field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the field access is in bounds")]
     #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> Duration requires <T as AsRef<[u8]>>::idx(buf) >= field::ROUTER_LT.end)]
     pub fn router_lifetime(&self) -> Duration {
         let data = self.buffer.as_ref();
@@ -57,6 +60,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the reachable time field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the field access is in bounds")]
     #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> Duration requires <T as AsRef<[u8]>>::idx(buf) >= field::REACHABLE_TM.end)]
     pub fn reachable_time(&self) -> Duration {
         let data = self.buffer.as_ref();
@@ -65,6 +69,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the retransmit time field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the field access is in bounds")]
     #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> Duration requires <T as AsRef<[u8]>>::idx(buf) >= field::RETRANS_TM.end)]
     pub fn retrans_time(&self) -> Duration {
         let data = self.buffer.as_ref();
@@ -81,6 +86,8 @@ impl<T: AsRef<[u8]>> Packet<T> {
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Return the target address field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the field access is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> Ipv6Address requires <T as AsRef<[u8]>>::idx(buf) >= field::TARGET_ADDR.end)]
     pub fn target_addr(&self) -> Ipv6Address {
         let data = self.buffer.as_ref();
         Ipv6Address::from_octets(data[field::TARGET_ADDR].try_into().unwrap())
@@ -94,6 +101,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Return the Neighbor Solicitation flags.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the field access is in bounds")]
     #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> NeighborFlags requires <T as AsRef<[u8]>>::idx(buf) > field::NEIGH_FLAGS)]
     pub fn neighbor_flags(&self) -> NeighborFlags {
         let data = self.buffer.as_ref();
@@ -108,6 +116,8 @@ impl<T: AsRef<[u8]>> Packet<T> {
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Return the destination address field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the field access is in bounds")]
+    #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> Ipv6Address requires <T as AsRef<[u8]>>::idx(buf) >= field::DEST_ADDR.end)]
     pub fn dest_addr(&self) -> Ipv6Address {
         let data = self.buffer.as_ref();
         Ipv6Address::from_octets(data[field::DEST_ADDR].try_into().unwrap())
@@ -121,6 +131,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the current hop limit field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the field access is in bounds")]
     #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf], u8) requires <T as AsMut<[u8]>>::idx(buf) > field::CUR_HOP_LIMIT)]
     pub fn set_current_hop_limit(&mut self, value: u8) {
         let data = self.buffer.as_mut();
@@ -129,6 +140,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the Router Advertisement flags.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the field access is in bounds")]
     #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf], RouterFlags) requires <T as AsMut<[u8]>>::idx(buf) > field::ROUTER_FLAGS)]
     pub fn set_router_flags(&mut self, flags: RouterFlags) {
         self.buffer.as_mut()[field::ROUTER_FLAGS] = flags.bits();
@@ -136,6 +148,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the router lifetime field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the field access is in bounds")]
     #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf], Duration) requires <T as AsMut<[u8]>>::idx(buf) >= field::ROUTER_LT.end)]
     pub fn set_router_lifetime(&mut self, value: Duration) {
         let data = self.buffer.as_mut();
@@ -144,6 +157,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the reachable time field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the field access is in bounds")]
     #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf], Duration) requires <T as AsMut<[u8]>>::idx(buf) >= field::REACHABLE_TM.end)]
     pub fn set_reachable_time(&mut self, value: Duration) {
         let data = self.buffer.as_mut();
@@ -152,6 +166,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the retransmit time field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the field access is in bounds")]
     #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf], Duration) requires <T as AsMut<[u8]>>::idx(buf) >= field::RETRANS_TM.end)]
     pub fn set_retrans_time(&mut self, value: Duration) {
         let data = self.buffer.as_mut();
@@ -168,6 +183,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the target address field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the field access is in bounds")]
     #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf], Ipv6Address) requires <T as AsMut<[u8]>>::idx(buf) >= field::TARGET_ADDR.end)]
     pub fn set_target_addr(&mut self, value: Ipv6Address) {
         let data = self.buffer.as_mut();
@@ -182,6 +198,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the Neighbor Solicitation flags.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the field access is in bounds")]
     #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf], NeighborFlags) requires <T as AsMut<[u8]>>::idx(buf) > field::NEIGH_FLAGS)]
     pub fn set_neighbor_flags(&mut self, flags: NeighborFlags) {
         self.buffer.as_mut()[field::NEIGH_FLAGS] = flags.bits();
@@ -195,6 +212,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the destination address field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "proves the field access is in bounds")]
     #[flux_rs::sig(fn(&mut Packet<T>[@code, @buf], Ipv6Address) requires <T as AsMut<[u8]>>::idx(buf) >= field::DEST_ADDR.end)]
     pub fn set_dest_addr(&mut self, value: Ipv6Address) {
         let data = self.buffer.as_mut();
@@ -212,9 +230,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 #[flux_rs::refined_by(code: int)]
 pub enum Repr<'a> {
     #[flux_rs::variant({Option<RawHardwareAddress>} -> Repr[0x85])]
-    RouterSolicit {
-        lladdr: Option<RawHardwareAddress>,
-    },
+    RouterSolicit { lladdr: Option<RawHardwareAddress> },
     #[flux_rs::variant({u8, RouterFlags, Duration, Duration, Duration, Option<RawHardwareAddress>, Option<u32>, Option<NdiscPrefixInformation>} -> Repr[0x86])]
     RouterAdvert {
         hop_limit: u8,
@@ -250,7 +266,10 @@ impl<'a> Repr<'a> {
     /// Parse an NDISC packet and return a high-level representation of the
     /// packet.
     #[allow(clippy::single_match)]
-    #[flux_rs::trusted(no, reason = "carries check_len's length evidence to the accessors below")]
+    #[flux_rs::trusted(
+        no,
+        reason = "carries check_len's length evidence to the accessors below"
+    )]
     pub fn parse<T>(packet: &Packet<&'a T>) -> Result<Repr<'a>>
     where
         T: AsRef<[u8]> + ?Sized,

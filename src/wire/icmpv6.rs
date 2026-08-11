@@ -325,7 +325,13 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// [check_len]: #method.check_len
     pub fn new_checked(buffer: T) -> Result<Packet<T>> {
         let packet = Self::new_unchecked(buffer);
-        packet.check_len()?;
+        // Spelled out rather than `?`: the `From::from` behind `?` is reported
+        // `MightPanic(Transitive)`, and `Result<T> = Result<T, Error>` has a single
+        // error type, so the conversion is the identity and this is the same code.
+        match packet.check_len() {
+            Err(e) => return Err(e),
+            Ok(()) => {}
+        }
         Ok(packet)
     }
 
@@ -771,7 +777,10 @@ pub enum Repr<'a> {
 impl<'a> Repr<'a> {
     /// Parse an Internet Control Message Protocol version 6 packet and return
     /// a high-level representation.
-    #[flux_rs::trusted(no, reason = "carries check_len's length evidence to the accessors below")]
+    #[flux_rs::trusted(
+        no,
+        reason = "carries check_len's length evidence to the accessors below"
+    )]
     pub fn parse<T>(
         src_addr: &Ipv6Address,
         dst_addr: &Ipv6Address,

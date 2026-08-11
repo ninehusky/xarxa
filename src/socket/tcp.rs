@@ -1929,11 +1929,7 @@ impl<'a> Socket<'a> {
                     }
                 }
 
-                self.tuple = Some(Self::tuple_from_repr(
-                    ip_repr,
-                    repr.dst_port,
-                    repr.src_port,
-                ));
+                self.tuple = Some(Self::tuple_from_repr(ip_repr, repr.dst_port, repr.src_port));
                 self.local_seq_no = Self::random_seq_no(cx);
                 self.remote_seq_no = repr.seq_number + 1;
                 self.remote_last_seq = self.local_seq_no;

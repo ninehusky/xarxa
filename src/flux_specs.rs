@@ -132,7 +132,10 @@ trait Index<Idx> {
 }
 
 #[extern_spec(core::ops)]
-trait IndexMut<Idx> where Self: Index<Idx> {
+trait IndexMut<Idx>
+where
+    Self: Index<Idx>,
+{
     #[sig(fn(self: &mut Self[@v], index: Idx { <Self as Index<Idx>>::in_bounds(v, index) }) -> &mut Self::Output{out: <Self as Index<Idx>>::output_pred(v, index, out)})]
     fn index_mut(&mut self, index: Idx) -> &mut Self::Output;
 }

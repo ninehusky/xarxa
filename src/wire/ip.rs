@@ -100,7 +100,6 @@ pub enum Address {
     Ipv6(Ipv6Address),
 }
 
-
 impl Address {
     /// Create an address wrapping an IPv4 address with the given octets.
     #[cfg(feature = "proto-ipv4")]
@@ -702,7 +701,10 @@ impl Repr {
     // The mismatched arms are discharged by Flux (see the `assert(false)` below), so the
     // unchecked form is a-okay here.
     #[allow(unsafe_code)]
-    #[flux_rs::trusted(no, reason = "discharges the assert(false) licensing unreachable_unchecked")]
+    #[flux_rs::trusted(
+        no,
+        reason = "discharges the assert(false) licensing unreachable_unchecked"
+    )]
     #[flux_rs::sig(fn(Address[@v], Address[v], Protocol, usize, u8) -> Repr[v])]
     pub fn new(
         src_addr: Address,
@@ -730,7 +732,7 @@ impl Repr {
                     // the panic unreachable.
                     flux_rs::assert(false);
                     unsafe { core::hint::unreachable_unchecked() }
-                },
+                }
             },
             #[cfg(feature = "proto-ipv6")]
             Address::Ipv6(src_addr) => match dst_addr {
