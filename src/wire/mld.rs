@@ -401,6 +401,7 @@ impl<'a> Repr<'a> {
     }
 
     /// Emit a high-level representation into an MLDv2 packet.
+    #[flux_rs::trusted(no, reason = "discharges clear_reserved's message-type precondition")]
     pub fn emit<T>(&self, packet: &mut Packet<&mut T>)
     where
         T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,

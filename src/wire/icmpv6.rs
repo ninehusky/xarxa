@@ -16,6 +16,7 @@ use crate::wire::{IpProtocol, Ipv6Address, Ipv6Packet, Ipv6Repr};
 const MAX_ERROR_PACKET_LEN: usize = IPV6_MIN_MTU - IPV6_HEADER_LEN;
 
 enum_with_unknown! {
+    #[refined]
     /// Internet protocol control message type.
     pub enum Message(u8) {
         /// Destination Unreachable.
@@ -194,7 +195,12 @@ impl fmt::Display for TimeExceeded {
 /// A read/write wrapper around an Internet Control Message Protocol version 6 packet buffer.
 #[derive(Debug, PartialEq, Eq, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(code: int)]
 pub struct Packet<T: AsRef<[u8]>> {
+    /// Mirrors `buffer[field::TYPE]`, which Flux cannot see. `new_unchecked` reads it out
+    /// of the buffer and `set_msg_type` writes both; nothing else in `wire` writes octet 0.
+    #[flux_rs::field(Message[code])]
+    ty: Message,
     pub(super) buffer: T,
 }
 
@@ -256,8 +262,17 @@ pub(super) mod field {
 
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Imbue a raw octet buffer with ICMPv6 packet structure.
-    pub const fn new_unchecked(buffer: T) -> Packet<T> {
-        Packet { buffer }
+    ///
+    /// A buffer with no type octet takes `Message::Unknown(0)`; [check_len] rejects it.
+    ///
+    /// [check_len]: #method.check_len
+    #[flux_rs::trusted(no, reason = "establishes the `ty` mirror of `buffer[field::TYPE]`")]
+    pub fn new_unchecked(buffer: T) -> Packet<T> {
+        let ty = match buffer.as_ref().first() {
+            Some(&octet) => Message::from(octet),
+            None => Message::from(0),
+        };
+        Packet { ty, buffer }
     }
 
     /// Shorthand for a combination of [new_unchecked] and [check_len].
@@ -344,10 +359,11 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the message type field.
+    #[flux_rs::trusted(no, reason = "backs Packet's code index")]
+    #[flux_rs::sig(fn(&Packet<T>[@code]) -> Message[code])]
     #[inline]
     pub fn msg_type(&self) -> Message {
-        let data = self.buffer.as_ref();
-        Message::from(data[field::TYPE])
+        self.ty
     }
 
     /// Return the message code field.
@@ -445,13 +461,18 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
 
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the message type field.
+    #[flux_rs::trusted(no, reason = "the `ensures` is the link clear_reserved's proof rests on")]
+    #[flux_rs::sig(fn(self: &strg Packet<T>, Message[@code]) ensures self: Packet<T>[code])]
     #[inline]
     pub fn set_msg_type(&mut self, value: Message) {
+        self.ty = value;
         let data = self.buffer.as_mut();
         data[field::TYPE] = value.into()
     }
 
     /// Set the message code field.
+    #[flux_rs::trusted(no, reason = "the preserved index is a link clear_reserved's proof rests on")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@code], u8))]
     #[inline]
     pub fn set_msg_code(&mut self, value: u8) {
         let data = self.buffer.as_mut();
@@ -460,11 +481,16 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Clear any reserved fields in the message header.
     ///
-    /// # Panics
-    /// This function panics if the message type has not been set.
-    /// See [set_msg_type].
+    /// Only the message types that have reserved fields accept this call: MLD query and
+    /// report, and the NDISC types other than router advertisement. Set the type first
+    /// with [set_msg_type].
     ///
     /// [set_msg_type]: #method.set_msg_type
+    #[allow(unsafe_code)]
+    #[flux_rs::trusted(no, reason = "discharges the assert(false) licensing unreachable_unchecked")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@code])
+        requires code == 0x82 || code == 0x85 || code == 0x87
+              || code == 0x88 || code == 0x89 || code == 0x8f)]
     #[inline]
     pub fn clear_reserved(&mut self) {
         match self.msg_type() {
@@ -484,7 +510,21 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
                 let data = self.buffer.as_mut();
                 NetworkEndian::write_u16(&mut data[field::RECORD_RESV], 0);
             }
-            ty => panic!("Message type `{ty}` does not have any reserved fields."),
+            // Spelled out rather than left to a `_`: Flux only rules an arm out for named
+            // patterns.
+            Message::DstUnreachable
+            | Message::PktTooBig
+            | Message::TimeExceeded
+            | Message::ParamProblem
+            | Message::EchoRequest
+            | Message::EchoReply
+            | Message::RouterAdvert
+            | Message::RplControl
+            | Message::Unknown(_) => {
+                // If this assert never fires, Flux has shown this branch unreachable.
+                flux_rs::assert(false);
+                unsafe { core::hint::unreachable_unchecked() }
+            }
         }
     }
 
