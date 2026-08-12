@@ -287,3 +287,38 @@ impl<T> [T] {
 #[extern_spec(core::cmp)]
 #[sig(fn(T[@a], T[@b]) -> T{v: v <= a && v <= b})]
 fn min<T: Ord>(v1: T, v2: T) -> T;
+
+// `Result::unwrap`, copied from flux-core's `result.rs`.
+#[extern_spec]
+impl<T, E> Result<T, E> {
+    #[no_panic]
+    #[sig(fn(Result<T, E>[true]) -> T)]
+    fn unwrap(self) -> T
+    where
+        E: core::fmt::Debug;
+}
+
+// ---------------------------------------------------------------------------
+// NEGATIVE RESULT: `data[FIELD].try_into().unwrap()` cannot be discharged by a spec.
+//
+// That is how every fixed-width address field is read across `wire/` (20+ sites:
+// `Ipv6Address::from_octets`, `Ipv4Address::from_octets`, `u16::from_ne_bytes`).
+// The slice index is discharged by the accessor's `requires`, but the `unwrap` is a
+// second, independent `MightPanic(Transitive)`. `Result::unwrap` above turns it into
+// a refinement obligation; discharging that obligation needs the *concrete* impl
+//
+//     impl<T, const N: usize> TryFrom<&[T]> for [T; N] where T: Copy
+//
+// to carry `succeeds(n) <=> n == N`, because the trait-level default is `true` and
+// the `TryInto` blanket just forwards it. That impl cannot be given an extern spec:
+// its `&[T]` has an elided lifetime, and `extern_spec` has no way to name it.
+//   - bare `&[T]`   -> E0637, `&` without an explicit lifetime name cannot be used here
+//   - `&'a [T]`     -> E0309, then E0999 "generic parameters don't match the external
+//                      implementation" -- core's synthetic param is named `'_` and is
+//                      appended after `T` and `N`, an order Rust syntax cannot express.
+// Same family as the `&T`/`&mut T` `AsRef` blanket blocker; needs a Flux-side fix.
+//
+// Until then the call sites are written as an explicit `copy_from_slice` into a local
+// array, which is provable with the specs above and identical after monomorphisation.
+// See `wire/ndisc.rs::target_addr`.
+// ---------------------------------------------------------------------------

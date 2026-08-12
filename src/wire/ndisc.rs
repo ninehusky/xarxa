@@ -90,7 +90,17 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> Ipv6Address requires <T as AsRef<[u8]>>::idx(buf) >= field::TARGET_ADDR.end)]
     pub fn target_addr(&self) -> Ipv6Address {
         let data = self.buffer.as_ref();
-        Ipv6Address::from_octets(data[field::TARGET_ADDR].try_into().unwrap())
+        // Spelled out rather than `data[..].try_into().unwrap()`. The slice index is
+        // discharged by the `requires` above, but the `unwrap` is a second,
+        // independent panic obligation, and the impl that would discharge it --
+        // `TryFrom<&[T]> for [T; N]` -- cannot be given an extern spec: its `&[T]`
+        // carries an elided lifetime `extern_spec` has no way to name (bare `&` is
+        // `E0637`; `&'a` makes the generic list mismatch core's synthetic param).
+        // `copy_from_slice`'s `n == m` states the same fact and is provable, and
+        // this is already how the setters below are written.
+        let mut octets = [0u8; 16];
+        octets.copy_from_slice(&data[field::TARGET_ADDR]);
+        Ipv6Address::from_octets(octets)
     }
 }
 
@@ -120,7 +130,10 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[flux_rs::sig(fn(&Packet<T>[@code, @buf]) -> Ipv6Address requires <T as AsRef<[u8]>>::idx(buf) >= field::DEST_ADDR.end)]
     pub fn dest_addr(&self) -> Ipv6Address {
         let data = self.buffer.as_ref();
-        Ipv6Address::from_octets(data[field::DEST_ADDR].try_into().unwrap())
+        // See `target_addr` for why this is not `try_into().unwrap()`.
+        let mut octets = [0u8; 16];
+        octets.copy_from_slice(&data[field::DEST_ADDR]);
+        Ipv6Address::from_octets(octets)
     }
 }
 
@@ -286,9 +299,18 @@ impl<'a> Repr<'a> {
         let (mut src_ll_addr, mut mtu, mut prefix_info, mut target_ll_addr, mut redirected_hdr) =
             (None, None, None, None, None);
 
+        // Bound once rather than calling `packet.payload()` twice per iteration.
+        // `payload()` on a `Packet<&'a T>` has no Flux signature -- its length is the
+        // projection `<&T as AsRef<[u8]>>::idx`, and the `&T` blanket `AsRef` impl
+        // cannot be given an extern spec -- so two calls return two unrelated
+        // symbolic lengths and the loop condition says nothing about the index below.
+        // One binding, one length. `packet` is shared and `payload()` is a pure
+        // accessor, so this is the same code at runtime.
+        let payload = packet.payload();
+
         let mut offset = 0;
-        while packet.payload().len() > offset {
-            let pkt = NdiscOption::new_checked(&packet.payload()[offset..])?;
+        while payload.len() > offset {
+            let pkt = NdiscOption::new_checked(&payload[offset..])?;
 
             // If an option doesn't parse, ignore it and still parse the others.
             if let Ok(opt) = NdiscOptionRepr::parse(&pkt) {
