@@ -72,7 +72,6 @@ include_trusted = [
     "src/wire/ethernet.rs",
     "src/wire/icmp.rs",
     "src/wire/icmpv4.rs",
-    "src/wire/icmpv6.rs",
     "src/wire/ieee802154.rs",
     "src/wire/igmp.rs",
     "src/wire/ip.rs",
@@ -92,8 +91,17 @@ include_trusted = [
     "src/wire/rpl.rs",
     "src/wire/tcp.rs",
     "src/wire/udp.rs",
+    # `Display::fmt` impls, crate-wide (`def:` matches as a substring of the def
+    # path). `write!` into a `Formatter` goes through `core::fmt::Write::write_fmt`,
+    # which Flux reports `MightPanic(Transitive)` and cannot see through. This is
+    # trust ADDED, so it is negative progress and has to earn its place: no firmware
+    # panic site is in one. `results/modified.blame.tsv` puts every icmpv6.rs site at
+    # line >= 458, and the four `Display` impls in that file end at line 190.
+    # Worth 30 of the 45 errors icmpv6.rs contributed on first expansion.
+    "def:as core::fmt::Display>::fmt",
     # --- IN SCOPE (deliberately absent) ---
     # src/wire/ndisc.rs
+    # src/wire/icmpv6.rs
 ]
 
 [dev-dependencies]
