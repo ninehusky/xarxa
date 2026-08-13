@@ -21,6 +21,12 @@ pub(crate) enum Packet<'p> {
 }
 
 impl<'p> Packet<'p> {
+    /// The `requires` only bites on the IPv6 side: an IPv4 packet may carry any of these
+    /// payloads, an IPv6 one may not (see [`PacketV6::payload`]). `IpRepr` is indexed
+    /// `0 = Ipv4`, `1 = Ipv6`.
+    #[flux_rs::trusted(no, reason = "propagates PacketV6's payload invariant to new_ipv6")]
+    #[flux_rs::sig(fn(IpRepr[@v], IpPayload[@p]) -> _
+        requires v == 1 => (p != 0 && p != 3 && p != 7))]
     pub(crate) fn new(ip_repr: IpRepr, payload: IpPayload<'p>) -> Self {
         match ip_repr {
             #[cfg(feature = "proto-ipv4")]
@@ -39,6 +45,8 @@ impl<'p> Packet<'p> {
     }
 
     #[cfg(feature = "proto-ipv6")]
+    #[flux_rs::trusted(no, reason = "establishes PacketV6's payload invariant")]
+    #[flux_rs::sig(fn(Ipv6Repr, IpPayload[@p]) -> _ requires p != 0 && p != 3 && p != 7)]
     pub(crate) fn new_ipv6(ip_repr: Ipv6Repr, payload: IpPayload<'p>) -> Self {
         Self::Ipv6(PacketV6 {
             header: ip_repr,
@@ -194,6 +202,8 @@ pub(crate) struct PacketV4<'p> {
 #[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[cfg(feature = "proto-ipv6")]
+#[flux_rs::refined_by(payload_ty: int)]
+#[flux_rs::invariant(payload_ty != 0 && payload_ty != 3 && payload_ty != 7)]
 pub(crate) struct PacketV6<'p> {
     pub(crate) header: Ipv6Repr,
     #[cfg(feature = "proto-ipv6-hbh")]
@@ -202,32 +212,57 @@ pub(crate) struct PacketV6<'p> {
     pub(crate) fragment: Option<Ipv6FragmentRepr>,
     #[cfg(feature = "proto-ipv6-routing")]
     pub(crate) routing: Option<Ipv6RoutingRepr<'p>>,
+    /// Never one of the payloads an IPv6 packet cannot carry: `Icmpv4` and `Dhcpv4` are
+    /// IPv4-only, and `HopByHopIcmpv6` rides in `hop_by_hop` instead. This is the fact
+    /// [`IpPayload::as_sixlowpan_next_header`] rests on; it is established at the two
+    /// places a `PacketV6` is built, `Packet::new_ipv6` and `Packet::new`.
+    #[flux_rs::field(IpPayload[payload_ty])]
     pub(crate) payload: IpPayload<'p>,
 }
 
+/// Refined by which variant it is, so a signature can rule particular payloads out.
+///
+/// The indices are written out per variant rather than left to declaration order: every
+/// variant here is `cfg`-gated, so declaration order is not stable across feature sets,
+/// and a signature naming `0` has to mean `Icmpv4` in every build.
 #[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(payload_ty: int)]
 pub(crate) enum IpPayload<'p> {
     #[cfg(feature = "proto-ipv4")]
+    #[flux_rs::variant((Icmpv4Repr) -> IpPayload[0])]
     Icmpv4(Icmpv4Repr<'p>),
     #[cfg(all(feature = "proto-ipv4", feature = "multicast"))]
+    #[flux_rs::variant((IgmpRepr) -> IpPayload[1])]
     Igmp(IgmpRepr),
     #[cfg(feature = "proto-ipv6")]
+    #[flux_rs::variant((Icmpv6Repr) -> IpPayload[2])]
     Icmpv6(Icmpv6Repr<'p>),
     #[cfg(feature = "proto-ipv6")]
+    #[flux_rs::variant((Ipv6HopByHopRepr, Icmpv6Repr) -> IpPayload[3])]
     HopByHopIcmpv6(Ipv6HopByHopRepr<'p>, Icmpv6Repr<'p>),
     #[cfg(feature = "socket-raw")]
+    #[flux_rs::variant((&[u8]) -> IpPayload[4])]
     Raw(&'p [u8]),
     #[cfg(any(feature = "socket-udp", feature = "socket-dns"))]
+    #[flux_rs::variant((UdpRepr, &[u8]) -> IpPayload[5])]
     Udp(UdpRepr, &'p [u8]),
     #[cfg(feature = "socket-tcp")]
+    #[flux_rs::variant((TcpRepr) -> IpPayload[6])]
     Tcp(TcpRepr<'p>),
     #[cfg(feature = "socket-dhcpv4")]
+    #[flux_rs::variant((UdpRepr, DhcpRepr) -> IpPayload[7])]
     Dhcpv4(UdpRepr, DhcpRepr<'p>),
 }
 
 impl<'p> IpPayload<'p> {
+    /// # Panics
+    ///
+    /// Panics on the payloads that have no 6LoWPAN next-header encoding: the two IPv4-only
+    /// ones (`Icmpv4`, `Dhcpv4`, which cannot occur in a [`PacketV6`]) and `HopByHopIcmpv6`.
     #[cfg(feature = "proto-sixlowpan")]
+    #[flux_rs::trusted(no, reason = "discharges the assert(false) licensing unreachable_unchecked")]
+    #[flux_rs::sig(fn(&IpPayload[@p]) -> _ requires p != 0 && p != 3 && p != 7)]
     pub(crate) fn as_sixlowpan_next_header(&self) -> SixlowpanNextHeader {
         match self {
             #[cfg(feature = "proto-ipv4")]
