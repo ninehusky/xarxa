@@ -26,7 +26,7 @@ impl<'p> Packet<'p> {
     /// `0 = Ipv4`, `1 = Ipv6`.
     #[flux_rs::trusted(no, reason = "propagates PacketV6's payload invariant to new_ipv6")]
     #[flux_rs::sig(fn(IpRepr[@v], IpPayload[@p]) -> _
-        requires v == 1 => (p != 0 && p != 3 && p != 7))]
+        requires v == 1 => (p != 0 && p != 7))]
     pub(crate) fn new(ip_repr: IpRepr, payload: IpPayload<'p>) -> Self {
         match ip_repr {
             #[cfg(feature = "proto-ipv4")]
@@ -46,7 +46,7 @@ impl<'p> Packet<'p> {
 
     #[cfg(feature = "proto-ipv6")]
     #[flux_rs::trusted(no, reason = "establishes PacketV6's payload invariant")]
-    #[flux_rs::sig(fn(Ipv6Repr, IpPayload[@p]) -> _ requires p != 0 && p != 3 && p != 7)]
+    #[flux_rs::sig(fn(Ipv6Repr, IpPayload[@p]) -> _ requires p != 0 && p != 7)]
     pub(crate) fn new_ipv6(ip_repr: Ipv6Repr, payload: IpPayload<'p>) -> Self {
         Self::Ipv6(PacketV6 {
             header: ip_repr,
@@ -203,7 +203,7 @@ pub(crate) struct PacketV4<'p> {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[cfg(feature = "proto-ipv6")]
 #[flux_rs::refined_by(payload_ty: int)]
-#[flux_rs::invariant(payload_ty != 0 && payload_ty != 3 && payload_ty != 7)]
+#[flux_rs::invariant(payload_ty != 0 && payload_ty != 7)]
 pub(crate) struct PacketV6<'p> {
     pub(crate) header: Ipv6Repr,
     #[cfg(feature = "proto-ipv6-hbh")]
@@ -212,10 +212,14 @@ pub(crate) struct PacketV6<'p> {
     pub(crate) fragment: Option<Ipv6FragmentRepr>,
     #[cfg(feature = "proto-ipv6-routing")]
     pub(crate) routing: Option<Ipv6RoutingRepr<'p>>,
-    /// Never one of the payloads an IPv6 packet cannot carry: `Icmpv4` and `Dhcpv4` are
-    /// IPv4-only, and `HopByHopIcmpv6` rides in `hop_by_hop` instead. This is the fact
-    /// [`IpPayload::as_sixlowpan_next_header`] rests on; it is established at the two
+    /// Never one of the two IPv4-only payloads, `Icmpv4` (0) or `Dhcpv4` (7). This is the
+    /// fact [`IpPayload::as_sixlowpan_next_header`] rests on; it is established at the two
     /// places a `PacketV6` is built, `Packet::new_ipv6` and `Packet::new`.
+    ///
+    /// `HopByHopIcmpv6` (3) is deliberately NOT excluded: `mldv2_report_packet` really does
+    /// build one (`iface/interface/ipv6.rs`), and with `multicast` + a `Ieee802154` medium it
+    /// reaches 6LoWPAN dispatch. Adding `payload_ty != 3` here makes Flux reject that
+    /// construction, which is the correct answer -- so that arm's `unreachable!()` stays.
     #[flux_rs::field(IpPayload[payload_ty])]
     pub(crate) payload: IpPayload<'p>,
 }
@@ -258,17 +262,30 @@ pub(crate) enum IpPayload<'p> {
 impl<'p> IpPayload<'p> {
     /// # Panics
     ///
-    /// Panics on the payloads that have no 6LoWPAN next-header encoding: the two IPv4-only
-    /// ones (`Icmpv4`, `Dhcpv4`, which cannot occur in a [`PacketV6`]) and `HopByHopIcmpv6`.
+    /// Panics on `HopByHopIcmpv6`, which has no 6LoWPAN next-header encoding.
+    ///
+    /// The two IPv4-only payloads, `Icmpv4` and `Dhcpv4`, cannot occur in a [`PacketV6`] and
+    /// so cannot reach here; the `requires` states that and Flux discharges the two
+    /// `assert(false)`s below. `HopByHopIcmpv6` is a different story -- see
+    /// [`PacketV6::payload`] -- and keeps its `unreachable!()`.
+    #[allow(unsafe_code)]
     #[cfg(feature = "proto-sixlowpan")]
     #[flux_rs::trusted(no, reason = "discharges the assert(false) licensing unreachable_unchecked")]
-    #[flux_rs::sig(fn(&IpPayload[@p]) -> _ requires p != 0 && p != 3 && p != 7)]
+    #[flux_rs::sig(fn(&IpPayload[@p]) -> _ requires p != 0 && p != 7)]
     pub(crate) fn as_sixlowpan_next_header(&self) -> SixlowpanNextHeader {
         match self {
             #[cfg(feature = "proto-ipv4")]
-            Self::Icmpv4(_) => unreachable!(),
+            Self::Icmpv4(_) => {
+                // If this assert never fires, Flux has shown this branch unreachable.
+                flux_rs::assert(false);
+                unsafe { core::hint::unreachable_unchecked() }
+            }
             #[cfg(feature = "socket-dhcpv4")]
-            Self::Dhcpv4(..) => unreachable!(),
+            Self::Dhcpv4(..) => {
+                // Follows the same reasoning as above.
+                flux_rs::assert(false);
+                unsafe { core::hint::unreachable_unchecked() }
+            }
             #[cfg(feature = "proto-ipv6")]
             Self::Icmpv6(_) => SixlowpanNextHeader::Uncompressed(IpProtocol::Icmpv6),
             #[cfg(feature = "proto-ipv6")]
