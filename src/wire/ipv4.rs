@@ -189,7 +189,9 @@ impl defmt::Format for Cidr {
 /// A read/write wrapper around an Internet Protocol version 4 packet buffer.
 #[derive(Debug, PartialEq, Eq, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(buffer: T)]
 pub struct Packet<T: AsRef<[u8]>> {
+    #[flux_rs::field(T[buffer])]
     buffer: T,
 }
 
@@ -212,6 +214,8 @@ pub const HEADER_LEN: usize = field::DST_ADDR.end;
 
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Imbue a raw octet buffer with IPv4 packet structure.
+    #[flux_rs::trusted(no, reason = "build it build it build it")]
+    #[flux_rs::sig(fn (T[@buflen]) -> Packet<T>{v : v.buffer == buflen})]
     pub const fn new_unchecked(buffer: T) -> Packet<T> {
         Packet { buffer }
     }
@@ -220,10 +224,17 @@ impl<T: AsRef<[u8]>> Packet<T> {
     ///
     /// [new_unchecked]: #method.new_unchecked
     /// [check_len]: #method.check_len
+    #[flux_rs::trusted(no, reason = "build it build it build it")]
+    #[flux_rs::sig(fn (T[@buflen]) -> Result<Packet<T>{v : v.buffer == buflen}>)]
     pub fn new_checked(buffer: T) -> Result<Packet<T>> {
         let packet = Self::new_unchecked(buffer);
-        packet.check_len()?;
-        Ok(packet)
+        // packet.check_len()?;
+        // Ok(packet)
+        // desugar the above.
+        match packet.check_len() {
+            Ok(()) => Ok(packet),
+            Err(e) => Err(e),
+        }
     }
 
     /// Ensure that no accessor method will panic if called.
@@ -238,20 +249,31 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// [set_header_len]: #method.set_header_len
     /// [set_total_len]: #method.set_total_len
     #[allow(clippy::if_same_then_else)]
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(
+        fn(self: &Packet<T>[@buf]) -> Result<()>
+    )]
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
     pub fn check_len(&self) -> Result<()> {
-        let len = self.buffer.as_ref().len();
-        if len < field::DST_ADDR.end {
-            Err(Error)
-        } else if len < self.header_len() as usize {
-            Err(Error)
-        } else if self.header_len() as u16 > self.total_len() {
-            Err(Error)
-        } else if len < self.total_len() as usize {
-            Err(Error)
-        } else if self.header_len() < MINIMUM_IHL_BYTES {
+        // let len = self.buffer.as_ref().len();
+        let data = self.buffer.as_ref();
+        let len = data.len();
+        // if len < field::DST_ADDR.end {
+        if len < 20 { // field::DST_ADDR.end is 20, but flux doesn't know that
             Err(Error)
         } else {
-            Ok(())
+            flux_rs::assert(len >= 20);
+             if len < self.header_len() as usize {
+                Err(Error)
+            } else if self.header_len() as u16 > self.total_len() {
+                Err(Error)
+            } else if len < self.total_len() as usize {
+                Err(Error)
+            } else if self.header_len() < MINIMUM_IHL_BYTES {
+                Err(Error)
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -269,6 +291,11 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the header length, in octets.
     #[inline]
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(
+        fn(self: &Packet<T>[@buf]) -> u8 requires 1 <= <T as AsRef<[u8]>>::as_ref_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic] // why do i need this?
     pub fn header_len(&self) -> u8 {
         let data = self.buffer.as_ref();
         (data[field::VER_IHL] & 0x0f) * 4
@@ -288,6 +315,11 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the total length field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(
+        fn(self: &Packet<T>[@buf]) -> u16 requires 4 <= <T as AsRef<[u8]>>::as_ref_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic] // why do i need this?
     pub fn total_len(&self) -> u16 {
         let data = self.buffer.as_ref();
         NetworkEndian::read_u16(&data[field::LENGTH])
@@ -469,6 +501,13 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the time to live field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic occurs here")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], value: u8)
+        requires
+            9 < <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_hop_limit(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         data[field::TTL] = value
@@ -521,7 +560,17 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 }
 
+#[flux_rs::assoc(
+    fn as_ref_reft(source: Self) -> int {
+        <T as AsRef<[u8]>>::as_ref_reft(source.buffer)
+    }
+)]
 impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(
+        fn(self: &Self[@source])
+            -> &[u8][Self::as_ref_reft(source)]
+    )]
     fn as_ref(&self) -> &[u8] {
         self.buffer.as_ref()
     }
@@ -581,6 +630,17 @@ impl Repr {
     }
 
     /// Emit a high-level representation into an Internet Protocol version 4 packet.
+    #[flux_rs::trusted(no, reason = "calls packet.set_hop_limit")]
+    #[flux_rs::sig(
+        fn(
+            self: &Self,
+            packet: &mut Packet<T>[@buf],
+            checksum_caps: &ChecksumCapabilities
+        )
+        requires
+            20 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(
         &self,
         packet: &mut Packet<T>,

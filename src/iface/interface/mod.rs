@@ -701,7 +701,7 @@ impl Interface {
         })
     }
 
-    #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
+    // #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
     fn socket_egress(
         &mut self,
         device: &mut (impl Device + ?Sized),

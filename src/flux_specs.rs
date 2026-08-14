@@ -1,15 +1,32 @@
 use flux_rs::*;
 
 #[extern_spec(core::convert)]
-trait AsRef<T> {
+#[assoc(fn as_ref_reft(source: Self) -> T)]
+trait AsRef<T: ?Sized> {
     #[no_panic]
+    #[spec(
+        fn(self: &Self[@source])
+            -> &T[Self::as_ref_reft(source)]
+    )]
     fn as_ref(&self) -> &T;
 }
 
 #[extern_spec(core::convert)]
-trait AsMut<T> {
+#[assoc(fn as_mut_reft(source: Self) -> T)]
+trait AsMut<T: ?Sized> {
     #[no_panic]
+    #[spec(
+        fn(self: &mut Self[@source])
+            -> &mut T[Self::as_mut_reft(source)]
+    )]
     fn as_mut(&mut self) -> &mut T;
+}
+
+#[extern_spec(core::slice)]
+impl<T> [T] {
+    #[no_panic]
+    #[spec(fn(self: &Self[@n]) -> usize[n])]
+    fn len(&self) -> usize;
 }
 
 #[extern_spec(core::convert)]
