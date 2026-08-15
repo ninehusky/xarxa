@@ -423,19 +423,6 @@ pub trait TxToken {
     fn set_meta(&mut self, meta: PacketMeta) {}
 }
 
-/// Tripwires asserting that the `TxToken::consume` signature above is actually
-/// *applied* by Flux, rather than parsed and silently dropped.
-///
-/// These are not `#[test]`s; there is nothing to run. They are checked by
-/// `cargo flux` and they fail the build if the spec stops taking effect. The
-/// signature relies on refining a closure parameter, which is newer machinery
-/// than the rest of the proof, so a silent regression is a realistic failure
-/// mode: the spec would still parse, `consume` would still be trusted, and the
-/// error count downstream would simply drop without explanation.
-///
-/// `demand_len` deliberately avoids `<[u8]>::len` and slice indexing, so that
-/// it depends on no extern spec — slices are refined by length natively. That
-/// keeps the tripwire honest even though this crate has no `flux_specs`.
 #[cfg(flux)]
 #[allow(dead_code)]
 mod spec_is_live {
