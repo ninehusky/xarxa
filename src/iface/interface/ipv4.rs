@@ -7,6 +7,7 @@ impl Interface {
     /// processed or emitted, and thus, whether the readiness of any socket might
     /// have changed.
     #[cfg(feature = "proto-ipv4-fragmentation")]
+    #[flux_rs::trusted(no, reason = "discharges dispatch_ipv4_frag's fragmenter precondition")]
     pub(super) fn ipv4_egress(&mut self, device: &mut (impl Device + ?Sized)) {
         // Reset the buffer when we transmitted everything.
         if self.fragmenter.finished() {
@@ -415,23 +416,114 @@ impl InterfaceInner {
         }
     }
 
+    /// Borrow `count` bytes of the fragmentation buffer starting at `at`.
+    ///
+    /// ASSUMED, NOT PROVEN: that `at + count` is within `buf`. It holds because `at` is
+    /// `frag_offset + header_len`, `frag_offset` never passes `sent_bytes`, and `packet_len` is
+    /// bounded by the fragmentation buffer (checked in `dispatch_ip`). Stating it properly means
+    /// refining the nested `Ipv4Fragmenter` so `frag_offset` is tracked, which is not done yet.
     #[cfg(feature = "proto-ipv4-fragmentation")]
+    #[flux_rs::trusted(yes, reason = "needs `frag_offset` refined into `Ipv4Fragmenter`")]
+    #[flux_rs::sig(fn(&[u8], usize, count: usize[@n]) -> &[u8][n])]
+    #[flux_rs::no_panic]
+    fn frag_payload(buf: &[u8], at: usize, count: usize) -> &[u8] {
+        &buf[at..at + count]
+    }
+
+    /// Emit the IPv4 header of a single fragment into `buf`.
+    ///
+    /// Split out of `dispatch_ipv4_frag` so the buffer arrives as a freshly refined parameter
+    /// rather than a returned `&mut` that has lost its length index -- see flux-rs/flux#1714.
+    #[cfg(feature = "proto-ipv4-fragmentation")]
+    #[flux_rs::trusted(no, reason = "carries the fragment buffer length to the ipv4 setters")]
+    #[flux_rs::sig(
+        fn(
+            buf: Buf[@blen],
+            repr: &Ipv4Repr,
+            checksum_caps: &ChecksumCapabilities,
+            ident: u16,
+            more_frags: bool,
+            frag_offset: u16,
+            payload: &[u8][@m],
+        )
+        requires 20 + m <= blen
+    )]
+    fn emit_ipv4_frag_header(
+        buf: Buf<'_>,
+        repr: &Ipv4Repr,
+        checksum_caps: &ChecksumCapabilities,
+        ident: u16,
+        more_frags: bool,
+        frag_offset: u16,
+        payload: &[u8],
+    ) {
+        // Payload first: it lands past the 20-byte header, so the regions are disjoint and the
+        // buffer is only moved into the packet afterwards.
+        let mut buf = buf;
+        buf.copy_at(20, payload);
+
+        let mut packet = Ipv4Packet::new_unchecked(buf);
+        repr.emit(&mut packet, checksum_caps);
+        packet.set_ident(ident);
+        packet.set_more_frags(more_frags);
+        packet.set_dont_frag(false);
+        packet.set_frag_offset(frag_offset);
+
+        if checksum_caps.ipv4.tx() {
+            packet.fill_checksum_with_header_len(20);
+        }
+    }
+
+    #[cfg(feature = "proto-ipv4-fragmentation")]
+    // Checked, but deliberately not `no_panic` yet: this discharges `Ipv4Repr::emit`'s length
+    // precondition at the `emit` call below. Full panic-freedom additionally owes the
+    // `frag.buffer` slicing and `ethernet_or_panic`, which are separate obligations.
+    // `p <= 4096` is `packet_len <= FRAGMENTATION_BUFFER_SIZE`, established by the guard in
+    // `dispatch_ip` (mod.rs: `if frag.buffer.len() < total_ip_len { ... return Ok(()) }`), which
+    // drops any packet that would not fit. Written as a literal because flux cannot see through
+    // the config const -- it must be kept in step with `FRAGMENTATION_BUFFER_SIZE`.
+    #[flux_rs::trusted(no, reason = "carries the tx buffer length from `consume` to `emit`")]
+    #[flux_rs::sig(
+        fn(
+            self: &mut Self,
+            tx_token: Tx,
+            frag: &strg Fragmenter[@p, @s],
+        )
+        requires s <= p && p <= 4096
+        ensures frag: Fragmenter{v: v.sent_bytes <= v.packet_len}
+    )]
     pub(super) fn dispatch_ipv4_frag<Tx: TxToken>(&mut self, tx_token: Tx, frag: &mut Fragmenter) {
         let caps = self.caps.clone();
 
-        let max_fragment_size = self.max_ipv4_fragment_size(frag.ipv4.repr.buffer_len());
-        let payload_len = (frag.packet_len - frag.sent_bytes).min(max_fragment_size);
+        let max_fragment_size = self.max_ipv4_fragment_size(frag.ipv4.repr.buffer_len(), self.ip_mtu());
+        // Explicit branch rather than `.min(..)`: `Ord::min` has no flux spec, so its result
+        // is opaque and the `sent_bytes <= packet_len` invariant cannot be re-established.
+        let remaining = frag.packet_len - frag.sent_bytes;
+        let payload_len = if remaining < max_fragment_size {
+            remaining
+        } else {
+            max_fragment_size
+        };
         let ip_len = payload_len + frag.ipv4.repr.buffer_len();
 
-        let more_frags = (frag.packet_len - frag.sent_bytes) != payload_len;
+        let more_frags = remaining != payload_len;
         frag.ipv4.repr.payload_len = payload_len;
         frag.sent_bytes += payload_len;
 
-        let mut tx_len = ip_len;
+        // Bind the Ethernet header length once. Previously this was two independent
+        // `matches!(self.medium, Medium::Ethernet)` tests -- one adding to `tx_len`, one
+        // reslicing the buffer below -- which flux cannot correlate, leaving the remaining
+        // buffer length unprovable. One binding ties them together.
         #[cfg(feature = "medium-ethernet")]
-        if matches!(self.medium, Medium::Ethernet) {
-            tx_len += EthernetFrame::<&[u8]>::header_len();
-        }
+        let eth_len = if matches!(self.medium, Medium::Ethernet) {
+            EthernetFrame::<&[u8]>::header_len()
+        } else {
+            0
+        };
+        #[cfg(not(feature = "medium-ethernet"))]
+        let eth_len = 0;
+
+        let tx_len = ip_len + eth_len;
 
         // Emit function for the Ethernet header.
         #[cfg(feature = "medium-ethernet")]
@@ -450,28 +542,31 @@ impl InterfaceInner {
             }
         };
 
-        tx_token.consume(tx_len, |mut tx_buffer| {
+        tx_token.consume(tx_len, |tx_buffer| {
             #[cfg(feature = "medium-ethernet")]
-            if matches!(self.medium, Medium::Ethernet) {
+            if eth_len > 0 {
                 emit_ethernet(&IpRepr::Ipv4(frag.ipv4.repr), tx_buffer);
-                tx_buffer = &mut tx_buffer[EthernetFrame::<&[u8]>::header_len()..];
             }
 
-            let mut packet =
-                Ipv4Packet::new_unchecked(&mut tx_buffer[..frag.ipv4.repr.buffer_len()]);
-            frag.ipv4.repr.emit(&mut packet, &caps.checksum);
-            packet.set_ident(frag.ipv4.ident);
-            packet.set_more_frags(more_frags);
-            packet.set_dont_frag(false);
-            packet.set_frag_offset(frag.ipv4.frag_offset);
+            let frag_start = frag.ipv4.frag_offset as usize + frag.ipv4.repr.buffer_len();
+            // Coerce the fixed-size array to a slice: array indexing does not carry the
+            // output length the way the slice `SliceIndex` spec does.
+            let frag_buf: &[u8] = &frag.buffer;
+            let src = Self::frag_payload(frag_buf, frag_start, payload_len);
 
-            if caps.checksum.ipv4.tx() {
-                packet.fill_checksum();
-            }
-
-            tx_buffer[frag.ipv4.repr.buffer_len()..][..payload_len].copy_from_slice(
-                &frag.buffer[frag.ipv4.frag_offset as usize + frag.ipv4.repr.buffer_len()..]
-                    [..payload_len],
+            // The ipv4 header starts after the ethernet header. `Buf::with_offset` carries the
+            // remaining length in its refinement without ever handing back a sub-slice
+            // reference, which is what loses it (flux-rs/flux#1714).
+            Self::emit_ipv4_frag_header(
+                Buf::with_offset(tx_buffer, eth_len),
+                &frag.ipv4.repr,
+                &caps.checksum,
+                frag.ipv4.ident,
+                more_frags,
+                frag.ipv4.frag_offset,
+                // Single `Range` index, not a chained `[a..][..n]`: the chain's intermediate
+                // slice loses its length, leaving the source length unknown.
+                src,
             );
 
             // Update the frag offset for the next fragment.

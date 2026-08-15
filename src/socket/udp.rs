@@ -410,8 +410,8 @@ impl<'a> Socket<'a> {
     /// and `Err(Error::Truncated)` if there is not enough transmit buffer capacity
     /// to ever send this packet.
     #[flux_rs::trusted(no, reason = "checking Socket invariant")]
-    #[flux_rs::sig(fn(self: &mut Socket[@t], usize, UdpMetadata{m: t == -1 || m.dst_ty == t})
-                     -> Result<&mut [u8], SendError>)]
+    #[flux_rs::sig(fn(self: &mut Socket[@t], usize[@n], UdpMetadata{m: t == -1 || m.dst_ty == t})
+                     -> Result<&mut [u8][n], SendError>)]
     pub fn send(
         &mut self,
         size: usize,
