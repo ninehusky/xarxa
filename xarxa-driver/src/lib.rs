@@ -409,6 +409,7 @@ pub trait TxToken {
     /// closure `f` with a mutable reference to that buffer. The closure should construct
     /// a valid network packet (e.g. an ethernet packet) in the buffer. When the closure
     /// returns, the transmit buffer is sent out.
+    #[flux_rs::trusted(yes, reason = "needs #23 to close before we can check this")]
     #[flux_rs::sig(
         fn(self: Self, len: usize[@n], f: F) -> R
         where
