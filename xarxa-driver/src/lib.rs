@@ -409,7 +409,6 @@ pub trait TxToken {
     /// closure `f` with a mutable reference to that buffer. The closure should construct
     /// a valid network packet (e.g. an ethernet packet) in the buffer. When the closure
     /// returns, the transmit buffer is sent out.
-    #[flux_rs::trusted(no, reason = "spec needed to prove `consume` is correct")]
     #[flux_rs::sig(
         fn(self: Self, len: usize[@n], f: F) -> R
         where
@@ -422,4 +421,46 @@ pub trait TxToken {
     /// The packet metadata to be associated with the frame to be transmitted by this [`TxToken`].
     #[allow(unused_variables)]
     fn set_meta(&mut self, meta: PacketMeta) {}
+}
+
+/// Tripwires asserting that the `TxToken::consume` signature above is actually
+/// *applied* by Flux, rather than parsed and silently dropped.
+///
+/// These are not `#[test]`s; there is nothing to run. They are checked by
+/// `cargo flux` and they fail the build if the spec stops taking effect. The
+/// signature relies on refining a closure parameter, which is newer machinery
+/// than the rest of the proof, so a silent regression is a realistic failure
+/// mode: the spec would still parse, `consume` would still be trusted, and the
+/// error count downstream would simply drop without explanation.
+///
+/// `demand_len` deliberately avoids `<[u8]>::len` and slice indexing, so that
+/// it depends on no extern spec — slices are refined by length natively. That
+/// keeps the tripwire honest even though this crate has no `flux_specs`.
+#[cfg(flux)]
+#[allow(dead_code)]
+mod spec_is_live {
+    use super::TxToken;
+
+    /// Accepts only a slice whose length is exactly `n`.
+    #[flux_rs::sig(fn(&mut [u8][@m], usize[@n]) requires m == n)]
+    fn demand_len(_buf: &mut [u8], _n: usize) {}
+
+    /// Positive control. Discharging `m == n` is possible *only* through the
+    /// `FnOnce(&mut [u8]{v : v == n})` bound on `consume`. If that bound stops
+    /// being applied, this stops verifying and `cargo flux` fails here.
+    pub fn consume_hands_back_exactly_len<T: TxToken>(tok: T, len: usize) {
+        tok.consume(len, |buf| demand_len(buf, len))
+    }
+
+    /// Negative control, off by default. Demands one byte more than `consume`
+    /// promises, so Flux *must* reject it. If this ever verifies, the closure
+    /// refinement is vacuous and the positive control above proves nothing.
+    ///
+    /// Run with:
+    ///   RUSTFLAGS='--cfg flux_negative_control' cargo flux
+    /// Expect exactly one error, on the `demand_len` call below.
+    #[cfg(flux_negative_control)]
+    pub fn negative_control<T: TxToken>(tok: T, len: usize) {
+        tok.consume(len, |buf| demand_len(buf, len + 1))
+    }
 }

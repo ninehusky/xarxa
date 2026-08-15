@@ -15,6 +15,15 @@ license = "0BSD"
 [package.metadata.flux]
 enabled = true
 
+# `cfg(flux)` is injected by `cargo flux`; `cfg(flux_negative_control)` is set by
+# hand to build the negative control in `spec_is_live`. Neither is ever set by a
+# normal `cargo build`.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(flux)',
+    'cfg(flux_negative_control)',
+] }
+
 [dependencies]
 defmt = { version = "1.0.1", optional = true }
 flux-rs = { path = "../../flux/lib/flux-rs" }
