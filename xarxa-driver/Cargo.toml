@@ -12,8 +12,12 @@ keywords = ["ip", "tcp", "udp", "ethernet", "network"]
 categories = ["embedded", "network-programming"]
 license = "0BSD"
 
+[package.metadata.flux]
+enabled = true
+
 [dependencies]
 defmt = { version = "1.0.1", optional = true }
+flux-rs = { path = "../../flux/lib/flux-rs" }
 
 [features]
 defmt = ["dep:defmt"]
