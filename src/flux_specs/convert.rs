@@ -5,8 +5,6 @@
 
 use flux_rs::*;
 
-/// `as_ref_reft` is left abstract so each implementor states how its own refinement maps
-/// through the conversion; one that supplies no definition gets no fact, not a vacuous one.
 #[extern_spec(core::convert)]
 #[assoc(fn as_ref_reft(source: Self) -> T)]
 trait AsRef<T: ?Sized> {
