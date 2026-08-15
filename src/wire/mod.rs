@@ -501,7 +501,10 @@ impl core::fmt::Display for HardwareAddress {
 // `.into()` dispatches through core's blanket `Into` impl, which forwards to
 // `from_val` (see `crate::flux_specs`).
 #[cfg(feature = "medium-ethernet")]
-#[flux_rs::assoc(fn from_val(s: EthernetAddress, into: HardwareAddress) -> bool { into == (s % 2 == 0) })]
+// PARKED: flux rejects this with `from_val is not a member of trait From` -- the assoc on
+// the `From` extern spec in `flux_specs` is not registering, so this contributes nothing
+// today. Commented out rather than deleted; restore once that spec works.
+// #[flux_rs::assoc(fn from_val(s: EthernetAddress, into: HardwareAddress) -> bool { into == (s % 2 == 0) })]
 impl From<EthernetAddress> for HardwareAddress {
     #[flux_rs::sig(fn(EthernetAddress[@o0]) -> HardwareAddress[o0 % 2 == 0])]
     fn from(addr: EthernetAddress) -> Self {

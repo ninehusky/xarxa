@@ -185,7 +185,9 @@ impl defmt::Format for Address {
 /// A read/write wrapper around an Ethernet II frame buffer.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(buffer: T)]
 pub struct Frame<T: AsRef<[u8]>> {
+    #[flux_rs::field(T[buffer])]
     buffer: T,
 }
 
@@ -230,8 +232,13 @@ impl<T: AsRef<[u8]>> Frame<T> {
     }
 
     /// Return the length of a frame header.
+    // Literal rather than `HEADER_LEN` (= `field::PAYLOAD.start`): flux cannot see through the
+    // `Rest`/`Range` const. Callers reslice the tx buffer by this, so the value has to be visible.
+    #[flux_rs::trusted(no, reason = "14 is what the tx-buffer reslice arithmetic needs")]
+    #[flux_rs::sig(fn() -> usize[14])]
+    #[flux_rs::no_panic]
     pub const fn header_len() -> usize {
-        HEADER_LEN
+        14
     }
 
     /// Return the length of a buffer required to hold a packet with the payload
@@ -302,7 +309,14 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
     }
 }
 
+#[flux_rs::assoc(
+    fn as_ref_reft(source: Self) -> int {
+        <T as AsRef<[u8]>>::as_ref_reft(source.buffer)
+    }
+)]
 impl<T: AsRef<[u8]>> AsRef<[u8]> for Frame<T> {
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(self: &Self[@source]) -> &[u8][Self::as_ref_reft(source)])]
     fn as_ref(&self) -> &[u8] {
         self.buffer.as_ref()
     }
