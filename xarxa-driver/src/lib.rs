@@ -432,9 +432,6 @@ mod spec_is_live {
     #[flux_rs::sig(fn(&mut [u8][@m], usize[@n]) requires m == n)]
     fn demand_len(_buf: &mut [u8], _n: usize) {}
 
-    /// Positive control. Discharging `m == n` is possible *only* through the
-    /// `FnOnce(&mut [u8]{v : v == n})` bound on `consume`. If that bound stops
-    /// being applied, this stops verifying and `cargo flux` fails here.
     pub fn consume_hands_back_exactly_len<T: TxToken>(tok: T, len: usize) {
         tok.consume(len, |buf| demand_len(buf, len))
     }
