@@ -1,12 +1,11 @@
-//! `managed::ManagedSlice` length, and the `alloc::vec::Vec` refinement it needs.
+//! `managed::ManagedSlice` length.
 //!
-//! Third-party, not `core`, and entirely xarxa's claim. The `Deref`/`DerefMut` *trait*
-//! specs these impls hang off are flux-core copies and live in [`super::flux_core`].
+//! The load-bearing claim is on `Deref`: dereferencing preserves the length. The `Vec` and
+//! `ManagedSlice` refinements exist to give that length something to name.
 
 use flux_rs::*;
 
-// `Vec`'s sort is opaque here, so `ManagedSlice`'s `Owned(Vec<T>)` variant has no length to
-// name. Refine it ourselves; `opaque` because its fields are private.
+/// `Vec`'s sort is opaque here, so `ManagedSlice::Owned` has no length to name without this.
 #[extern_spec]
 #[refined_by(len: int)]
 #[invariant(0 <= len)]
@@ -18,8 +17,7 @@ struct Vec<T, A: core::alloc::Allocator = alloc::alloc::Global>;
 enum ManagedSlice<'a, T> {
     #[variant((&mut [T][@n]) -> ManagedSlice<T>[n])]
     Borrowed(&'a mut [T]),
-    // Present because the `alloc` feature is on in this build; the extern spec must list
-    // every variant of the real definition or flux rejects it outright.
+    // An extern spec must list every variant of the real definition or flux rejects it.
     #[variant((alloc::vec::Vec<T>[@n]) -> ManagedSlice<T>[n])]
     Owned(alloc::vec::Vec<T>),
 }

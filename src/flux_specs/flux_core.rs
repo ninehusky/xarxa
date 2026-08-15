@@ -1,34 +1,15 @@
-//! Specs copied verbatim out of flux-core. **Trust boundary: read this file as a
-//! transcription check, not as a set of claims.**
+//! Spec source copied verbatim from flux-core `696b795f31`, which xarxa cannot depend on
+//! (`cargo-flux` never passes `-L <sysroot>`, so flux_core's own `flux_attrs` dependency
+//! fails to resolve). `extern_spec` registers with flux wherever it appears, so pasting
+//! the source in is all that is needed -- these are live, not reference material.
 //!
-//! xarxa cannot depend on flux-core directly -- `cargo-flux` never passes `-L <sysroot>`,
-//! so flux_core's own dependency on `flux_attrs` fails to resolve and the crate cannot be
-//! injected. The items the wire code needs are therefore mirrored here.
+//! Review this file by diffing it, not by reading it. Every item is byte-identical to its
+//! original in `lib/flux-core/src/{ops/range.rs, ops/index.rs, ops/deref.rs,
+//! slice/index.rs}`; the only permitted deviation is `flux_rs::*` for `flux_attrs::*`.
+//! Anything xarxa claims on its own behalf belongs in a sibling module, not here.
 //!
-//! Every item below is byte-identical to its flux-core original, doc comments included:
-//!
-//! | item | flux-core source |
-//! | --- | --- |
-//! | `Range`, `RangeTo`, `RangeFrom` | `lib/flux-core/src/ops/range.rs` |
-//! | `Index` | `lib/flux-core/src/ops/index.rs` |
-//! | `Deref`, `DerefMut` | `lib/flux-core/src/ops/deref.rs` |
-//! | `SliceIndex` + its four impls, `Index`/`IndexMut` for `[T]` | `lib/flux-core/src/slice/index.rs` |
-//! | `<[T]>::len` | `lib/flux-core/src/slice/mod.rs` |
-//!
-//! Pinned at flux-core `696b795f31`. To re-check the copy, diff each item against that
-//! commit; the only permitted deviation is the import (`flux_rs::*` here, `flux_attrs::*`
-//! there -- xarxa depends on flux-rs, which re-exports the same macros).
-//!
-//! Only the items xarxa actually uses are mirrored. **Nothing xarxa asserts on its own
-//! behalf belongs in this file** -- that goes in a sibling module, where it gets reviewed
-//! as a claim. Delete this file once flux-core can be a dependency.
-//!
-//! # Soundness of `SliceIndex`-based annotations
-//!
-//! Carried over from flux-core's own note: several annotations rely on [`SliceIndex`]
-//! being a sealed trait. It requires `private_slice_index::Sealed`, which has no public
-//! path outside of `core`, so its set of implementations is fixed and exhaustive. The
-//! sealed implementations were inspected to ensure these specs are sound.
+//! flux-core's own soundness note, carried over: the `SliceIndex` annotations rely on it
+//! being a sealed trait, so its set of impls is fixed and exhaustive.
 
 #[allow(unused_imports)]
 use core::ops;
@@ -148,12 +129,5 @@ impl<T> SliceIndex<[T]> for ops::RangeTo<usize> {}
 #[flux::assoc(fn output_pred(r: Self, len: int, out: int) -> bool { out == len - r.start })]
 impl<T> SliceIndex<[T]> for ops::RangeFrom<usize> {}
 
-// --- slice/mod.rs ----------------------------------------------------------------------
-//
-// `<[T]>::len` is a flux-core copy but does NOT live here. Flux permits only one extern
-// spec per impl (`E0999: multiple extern specs for core::slice::<impl [T]>::T`), and
-// xarxa also refines `copy_from_slice` on that same inherent impl, so the two must share
-// a single block. It sits in `super::slice` with its provenance marked inline.
-//
-// The split errs toward the reviewed file rather than the trusted one: an item outside
-// this file is over-reviewed at worst, whereas an item wrongly inside it is under-reviewed.
+// `<[T]>::len` is also a flux-core copy, but flux allows only one extern spec per impl and
+// xarxa refines `copy_from_slice` on the same one. Both are in `super::slice`.

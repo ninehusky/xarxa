@@ -12,11 +12,6 @@
 //! | [`cmp`] | `min` | check the claim |
 //! | [`byteorder`] | `BigEndian::{read_u16, write_u16}` | check the claim |
 //! | [`managed`] | `Vec`, `ManagedSlice` and its `Deref`/`DerefMut` impls | check the claim |
-//!
-//! Nothing outside `flux_core` is a copy of anything; each item is a claim xarxa makes on
-//! its own behalf, and none of it is proven -- these are extern specs, so every one is an
-//! assumption discharged by reading the upstream body. Keep it that way: if an item comes
-//! from flux-core, it belongs in [`flux_core`] so the copy stays diffable.
 
 mod byteorder;
 mod cmp;
