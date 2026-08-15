@@ -75,6 +75,12 @@ pub struct TxToken<'a> {
 }
 
 impl<'a> phy::TxToken for TxToken<'a> {
+    #[flux_rs::trusted(no, reason = "checks TxToken::consume's buffer-length contract, #23")]
+    #[flux_rs::sig(
+        fn(self: Self, len: usize[@n], f: F) -> R
+        where
+            F: FnOnce(&mut [u8]{v : v == n}) -> R
+    )]
     fn consume<R, F>(self, len: usize, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
