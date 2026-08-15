@@ -266,7 +266,7 @@ impl<'a, Tx: phy::TxToken, S: PcapSink> phy::TxToken for TxToken<'a, Tx, S> {
         F: FnOnce(&mut [u8]) -> R,
     {
         self.token.consume(len, |buffer| {
-            let result = f(buffer);
+            let result = phy::call_with_buf(buffer, f);
             match self.mode {
                 PcapMode::Both | PcapMode::TxOnly => {
                     self.sink.borrow_mut().packet((self.clock)(), buffer)

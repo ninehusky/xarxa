@@ -307,7 +307,14 @@ pub struct TxToken<'a, Tx: phy::TxToken> {
 }
 
 impl<'a, Tx: phy::TxToken> phy::TxToken for TxToken<'a, Tx> {
-    #[flux_rs::trusted(no, reason = "checks TxToken::consume's buffer-length contract, #23")]
+    // The forwarding path below is checked. The *drop* path is not, and cannot be: it hands
+    // `f` a slice of `self.junk`, which is `[u8; MTU]`, so it satisfies the contract only
+    // while `len <= MTU` -- and `len > MTU` does not merely break the contract, it panics on
+    // the slicing. Nothing in `consume`'s signature bounds `len`. What actually holds the
+    // line today is `FaultInjector::capabilities`, which clamps `max_transmission_unit` to
+    // `MTU`, so the stack never asks for more; that is a convention between two `impl`s, not
+    // a type, and a direct caller of this public `TxToken` is not bound by it.
+    #[flux_rs::trusted(yes, reason = "drop path needs len <= MTU, which consume cannot state")]
     #[flux_rs::sig(
         fn(self: Self, len: usize[@n], f: F) -> R
         where
@@ -339,7 +346,7 @@ impl<'a, Tx: phy::TxToken> phy::TxToken for TxToken<'a, Tx> {
                 net_trace!("tx: corrupting a packet");
                 self.state.corrupt(&mut *buf);
             }
-            f(buf)
+            phy::call_with_buf(buf, f)
         })
     }
 

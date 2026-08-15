@@ -1,5 +1,4 @@
 use alloc::collections::VecDeque;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::phy::{self, ChecksumCapabilities, Device, DeviceCapabilities, DriverMedium};
@@ -85,8 +84,7 @@ impl<'a> phy::TxToken for TxToken<'a> {
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        let mut buffer = vec![0; len];
-        let result = f(&mut buffer);
+        let (result, buffer) = phy::with_zeroed_buf(len, f);
         self.queue.push_back(buffer);
         result
     }

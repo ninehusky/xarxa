@@ -131,7 +131,7 @@ impl<'a, Tx: phy::TxToken, FTx: Fuzzer> phy::TxToken for TxToken<'a, Tx, FTx> {
         F: FnOnce(&mut [u8]) -> R,
     {
         self.token.consume(len, |buf| {
-            let result = f(buf);
+            let result = phy::call_with_buf(buf, f);
             self.fuzzer.fuzz_packet(buf);
             result
         })

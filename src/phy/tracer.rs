@@ -132,7 +132,7 @@ impl<Tx: phy::TxToken> phy::TxToken for TxToken<Tx> {
         F: FnOnce(&mut [u8]) -> R,
     {
         self.token.consume(len, |buffer| {
-            let result = f(buffer);
+            let result = phy::call_with_buf(buffer, f);
             (self.writer)(TracerPacket {
                 buffer,
                 medium: self.medium,
