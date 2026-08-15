@@ -409,6 +409,12 @@ pub trait TxToken {
     /// closure `f` with a mutable reference to that buffer. The closure should construct
     /// a valid network packet (e.g. an ethernet packet) in the buffer. When the closure
     /// returns, the transmit buffer is sent out.
+    #[flux_rs::trusted(yes, reason = "needs #23 to close before we can check this")]
+    #[flux_rs::sig(
+        fn(self: Self, len: usize[@n], f: F) -> R
+        where
+            F: FnOnce(&mut [u8]{v : v == n}) -> R
+    )]
     fn consume<R, F>(self, len: usize, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R;
@@ -416,4 +422,30 @@ pub trait TxToken {
     /// The packet metadata to be associated with the frame to be transmitted by this [`TxToken`].
     #[allow(unused_variables)]
     fn set_meta(&mut self, meta: PacketMeta) {}
+}
+
+#[cfg(flux)]
+#[allow(dead_code)]
+mod spec_is_live {
+    use super::TxToken;
+
+    /// Accepts only a slice whose length is exactly `n`.
+    #[flux_rs::sig(fn(&mut [u8][@m], usize[@n]) requires m == n)]
+    fn demand_len(_buf: &mut [u8], _n: usize) {}
+
+    pub fn consume_hands_back_exactly_len<T: TxToken>(tok: T, len: usize) {
+        tok.consume(len, |buf| demand_len(buf, len))
+    }
+
+    /// Negative control, off by default. Demands one byte more than `consume`
+    /// promises, so Flux *must* reject it. If this ever verifies, the closure
+    /// refinement is vacuous and the positive control above proves nothing.
+    ///
+    /// Run with:
+    ///   RUSTFLAGS='--cfg flux_negative_control' cargo flux
+    /// Expect exactly one error, on the `demand_len` call below.
+    #[cfg(flux_negative_control)]
+    pub fn negative_control<T: TxToken>(tok: T, len: usize) {
+        tok.consume(len, |buf| demand_len(buf, len + 1))
+    }
 }
