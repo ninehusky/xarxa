@@ -1,5 +1,11 @@
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 #![deny(unsafe_code)]
+// Only under `cargo flux`, which injects `--cfg=flux` and pins its own nightly. Needed so
+// `flux_specs` can name `PointeeSized` when mirroring core's `AsMut for &mut T` impl, whose
+// generics an extern spec must match exactly. Stable and MSRV builds never see this.
+#![cfg_attr(flux, feature(sized_hierarchy))]
+// Needed only so `flux_specs` can name `Vec`'s allocator parameter when refining it.
+#![cfg_attr(flux, feature(allocator_api))]
 
 //! The _xarxa_ library is built in a layered structure, with the layers corresponding
 //! to the levels of API abstraction. Only the highest layers would be used by a typical
@@ -185,6 +191,7 @@ pub mod time;
 pub mod wire;
 
 mod flux_specs;
+pub(crate) mod flux_util;
 
 #[cfg(all(
     test,
