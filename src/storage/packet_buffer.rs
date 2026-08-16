@@ -77,6 +77,15 @@ impl<'a, H> PacketBuffer<'a, H> {
     /// Enqueue a single packet with the given header into the buffer, and
     /// return a reference to its payload, or return `Err(Full)`
     /// if the buffer is full.
+    // Checked. The `Ok` payload really is `size` bytes long: the contiguous-window branches
+    // below establish it, resting on the `RingBuffer` refinement.
+    #[flux_rs::trusted(no, reason = "the postcondition RawSocket::process depends on")]
+    #[flux_rs::sig(
+        fn(self: &mut Self, size: usize[@n], header: H) -> Result<&mut [u8][n], Full>
+    )]
+    // Deliberately not `no_panic`: what `RawSocket::process` needs from this is the length
+    // postcondition. Panic-freedom additionally owes the `debug_assert!` below and the
+    // `enqueue_one`/`enqueue_many` calls, which is a separate obligation.
     pub fn enqueue(&mut self, size: usize, header: H) -> Result<&mut [u8], Full> {
         if self.payload_ring.capacity() < size || self.metadata_ring.is_full() {
             return Err(Full);
