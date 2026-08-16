@@ -8,7 +8,7 @@ use crate::socket::PollAt;
 use crate::socket::WakerRegistration;
 
 use crate::storage::Empty;
-use crate::wire::{IpProtocol, IpRepr, IpVersion};
+use crate::wire::{Buf, IpProtocol, IpRepr, IpVersion};
 #[cfg(feature = "proto-ipv4")]
 use crate::wire::{Ipv4Packet, Ipv4Repr};
 #[cfg(feature = "proto-ipv6")]
@@ -352,6 +352,7 @@ impl<'a> Socket<'a> {
         true
     }
 
+    #[flux_rs::trusted(no, reason = "entry point: must discharge IpRepr::emit's buffer bound")]
     pub(crate) fn process(&mut self, cx: &mut Context, ip_repr: &IpRepr, payload: &[u8]) {
         debug_assert!(self.accepts(ip_repr));
 
@@ -367,8 +368,12 @@ impl<'a> Socket<'a> {
 
         match self.rx_buffer.enqueue(total_len, ()) {
             Ok(buf) => {
-                ip_repr.emit(&mut buf[..header_len], &cx.checksum_caps());
-                buf[header_len..].copy_from_slice(payload);
+                // Routed through `Buf` rather than `&mut buf[..header_len]` / `buf[header_len..]`:
+                // a `&mut` sub-slice loses its length index (flux-rs/flux#1714). `emit` only
+                // writes the header, so handing it the whole buffer is equivalent.
+                let mut buf = Buf::new(buf);
+                ip_repr.emit(buf.reborrow(), &cx.checksum_caps());
+                buf.copy_at(header_len, payload);
             }
             Err(_) => net_trace!(
                 "raw:{:?}:{:?}: buffer full, dropped incoming packet",

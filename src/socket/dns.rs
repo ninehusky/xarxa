@@ -571,14 +571,19 @@ impl<'a> Socket<'a> {
                     pq.server_idx += 1;
                 }
                 // Check if we've run out of servers to try.
-                if pq.server_idx >= servers.len() {
+                //
+                // Bound once: each read of `pq.server_idx` through the `&mut` is a fresh
+                // projection, so the bound established by this guard would not attach to the
+                // value used to index below.
+                let server_idx = pq.server_idx;
+                if server_idx >= servers.len() {
                     net_trace!("already tried all servers.");
                     q.set_state(State::Failure);
                     continue;
                 }
 
                 // Check so the IP address is valid
-                if servers[pq.server_idx].is_unspecified() {
+                if servers[server_idx].is_unspecified() {
                     net_trace!("invalid unspecified DNS server addr.");
                     q.set_state(State::Failure);
                     continue;
@@ -614,7 +619,7 @@ impl<'a> Socket<'a> {
                     dst_port,
                 };
 
-                let dst_addr = servers[pq.server_idx];
+                let dst_addr = servers[server_idx];
                 let src_addr = match cx.get_source_address(&dst_addr) {
                     Some(src_addr) => src_addr,
                     None => {

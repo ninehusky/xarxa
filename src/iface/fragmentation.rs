@@ -272,12 +272,27 @@ impl Fragmenter {
 }
 
 #[cfg(feature = "_proto-fragmentation")]
+// Refined so callers can state `sent_bytes <= packet_len` where they need it. Deliberately NOT
+// a struct `#[invariant]`: that would oblige every writer of these fields to re-establish it,
+// including the sixlowpan paths, which are unrelated to the ipv4 proof and are all trusted --
+// so it would be assumed at five sites to be proved at one. `dispatch_ipv4_frag` takes it as a
+// precondition instead, and `ipv4_egress` discharges it with the guard it already has.
+#[flux_rs::refined_by(packet_len: int, sent_bytes: int)]
+// `packet_len` never exceeds `buffer`'s length: it is only ever set behind a
+// `if pkt.buffer.len() < total_size { ...drop... }` guard -- in `dispatch_ip` for ipv4 and in
+// `dispatch_sixlowpan` for 6LoWPAN -- and is zero after `new`/`reset`. Unlike a
+// `sent_bytes <= packet_len` invariant, every writer of this field already checks it, so stating
+// it conscripts nobody. Those writers are trusted, so flux takes this on their word.
+// The literal must track `FRAGMENTATION_BUFFER_SIZE`; flux cannot see through the config const.
+#[flux_rs::invariant(packet_len <= 4096)]
 pub(crate) struct Fragmenter {
     /// The buffer that holds the unfragmented 6LoWPAN packet.
     pub buffer: [u8; FRAGMENTATION_BUFFER_SIZE],
     /// The size of the packet without the IEEE802.15.4 header and the fragmentation headers.
+    #[flux_rs::field(usize[packet_len])]
     pub packet_len: usize,
     /// The amount of bytes that already have been transmitted.
+    #[flux_rs::field(usize[sent_bytes])]
     pub sent_bytes: usize,
 
     #[cfg(feature = "proto-ipv4-fragmentation")]
