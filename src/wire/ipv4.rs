@@ -214,7 +214,7 @@ pub const HEADER_LEN: usize = field::DST_ADDR.end;
 
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Imbue a raw octet buffer with IPv4 packet structure.
-    #[flux_rs::trusted(no, reason = "build it build it build it")]
+    #[flux_rs::trusted(no, reason = "carries the buffer length into the Packet index")]
     #[flux_rs::sig(fn (T[@buflen]) -> Packet<T>{v : v.buffer == buflen})]
     pub const fn new_unchecked(buffer: T) -> Packet<T> {
         Packet { buffer }
@@ -224,13 +224,10 @@ impl<T: AsRef<[u8]>> Packet<T> {
     ///
     /// [new_unchecked]: #method.new_unchecked
     /// [check_len]: #method.check_len
-    #[flux_rs::trusted(no, reason = "build it build it build it")]
+    #[flux_rs::trusted(no, reason = "carries the buffer length through the Result")]
     #[flux_rs::sig(fn (T[@buflen]) -> Result<Packet<T>{v : v.buffer == buflen}>)]
     pub fn new_checked(buffer: T) -> Result<Packet<T>> {
         let packet = Self::new_unchecked(buffer);
-        // packet.check_len()?;
-        // Ok(packet)
-        // desugar the above.
         match packet.check_len() {
             Ok(()) => Ok(packet),
             Err(e) => Err(e),
@@ -255,15 +252,12 @@ impl<T: AsRef<[u8]>> Packet<T> {
     )]
     #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
     pub fn check_len(&self) -> Result<()> {
-        // let len = self.buffer.as_ref().len();
         let data = self.buffer.as_ref();
         let len = data.len();
-        // if len < field::DST_ADDR.end {
         if len < 20 { // field::DST_ADDR.end is 20, but flux doesn't know that
             Err(Error)
         } else {
-            flux_rs::assert(len >= 20);
-             if len < self.header_len() as usize {
+            if len < self.header_len() as usize {
                 Err(Error)
             } else if self.header_len() as u16 > self.total_len() {
                 Err(Error)

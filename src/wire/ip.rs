@@ -577,10 +577,6 @@ impl defmt::Format for ListenEndpoint {
 }
 
 /// See the note on `From<Endpoint>`: the assoc is what survives `.into()`.
-// PARKED: flux rejects this with `from_val is not a member of trait From` -- the assoc on
-// the `From` extern spec in `flux_specs` is not registering, so this contributes nothing
-// today. Commented out rather than deleted; restore once that spec works.
-// #[flux_rs::assoc(fn from_val(s: int, into: ListenEndpoint) -> bool { into == -1 })]
 impl From<u16> for ListenEndpoint {
     #[flux_rs::trusted(reason = "opaque: a bare port binds no address")]
     #[flux_rs::sig(fn(u16) -> ListenEndpoint[-1])]
@@ -591,10 +587,6 @@ impl From<u16> for ListenEndpoint {
 
 /// Ties the conversion's result index to the source, so `.into()` (which routes through the
 /// blanket `Into` spec, whose `from_val` defaults to `true`) does not lose the version.
-// PARKED: flux rejects this with `from_val is not a member of trait From` -- the assoc on
-// the `From` extern spec in `flux_specs` is not registering, so this contributes nothing
-// today. Commented out rather than deleted; restore once that spec works.
-// #[flux_rs::assoc(fn from_val(s: Endpoint, into: ListenEndpoint) -> bool { into == s })]
 impl From<Endpoint> for ListenEndpoint {
     #[flux_rs::trusted(reason = "opaque: constructs a bound endpoint from a full one")]
     #[flux_rs::sig(fn(Endpoint[@v]) -> ListenEndpoint[v])]
@@ -905,8 +897,6 @@ impl Repr {
     /// high-level representation.
     ///
     /// This is the same as `repr.buffer_len() + repr.payload_len()`.
-    // The per-variant lower bound is what `dispatch_ip` needs to size its tx buffer; without a
-    // signature here `total_len` is unrefined and the emit precondition is unprovable.
     #[flux_rs::trusted(no, reason = "carries the per-variant header floor to dispatch_ip")]
     #[flux_rs::sig(
         fn(self: &Self[@ip_ty]) -> usize{n:
