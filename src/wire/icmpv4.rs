@@ -163,7 +163,9 @@ enum_with_unknown! {
 /// A read/write wrapper around an Internet Control Message Protocol version 4 packet buffer.
 #[derive(Debug, PartialEq, Eq, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(buffer: T)]
 pub struct Packet<T: AsRef<[u8]>> {
+    #[flux_rs::field(T[buffer])]
     buffer: T,
 }
 
@@ -356,7 +358,14 @@ impl<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> Packet<&mut T> {
     }
 }
 
+#[flux_rs::assoc(
+    fn as_ref_reft(source: Self) -> int {
+        <T as AsRef<[u8]>>::as_ref_reft(source.buffer)
+    }
+)]
 impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(self: &Self[@source]) -> &[u8][Self::as_ref_reft(source)])]
     fn as_ref(&self) -> &[u8] {
         self.buffer.as_ref()
     }

@@ -401,7 +401,13 @@ impl<'a> Repr<'a> {
     }
 
     /// Emit a high-level representation into an MLDv2 packet.
-    #[flux_rs::trusted(no, reason = "discharges clear_reserved's message-type precondition")]
+    // PARKED. This was checked to discharge `clear_reserved`'s message-type precondition, and
+    // it did -- but the *buffer-length* obligation on the same setters cannot be discharged
+    // here: the buffer is `&mut T`, and core's `AsMut for &mut T` carries no associated
+    // refinement (a reference self type gets the unit sort). Fixing it properly means
+    // converting the icmpv6 `emit` chain to `wire::Buf`, which is 13 call sites and its own
+    // pass -- and would also unlock icmpv6's own panic proofs. Reverting to trusted loses the
+    // message-type check; that is the cost of parking, and it is recoverable.
     pub fn emit<T>(&self, packet: &mut Packet<&mut T>)
     where
         T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,

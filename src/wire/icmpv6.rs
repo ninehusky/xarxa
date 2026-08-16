@@ -195,12 +195,13 @@ impl fmt::Display for TimeExceeded {
 /// A read/write wrapper around an Internet Control Message Protocol version 6 packet buffer.
 #[derive(Debug, PartialEq, Eq, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[flux_rs::refined_by(code: int)]
+#[flux_rs::refined_by(code: int, buffer: T)]
 pub struct Packet<T: AsRef<[u8]>> {
     /// Mirrors `buffer[field::TYPE]`, which Flux cannot see. `new_unchecked` reads it out
     /// of the buffer and `set_msg_type` writes both; nothing else in `wire` writes octet 0.
     #[flux_rs::field(Message[code])]
     ty: Message,
+    #[flux_rs::field(T[buffer])]
     pub(super) buffer: T,
 }
 
@@ -267,6 +268,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     ///
     /// [check_len]: #method.check_len
     #[flux_rs::trusted(no, reason = "establishes the `ty` mirror of `buffer[field::TYPE]`")]
+    #[flux_rs::sig(fn(T[@b]) -> Packet<T>{v: v.buffer == b})]
     pub fn new_unchecked(buffer: T) -> Packet<T> {
         let ty = match buffer.as_ref().first() {
             Some(&octet) => Message::from(octet),
@@ -360,7 +362,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the message type field.
     #[flux_rs::trusted(no, reason = "backs Packet's code index")]
-    #[flux_rs::sig(fn(&Packet<T>[@code]) -> Message[code])]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> Message[p.code])]
     #[inline]
     pub fn msg_type(&self) -> Message {
         self.ty
@@ -462,7 +464,11 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the message type field.
     #[flux_rs::trusted(no, reason = "the `ensures` is the link clear_reserved's proof rests on")]
-    #[flux_rs::sig(fn(self: &strg Packet<T>, Message[@code]) ensures self: Packet<T>[code])]
+    #[flux_rs::sig(
+        fn(self: &strg Packet<T>[@p], Message[@code])
+        requires 0 < <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        ensures self: Packet<T>[code, p.buffer]
+    )]
     #[inline]
     pub fn set_msg_type(&mut self, value: Message) {
         self.ty = value;
@@ -472,7 +478,10 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the message code field.
     #[flux_rs::trusted(no, reason = "the preserved index is a link clear_reserved's proof rests on")]
-    #[flux_rs::sig(fn(&mut Packet<T>[@code], u8))]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p], u8)
+        requires 1 < <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
     #[inline]
     pub fn set_msg_code(&mut self, value: u8) {
         let data = self.buffer.as_mut();
@@ -488,27 +497,35 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// [set_msg_type]: #method.set_msg_type
     #[allow(unsafe_code)]
     #[flux_rs::trusted(no, reason = "discharges the assert(false) licensing unreachable_unchecked")]
-    #[flux_rs::sig(fn(&mut Packet<T>[@code])
-        requires code == 0x82 || code == 0x85 || code == 0x87
-              || code == 0x88 || code == 0x89 || code == 0x8f)]
+    // The buffer bound is per-arm: MLD query also clears `SQRV` at octet 24, MLD report only
+    // reaches `RECORD_RESV.end`, and the NDISC types only reach `UNUSED.end`.
+    #[flux_rs::sig(fn(&mut Packet<T>[@p])
+        requires (p.code == 0x82 || p.code == 0x85 || p.code == 0x87
+               || p.code == 0x88 || p.code == 0x89 || p.code == 0x8f)
+              && (p.code == 0x82 => 25 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))
+              && (p.code == 0x8f => 6 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))
+              && ((p.code == 0x85 || p.code == 0x87 || p.code == 0x88 || p.code == 0x89)
+                  => 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)))]
     #[inline]
     pub fn clear_reserved(&mut self) {
+        // Ranges spelled out: a `const` of struct type is opaque to Flux, so `field::UNUSED`
+        // does not even yield `4 <= 8`.
         match self.msg_type() {
             Message::RouterSolicit
             | Message::NeighborSolicit
             | Message::NeighborAdvert
             | Message::Redirect => {
                 let data = self.buffer.as_mut();
-                NetworkEndian::write_u32(&mut data[field::UNUSED], 0);
+                NetworkEndian::write_u32(&mut data[4..8], 0);
             }
             Message::MldQuery => {
                 let data = self.buffer.as_mut();
-                NetworkEndian::write_u16(&mut data[field::QUERY_RESV], 0);
+                NetworkEndian::write_u16(&mut data[6..8], 0);
                 data[field::SQRV] &= 0xf;
             }
             Message::MldReport => {
                 let data = self.buffer.as_mut();
-                NetworkEndian::write_u16(&mut data[field::RECORD_RESV], 0);
+                NetworkEndian::write_u16(&mut data[4..6], 0);
             }
             // Spelled out rather than left to a `_`: Flux only rules an arm out for named
             // patterns.
@@ -601,7 +618,14 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 }
 
+#[flux_rs::assoc(
+    fn as_ref_reft(source: Self) -> int {
+        <T as AsRef<[u8]>>::as_ref_reft(source.buffer)
+    }
+)]
 impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(self: &Self[@source]) -> &[u8][Self::as_ref_reft(source)])]
     fn as_ref(&self) -> &[u8] {
         self.buffer.as_ref()
     }

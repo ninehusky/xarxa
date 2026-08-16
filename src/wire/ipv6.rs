@@ -320,7 +320,9 @@ impl defmt::Format for Cidr {
 /// A read/write wrapper around an Internet Protocol version 6 packet buffer.
 #[derive(Debug, PartialEq, Eq, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(buffer: T)]
 pub struct Packet<T: AsRef<[u8]>> {
+    #[flux_rs::field(T[buffer])]
     buffer: T,
 }
 
@@ -580,7 +582,14 @@ impl<T: AsRef<[u8]> + ?Sized> fmt::Display for Packet<&T> {
     }
 }
 
+#[flux_rs::assoc(
+    fn as_ref_reft(source: Self) -> int {
+        <T as AsRef<[u8]>>::as_ref_reft(source.buffer)
+    }
+)]
 impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(self: &Self[@source]) -> &[u8][Self::as_ref_reft(source)])]
     fn as_ref(&self) -> &[u8] {
         self.buffer.as_ref()
     }
@@ -619,12 +628,25 @@ impl Repr {
     }
 
     /// Return the length of a header that will be emitted from this high-level representation.
+    // Literal rather than `field::DST_ADDR.end` for the same reason as `ipv4::Repr::buffer_len`:
+    // flux cannot see through the `Range` const. This is only the constant -- it is not part of
+    // the (out of scope) v6 panic-freedom proof.
+    #[flux_rs::trusted(no, reason = "40 is the constant `ip::Repr::header_len` needs")]
+    #[flux_rs::sig(fn(self: &Self) -> usize[40])]
+    #[flux_rs::no_panic]
     pub const fn buffer_len(&self) -> usize {
         // This function is not strictly necessary, but it can make client code more readable.
-        field::DST_ADDR.end
+        40
     }
 
     /// Emit a high-level representation into an Internet Protocol version 6 packet.
+    // ASSUMED, NOT PROVEN. `no_panic` here is an unchecked assertion: the body is trusted
+    // (`default_trusted = true`) and v6's `Packet` carries no `refined_by`, so there is no
+    // length index to state the real `40 <=` precondition against. This function *can* panic
+    // on a buffer shorter than 40 bytes. It is parked solely to let `ip::Repr::emit`'s v6 arm
+    // discharge so the v4 proof can go end-to-end. To make it real: refine v6 `Packet` by its
+    // buffer as in `ipv4.rs:192-196`, then require `40 <= as_mut_reft(buf.buffer)`.
+    #[flux_rs::no_panic]
     pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, packet: &mut Packet<T>) {
         // Make no assumptions about the original state of the packet buffer.
         // Make sure to set every byte.
