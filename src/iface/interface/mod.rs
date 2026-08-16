@@ -701,7 +701,13 @@ impl Interface {
         })
     }
 
-    // #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
+    // Was `trusted(no)` before this PR. Restored as an explicit `trusted(yes)` rather than left
+    // as a commented-out attribute, so the coverage loss is visible: checking this body aborts
+    // flux with `internal flux error: crates/flux-infer/src/infer.rs:896` at the `respond`
+    // closure below (`incompatible types: †impl Device + ?Sized`). That is a checker crash, not
+    // an undischarged obligation -- the `IpRepr::new` fan-in proof is not refuted, it is
+    // unreachable until the ICE is fixed. Flip this back to `trusted(no)` to re-test.
+    #[flux_rs::trusted(yes, reason = "flux ICE at infer.rs:896 on the `respond` closure")]
     fn socket_egress(
         &mut self,
         device: &mut (impl Device + ?Sized),
