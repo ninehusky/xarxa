@@ -110,6 +110,7 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     #[flux_rs::sig(fn(&Self[@r]) -> usize{n:
         n <= r.cap - r.length
         && n <= r.cap - idx_of(r.cap, r.read_at, r.length)})]
+    #[flux_rs::no_panic]
     pub fn contiguous_window(&self) -> usize {
         cmp::min(self.window(), self.capacity() - self.get_idx(self.length))
     }
@@ -154,37 +155,24 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     }
 }
 
-// FIXME(flux): the struct invariant above is ASSUMED on entry to the four `*_with`
-// mutators (`{en,de}queue_{one,many}_with`) but is NOT proven to be MAINTAINED by them:
-// their `self.length` / `self.read_at` writes are reported as "assignment might be
-// unsafe". Stating the obligation needs `fn(self: &mut Self[@r], ..) ensures self: Self`,
-// and that ICEs flux (650d309447) on any function whose return value borrows out of
-// `self` -- which is every one of these, since the interface is zero-copy:
+// The four `*_with` mutators below now PROVE that they maintain the struct invariant
+// (`ensures self: Self`, `trusted(no)`). What unblocked this was the `DerefMut` extern spec
+// for `ManagedSlice` in `flux_specs.rs`: with a `&mut` receiver, `deref_mut`'s returned
+// borrow leaves `storage` blocked with an *inferred* bound, and folding `self` at exit fails
+// with `parameter inference error at function call`. Giving `deref_mut` a `&strg` receiver
+// plus an explicit `ensures self: ManagedSlice<T>[v]` pins that bound, and all four fold.
 //
-//   * unconstrained index (`ensures self: Self`)  -> `UnsolvedEvar`, flux-infer/src/infer.rs:416
-//   * determined index (`ensures self: Self[..]`) -> "incompatible types",
-//     flux-infer/src/infer.rs:888, reporting `storage: †ManagedSlice`. The field is still
-//     blocked by the borrow the result holds, so `self` cannot be folded back at exit.
-//
-// The closure is incidental: `fn(self: &mut Self[@r]) -> &mut T ensures self: Self` ICEs
-// identically with no closure anywhere, and `&strg` behaves the same as `&mut`. Dropping
-// the input index instead (`fn(&mut Self, F)`) avoids the ICE but re-unpacks a fresh
-// index at every read of `self`, so `!is_full()` no longer implies `cap > 0` and
-// `get_idx_unchecked`'s precondition stops verifying -- strictly worse than today.
+// The earlier note here blamed the closure and the zero-copy return; both are innocent. The
+// same shape over a plain `&mut [T]` field verifies with no changes at all -- it is the
+// `deref_mut` *call* that blocks the field, so only `Deref`-reached storage is affected.
 
 /// This is the "discrete" ring buffer interface: it operates with single elements,
 /// and boundary conditions (empty/full) are errors.
 impl<'a, T: 'a> RingBuffer<'a, T> {
     /// Call `f` with a single buffer element, and enqueue the element if `f`
     /// returns successfully, or return `Err(Full)` if the buffer is full.
-    // ASSUMED, NOT PROVEN: that this maintains the struct invariant. The body's `self.length` /
-    // `self.read_at` writes cannot be stated as `ensures self: Self{..}` -- flux reports
-    // `parameter inference error` at the function exit for any function whose return value
-    // borrows out of `self`, which is every one of these (the interface is zero-copy). This was
-    // an outright ICE on older flux; it is now a diagnosable inference failure, still blocking.
-    // The invariant *is* assumed on entry and relied on by every caller.
-    #[flux_rs::trusted(yes, reason = "invariant maintenance is not statable; see note")]
-    #[flux_rs::sig(fn(self: &mut Self[@r], F) -> Result<Result<R, E>, Full>)]
+    #[flux_rs::trusted(no, reason = "proves it maintains the RingBuffer invariant")]
+    #[flux_rs::sig(fn(self: &mut Self[@r], F) -> Result<Result<R, E>, Full> ensures self: Self)]
     #[flux_rs::no_panic_if(F::no_panic())]
     pub fn enqueue_one_with<'b, R, E, F>(&'b mut self, f: F) -> Result<Result<R, E>, Full>
     where
@@ -212,14 +200,8 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
 
     /// Call `f` with a single buffer element, and dequeue the element if `f`
     /// returns successfully, or return `Err(Empty)` if the buffer is empty.
-    // ASSUMED, NOT PROVEN: that this maintains the struct invariant. The body's `self.length` /
-    // `self.read_at` writes cannot be stated as `ensures self: Self{..}` -- flux reports
-    // `parameter inference error` at the function exit for any function whose return value
-    // borrows out of `self`, which is every one of these (the interface is zero-copy). This was
-    // an outright ICE on older flux; it is now a diagnosable inference failure, still blocking.
-    // The invariant *is* assumed on entry and relied on by every caller.
-    #[flux_rs::trusted(yes, reason = "invariant maintenance is not statable; see note")]
-    #[flux_rs::sig(fn(self: &mut Self[@r], F) -> Result<Result<R, E>, Empty>)]
+    #[flux_rs::trusted(no, reason = "proves it maintains the RingBuffer invariant")]
+    #[flux_rs::sig(fn(self: &mut Self[@r], F) -> Result<Result<R, E>, Empty> ensures self: Self)]
     #[flux_rs::no_panic_if(F::no_panic())]
     pub fn dequeue_one_with<'b, R, E, F>(&'b mut self, f: F) -> Result<Result<R, E>, Empty>
     where
@@ -248,13 +230,17 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     }
 }
 
-// FIXME(flux): on top of the maintenance blocker above, the `assert!(size <= max_size)`
-// in the two functions below is a real panic site: `size` is whatever `f` returned and
-// nothing constrains it. Discharging it needs the documented "# Panics" contract written
-// as a refined bound, `where F: FnOnce(&mut [T][@n]) -> (usize{v: v <= n}, R)`. That is a
-// spec-only change, but it makes every caller owe the bound, and today no caller is opted
-// into checking (packet_buffer.rs has 0 of 29 functions checked), so adding it would move
-// the obligation somewhere nobody is looking rather than discharge it.
+// FIXME(flux): `assert!(size <= max_size)` in the two functions below is the one remaining
+// panic site here: `size` is whatever `f` returned and nothing constrains it. The documented
+// contract is statable -- `where F: FnOnce(&mut [T][@n]) -> (usize{s: s <= n}, R)` -- and flux
+// accepts that bound in isolation. But adding it to these two methods ICEs the driver:
+//
+//     fixpoint_encoding.rs:1623: no entry found for name: `a7`
+//
+// Isolated repros: the bound alone checks, an early-bound closure lifetime alone checks, and a
+// refined tuple return alone checks; a refined `Fn*` bound *together with* a refined component
+// in a tuple return ICEs. Neither `ensures self: Self` nor `no_panic_if` is involved -- dropping
+// each in turn leaves the ICE unchanged. This needs a flux fix, not a xarxa one.
 
 /// This is the "continuous" ring buffer interface: it operates with element slices,
 /// and boundary conditions (empty/full) simply result in empty slices.
@@ -265,14 +251,8 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     /// # Panics
     /// This function panics if the amount of elements returned by `f` is larger
     /// than the size of the slice passed into it.
-    // ASSUMED, NOT PROVEN: that this maintains the struct invariant. The body's `self.length` /
-    // `self.read_at` writes cannot be stated as `ensures self: Self{..}` -- flux reports
-    // `parameter inference error` at the function exit for any function whose return value
-    // borrows out of `self`, which is every one of these (the interface is zero-copy). This was
-    // an outright ICE on older flux; it is now a diagnosable inference failure, still blocking.
-    // The invariant *is* assumed on entry and relied on by every caller.
-    #[flux_rs::trusted(yes, reason = "invariant maintenance is not statable; see note")]
-    #[flux_rs::sig(fn(self: &mut Self[@r], F) -> (usize, R))]
+    #[flux_rs::trusted(no, reason = "proves it maintains the RingBuffer invariant")]
+    #[flux_rs::sig(fn(self: &mut Self[@r], F) -> (usize, R) ensures self: Self)]
     #[flux_rs::no_panic_if(F::no_panic())]
     pub fn enqueue_many_with<'b, R, F>(&'b mut self, f: F) -> (usize, R)
     where
@@ -333,14 +313,8 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     /// # Panics
     /// This function panics if the amount of elements returned by `f` is larger
     /// than the size of the slice passed into it.
-    // ASSUMED, NOT PROVEN: that this maintains the struct invariant. The body's `self.length` /
-    // `self.read_at` writes cannot be stated as `ensures self: Self{..}` -- flux reports
-    // `parameter inference error` at the function exit for any function whose return value
-    // borrows out of `self`, which is every one of these (the interface is zero-copy). This was
-    // an outright ICE on older flux; it is now a diagnosable inference failure, still blocking.
-    // The invariant *is* assumed on entry and relied on by every caller.
-    #[flux_rs::trusted(yes, reason = "invariant maintenance is not statable; see note")]
-    #[flux_rs::sig(fn(self: &mut Self[@r], F) -> (usize, R))]
+    #[flux_rs::trusted(no, reason = "proves it maintains the RingBuffer invariant")]
+    #[flux_rs::sig(fn(self: &mut Self[@r], F) -> (usize, R) ensures self: Self)]
     #[flux_rs::no_panic_if(F::no_panic())]
     pub fn dequeue_many_with<'b, R, F>(&'b mut self, f: F) -> (usize, R)
     where
