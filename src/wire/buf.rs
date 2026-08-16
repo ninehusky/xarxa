@@ -123,12 +123,28 @@ pub fn write_u16_at(data: &mut [u8], at: usize, value: u16) {
     NetworkEndian::write_u16(&mut data[at..at + 2], value)
 }
 
+/// Write a big-endian `u24` at `at`. See [`read_u16_at`] for why this is trusted.
+#[flux_rs::trusted(yes, reason = "sub-slice length is not recoverable; see flux-rs/flux#1714")]
+#[flux_rs::sig(fn(&mut [u8][@n], at: usize, value: u32) requires at + 3 <= n)]
+#[flux_rs::no_panic]
+pub fn write_u24_at(data: &mut [u8], at: usize, value: u32) {
+    NetworkEndian::write_u24(&mut data[at..at + 3], value)
+}
+
 /// Copy a 4-octet address into `data` at `at`. See [`read_u16_at`] for why this is trusted.
 #[flux_rs::trusted(yes, reason = "sub-slice length is not recoverable; see flux-rs/flux#1714")]
 #[flux_rs::sig(fn(&mut [u8][@n], at: usize, octets: &[u8; 4]) requires at + 4 <= n)]
 #[flux_rs::no_panic]
 pub fn write_octets4_at(data: &mut [u8], at: usize, octets: &[u8; 4]) {
     data[at..at + 4].copy_from_slice(octets)
+}
+
+/// Copy a 16-octet address into `data` at `at`. See [`read_u16_at`] for why this is trusted.
+#[flux_rs::trusted(yes, reason = "sub-slice length is not recoverable; see flux-rs/flux#1714")]
+#[flux_rs::sig(fn(&mut [u8][@n], at: usize, octets: &[u8; 16]) requires at + 16 <= n)]
+#[flux_rs::no_panic]
+pub fn write_octets16_at(data: &mut [u8], at: usize, octets: &[u8; 16]) {
+    data[at..at + 16].copy_from_slice(octets)
 }
 
 /// Borrow the first `n` octets of `data`. See [`read_u16_at`] for why this is trusted.
