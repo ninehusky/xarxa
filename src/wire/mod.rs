@@ -78,7 +78,9 @@ mod field {
 pub mod pretty_print;
 
 mod buf;
-pub(crate) use buf::{Buf, prefix, read_u16_at, write_octets4_at, write_u16_at};
+pub(crate) use buf::{
+    Buf, prefix, read_u16_at, write_octets4_at, write_octets16_at, write_u16_at, write_u24_at,
+};
 
 #[cfg(all(feature = "proto-ipv4", feature = "medium-ethernet"))]
 mod arp;

@@ -377,6 +377,8 @@ pub const HEADER_LEN: usize = field::DST_ADDR.end;
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Create a raw octet buffer with an IPv6 packet structure.
     #[inline]
+    #[flux_rs::trusted(no, reason = "carries the buffer index into the Packet wrapper")]
+    #[flux_rs::sig(fn (T[@buflen]) -> Packet<T>{v : v.buffer == buflen})]
     pub const fn new_unchecked(buffer: T) -> Packet<T> {
         Packet { buffer }
     }
@@ -498,6 +500,13 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the version field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            0 < <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_version(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         // Make sure to retain the lower order bits which contain
@@ -507,6 +516,13 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the traffic class field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            1 < <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_traffic_class(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         // Put the higher order 4-bits of value in the lower order
@@ -519,22 +535,43 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the flow label field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            4 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_flow_label(&mut self, value: u32) {
         let data = self.buffer.as_mut();
         // Retain the lower order 4-bits of the traffic class
         let raw = (((data[1] & 0xf0) as u32) << 16) | (value & 0x0fffff);
-        NetworkEndian::write_u24(&mut data[1..4], raw);
+        crate::wire::write_u24_at(data, 1, raw);
     }
 
     /// Set the payload length field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            6 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_payload_len(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::LENGTH], value);
+        crate::wire::write_u16_at(data, 4, value);
     }
 
     /// Set the next header field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            6 < <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_next_header(&mut self, value: Protocol) {
         let data = self.buffer.as_mut();
         data[field::NXT_HDR] = value.into();
@@ -542,6 +579,13 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the hop limit field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], value: u8)
+        requires
+            7 < <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_hop_limit(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         data[field::HOP_LIMIT] = value;
@@ -549,16 +593,30 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the source address field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            24 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_src_addr(&mut self, value: Address) {
         let data = self.buffer.as_mut();
-        data[field::SRC_ADDR].copy_from_slice(&value.octets());
+        crate::wire::write_octets16_at(data, 8, &value.octets());
     }
 
     /// Set the destination address field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            40 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_dst_addr(&mut self, value: Address) {
         let data = self.buffer.as_mut();
-        data[field::DST_ADDR].copy_from_slice(&value.octets());
+        crate::wire::write_octets16_at(data, 24, &value.octets());
     }
 
     /// Return a mutable pointer to the payload.
@@ -640,12 +698,12 @@ impl Repr {
     }
 
     /// Emit a high-level representation into an Internet Protocol version 6 packet.
-    // ASSUMED, NOT PROVEN. `no_panic` here is an unchecked assertion: the body is trusted
-    // (`default_trusted = true`) and v6's `Packet` carries no `refined_by`, so there is no
-    // length index to state the real `40 <=` precondition against. This function *can* panic
-    // on a buffer shorter than 40 bytes. It is parked solely to let `ip::Repr::emit`'s v6 arm
-    // discharge so the v4 proof can go end-to-end. To make it real: refine v6 `Packet` by its
-    // buffer as in `ipv4.rs:192-196`, then require `40 <= as_mut_reft(buf.buffer)`.
+    #[flux_rs::trusted(no, reason = "calls the eight header setters")]
+    #[flux_rs::sig(
+        fn(self: &Self, packet: &mut Packet<T>[@buf])
+        requires
+            40 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
     #[flux_rs::no_panic]
     pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, packet: &mut Packet<T>) {
         // Make no assumptions about the original state of the packet buffer.
