@@ -231,16 +231,27 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
 }
 
 // FIXME(flux): `assert!(size <= max_size)` in the two functions below is the one remaining
-// panic site here: `size` is whatever `f` returned and nothing constrains it. The documented
-// contract is statable -- `where F: FnOnce(&mut [T][@n]) -> (usize{s: s <= n}, R)` -- and flux
-// accepts that bound in isolation. But adding it to these two methods ICEs the driver:
+// panic site here: `size` is whatever `f` returned and nothing constrains it.
 //
-//     fixpoint_encoding.rs:1623: no entry found for name: `a7`
+// THE ICE, characterised. The natural spec
+//     where F: FnOnce(&mut [T][@n]) -> (usize{s: s <= n}, R)
+// ICEs the driver at `fixpoint_encoding.rs:1623: no entry found for name`. Bisected:
+//   * refined `Fn*` bound alone, unrefined return                 -> checks
+//   * refined component in a TUPLE return alone, no `Fn*` bound   -> checks
+//   * early-bound closure lifetime alone                          -> checks
+//   * refined `Fn*` bound + refined component in a TUPLE return   -> ICE
+// `ensures self: Self` and `no_panic_if` are not involved; dropping each leaves it unchanged.
+// It is the TUPLE, not the component's type: wrapping just the `usize` in a refined newtype
+// and leaving it inside the tuple (`(Bounded{b: b.n <= m}, R)`) still ICEs.
 //
-// Isolated repros: the bound alone checks, an early-bound closure lifetime alone checks, and a
-// refined tuple return alone checks; a refined `Fn*` bound *together with* a refined component
-// in a tuple return ICEs. Neither `ensures self: Self` nor `no_panic_if` is involved -- dropping
-// each in turn leaves the ICE unchanged. This needs a flux fix, not a xarxa one.
+// THE DODGE, verified. Refining at the TOP LEVEL of a struct return works:
+//     struct Written<R> { size: usize, rest: R }  // #[refined_by(written: int)]
+//     where F: FnOnce(&mut [T][@n]) -> Written<R>{w: w.written <= n}
+// Probed on the real `enqueue_many_with` body: 1 checked, 16 constraints, the `assert!`
+// discharges. Negative control (weaken the bound to `<= n + 1`) puts the `assert!` error
+// back, so the discharge is genuine. Not landed: it is a public API change -- `f` would
+// return `Written<R>` instead of `(usize, R)`, and the obligation rides out to
+// `tcp::Socket::{send,recv}` and `{raw,icmp,udp}::Socket::send_with`.
 
 /// This is the "continuous" ring buffer interface: it operates with element slices,
 /// and boundary conditions (empty/full) simply result in empty slices.
