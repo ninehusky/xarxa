@@ -664,6 +664,16 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     // contents. It holds for every caller here because each writes IHL before calling this
     // (`Repr::emit` sets it to 20 at the top). A buffer whose IHL field exceeds its length
     // would panic -- reachable only via `new_unchecked` on unvalidated bytes.
+    //
+    // Confirmed by running, not just by reading: adding `#[flux_rs::trusted(no)]` yields two
+    // errors on the line below -- the slice index itself, and `checksum::data`'s `n <= 65535`,
+    // neither of which is provable without relating buffer contents to buffer length. The
+    // `trusted(yes)` is therefore spelled out rather than left to `default_trusted = true`, so
+    // the assumption is machine-visible instead of silent. The provable form is
+    // `fill_checksum_with_header_len`, which takes the length the caller just wrote; every
+    // in-crate caller on a path that must verify has already moved to it. The one remaining
+    // live caller of this function is `socket/raw.rs:412`, inside a `dequeue_with` closure.
+    #[flux_rs::trusted(yes, reason = "IHL-derived bound is a property of buffer contents")]
     #[flux_rs::sig(
         fn(self: &mut Packet<T>[@buf])
         requires

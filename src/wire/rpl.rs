@@ -231,7 +231,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 }
 
-impl<'p, T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> Packet<&'p mut T> {
+impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Return a pointer to the options.
     pub fn options_mut(&mut self) -> &mut [u8] {
         match RplControlMessage::from(self.msg_code()) {
@@ -796,7 +796,7 @@ impl<'p> Repr<'p> {
         len
     }
 
-    pub fn emit<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized>(&self, packet: &mut Packet<&mut T>) {
+    pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, packet: &mut Packet<T>) {
         packet.set_msg_type(crate::wire::icmpv6::Message::RplControl);
 
         match self {

@@ -16,6 +16,29 @@
 //!
 //! The struct is `opaque` because `len` is `inner.len() - offset`, which cannot be written as a
 //! field index; it is established by the constructors instead.
+//!
+//! # Closed-module invariant
+//!
+//! `as_ref`/`as_mut` slice at `offset` without a bounds check. Their safety condition is
+//! `offset <= inner.len()`, which is **not** a caller obligation -- no caller states it and none
+//! could -- but an invariant of this module, closed by inspection of a private field in an
+//! `opaque` struct. Both fields are private and this file has no submodules, so the three
+//! constructors below are the complete set of ways a `Buf` comes into existence:
+//!
+//! * `new(inner)`        -- `offset = 0 <= inner.len()`, and `len = inner.len()`.
+//! * `with_offset(i, o)` -- `requires o <= n`, discharged by flux at all four call sites
+//!                          (three in `dispatch_ip`, one in `dispatch_ipv4_frag`, both
+//!                          `trusted(no)`).
+//! * `reborrow(&mut self)` -- copies both fields verbatim, so it preserves whatever held before.
+//!
+//! Each establishes the stronger equality `inner.len() - offset == len`. No method mutates
+//! `offset` or replaces `inner`: `copy_at` only writes bytes, and `as_mut` hands out a `&mut [u8]`
+//! *into* the tail, through which neither the field nor the slice's length is reachable. So no
+//! path can shrink `inner` or grow `offset` after construction, and the invariant is stable.
+//!
+//! This is the "internal assumption" side of the boundary/internal distinction, so it is spelled
+//! out rather than assumed. Note the contrast with the free functions further down, whose safety
+//! conditions *are* caller obligations stated in their signatures.
 
 use byteorder::{ByteOrder, NetworkEndian};
 
@@ -84,8 +107,11 @@ impl AsRef<[u8]> for Buf<'_> {
     #[flux_rs::trusted(yes, reason = "opaque: `offset <= inner.len()` holds by construction")]
     #[flux_rs::no_panic]
     #[flux_rs::sig(fn(self: &Self[@source]) -> &[u8][Self::as_ref_reft(source)])]
+    #[allow(unsafe_code)]
     fn as_ref(&self) -> &[u8] {
-        &self.inner[self.offset..]
+        // SAFETY: `offset <= inner.len()` is a *closed-module invariant*, not a caller
+        // obligation -- see the module docs above for the enumeration that establishes it.
+        unsafe { self.inner.get_unchecked(self.offset..) }
     }
 }
 
@@ -98,10 +124,62 @@ impl AsMut<[u8]> for Buf<'_> {
     #[flux_rs::trusted(yes, reason = "opaque: `offset <= inner.len()` holds by construction")]
     #[flux_rs::no_panic]
     #[flux_rs::sig(fn(self: &mut Self[@source]) -> &mut [u8][Self::as_mut_reft(source)])]
+    #[allow(unsafe_code)]
     fn as_mut(&mut self) -> &mut [u8] {
-        &mut self.inner[self.offset..]
+        // SAFETY: `offset <= inner.len()` is a *closed-module invariant*, not a caller
+        // obligation -- see the module docs above for the enumeration that establishes it.
+        unsafe { self.inner.get_unchecked_mut(self.offset..) }
     }
 }
+
+// NOT CONVERTED to unchecked indexing, deliberately. `read_u16_at`, `write_u16_at`,
+// `write_u24_at` and `write_octets16_at` each have their `requires` discharged at every
+// immediate call site, but the *transitive* chain above at least one of those callers runs
+// through a function whose body is unchecked under `default_trusted = true`, or through a
+// bound flux cannot state at all. The bound is then asserted by nobody, and making these
+// unchecked would trade a panic for UB.
+//
+// The blocker list below was re-measured against the *firmware* feature set
+// (`medium-ethernet,socket-udp,socket-tcp,socket-dhcpv4,proto-ipv4,proto-ipv6`), which is what
+// the nRF52840 `usb_ethernet` binary actually contains. The previously named sixlowpan blocker
+// is compiled out there, but two other unchecked callers take its place, so nothing was freed.
+//
+//   write_octets16_at  `Ipv6Repr::emit` (ipv6.rs:708) requires `40 <= len`. Under the firmware
+//   write_u24_at       config its unchecked callers are `Icmpv6Repr::emit`'s inner
+//   write_u16_at       `emit_contained_packet` (icmpv6.rs:811) and `NdiscOption Repr::emit`
+//                      (ndiscoption.rs:573) -- both hand it a `payload_mut()` of unbounded
+//                      length. Verified by control: strengthening `Ipv6Repr::emit`'s `requires`
+//                      with an absurd conjunct produced exactly one new error, at
+//                      `IpRepr::emit` (ip.rs:892), and none at either of those two, i.e. they
+//                      carry nothing. `write_u16_at` reaches the same chain through
+//                      `Ipv6Packet::set_payload_len`.
+//   write_u24_at       additionally: byteorder's `write_uint` asserts `pack_size(n) <= 3`, a
+//                      *value* bound. Adding `value < 16777216` here was tried; flux cannot
+//                      discharge it at `Ipv6Packet::set_flow_label` (ipv6.rs:549), whose `raw`
+//                      is `((data[1] & 0xf0) as u32) << 16 | (value & 0x0fffff)` -- true, but it
+//                      needs bitvector reasoning flux does not do here.
+//   write_u16_at       additionally, on the v4 side: `Ipv4Packet::fill_checksum` (ipv4.rs:674)
+//                      calls `set_checksum` from a body that cannot be proved at all (see the
+//                      note on that function), and `socket/raw.rs:412` calls it from inside a
+//                      `dequeue_with` closure, which flux does not check either.
+//   read_u16_at        NOT an annotation gap -- a flux limitation. `Ipv4Packet::total_len`
+//                      (ipv4.rs:317) requires `4 <= as_ref_reft(buf.buffer)`, but three of its
+//                      callers -- `Packet::payload`, `Ipv4Repr::parse` and the `Display` impl --
+//                      are all over `Packet<&T>` with `T: ?Sized`. Giving each `trusted(no)`
+//                      was tried: the bodies are checked and every one fails with
+//                      `associated refinement 'as_ref_reft' is missing from implementation`,
+//                      because core's blanket `AsRef for &T` has no associated refinement (the
+//                      same unit-sort problem this module's header describes). Writing the
+//                      `requires` explicitly fails earlier still, with
+//                      `mismatched sorts: expected 'T::sort', found '()'`. `Display::fmt` could
+//                      not carry it in any case -- a trait impl's signature is fixed, so no
+//                      consumer owes it anything. `Packet::payload_mut` is separately
+//                      unprovable: its `header_len()..total_len()` range is a property of
+//                      buffer *contents*.
+//
+// The first three become convertible only once the icmpv6/ndiscoption emit bodies are checked
+// (they belong to another agent's file) *and* the v4-side items above are resolved.
+// `read_u16_at` is not convertible until flux can refine a reference self type.
 
 /// Read a big-endian `u16` at `at`.
 ///
@@ -135,8 +213,32 @@ pub fn write_u24_at(data: &mut [u8], at: usize, value: u32) {
 #[flux_rs::trusted(yes, reason = "sub-slice length is not recoverable; see flux-rs/flux#1714")]
 #[flux_rs::sig(fn(&mut [u8][@n], at: usize, octets: &[u8; 4]) requires at + 4 <= n)]
 #[flux_rs::no_panic]
+#[allow(unsafe_code)]
 pub fn write_octets4_at(data: &mut [u8], at: usize, octets: &[u8; 4]) {
-    data[at..at + 4].copy_from_slice(octets)
+    // SAFETY: `at + 4 <= n` is a precondition, discharged by the caller and checked by Flux at
+    // every call site, so `data[at..at + 4]` is in bounds; it also rules out the `at + 4`
+    // overflow, since the sum is bounded by a slice length. `octets` is a shared borrow and
+    // `data` a unique one, so the two regions cannot overlap.
+    //
+    // The transitive discharge chain for both call sites is
+    //   TxToken::consume  boundary
+    //   -> dispatch_ip / dispatch_ipv4_frag  trusted(no)
+    //   -> IpRepr::emit / emit_ipv4_frag_header  trusted(no)
+    //   -> Ipv4Repr::emit  trusted(no)
+    //   -> Ipv4Packet::set_{src,dst}_addr  trusted(no)
+    // with no unchecked body anywhere on it. That is what makes the unchecked write sound;
+    // the sibling helpers below do *not* have that property and are deliberately left checked.
+    //
+    // `Ipv4Packet::set_{src,dst}_addr` are `pub`, so the chain also leaves the crate. Their
+    // `requires 16/20 <= as_mut_reft(buf.buffer)` is the *exposed* form of this bound: an
+    // obligation a consumer owes, in the same category as the length contract `TxToken::consume`
+    // hands to a driver, and discharged the same way -- by checking the consumer. A consumer that
+    // is not checked owes nothing and gets nothing; with the bounds check it panicked, without it
+    // this writes out of bounds (confirmed: `new_unchecked(&mut [0u8; 4][..]).set_dst_addr(a)`
+    // corrupts adjacent memory, and Miri reports the offset). That is the stated interface, not a
+    // defect -- but it is why the bound belongs in the signature where a consumer's checker can
+    // see it, and why widening these setters' visibility without the `requires` would be wrong.
+    unsafe { core::ptr::copy_nonoverlapping(octets.as_ptr(), data.as_mut_ptr().add(at), 4) }
 }
 
 /// Copy a 16-octet address into `data` at `at`. See [`read_u16_at`] for why this is trusted.

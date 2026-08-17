@@ -1,5 +1,4 @@
 use bitflags::bitflags;
-use byteorder::{ByteOrder, NetworkEndian};
 
 use super::{Error, Result};
 use crate::time::Duration;
@@ -32,6 +31,12 @@ bitflags! {
 /// [RFC 4861 § 4.2]: https://tools.ietf.org/html/rfc4861#section-4.2
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Return the current hop limit field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u8
+        requires 5 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn current_hop_limit(&self) -> u8 {
         let data = self.buffer.as_ref();
@@ -39,6 +44,11 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the Router Advertisement flags.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> RouterFlags
+        requires 6 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
     #[inline]
     pub fn router_flags(&self) -> RouterFlags {
         let data = self.buffer.as_ref();
@@ -46,24 +56,49 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the router lifetime field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> Duration
+        requires 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
     #[inline]
     pub fn router_lifetime(&self) -> Duration {
         let data = self.buffer.as_ref();
-        Duration::from_secs(NetworkEndian::read_u16(&data[field::ROUTER_LT]) as u64)
+        // field::ROUTER_LT (6..8), spelled as a literal: a `const` of struct type is opaque
+        // to Flux, so the range's endpoints are unconstrained `usize`s.
+        Duration::from_secs(crate::wire::read_u16_at(data, 6) as u64)
     }
 
     /// Return the reachable time field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> Duration
+        requires 12 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
     #[inline]
     pub fn reachable_time(&self) -> Duration {
         let data = self.buffer.as_ref();
-        Duration::from_millis(NetworkEndian::read_u32(&data[field::REACHABLE_TM]) as u64)
+        // field::REACHABLE_TM (8..12), read as two big-endian halves: there is no
+        // `read_u32_at` helper, and `NetworkEndian::read_u32` takes a sub-slice whose length
+        // the caller cannot recover (flux-rs/flux#1714). Same four bytes, same value.
+        let hi = crate::wire::read_u16_at(data, 8) as u32;
+        let lo = crate::wire::read_u16_at(data, 10) as u32;
+        Duration::from_millis(((hi << 16) | lo) as u64)
     }
 
     /// Return the retransmit time field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> Duration
+        requires 16 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
     #[inline]
     pub fn retrans_time(&self) -> Duration {
         let data = self.buffer.as_ref();
-        Duration::from_millis(NetworkEndian::read_u32(&data[field::RETRANS_TM]) as u64)
+        // field::RETRANS_TM (12..16), split for the same reason as `reachable_time`.
+        let hi = crate::wire::read_u16_at(data, 12) as u32;
+        let lo = crate::wire::read_u16_at(data, 14) as u32;
+        Duration::from_millis(((hi << 16) | lo) as u64)
     }
 }
 
@@ -88,6 +123,11 @@ impl<T: AsRef<[u8]>> Packet<T> {
 /// [RFC 4861 § 4.3]: https://tools.ietf.org/html/rfc4861#section-4.3
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Return the Neighbor Solicitation flags.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> NeighborFlags
+        requires 5 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
     #[inline]
     pub fn neighbor_flags(&self) -> NeighborFlags {
         let data = self.buffer.as_ref();
@@ -114,6 +154,12 @@ impl<T: AsRef<[u8]>> Packet<T> {
 /// [RFC 4861 § 4.2]: https://tools.ietf.org/html/rfc4861#section-4.2
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the current hop limit field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p], u8)
+        requires 5 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_current_hop_limit(&mut self, value: u8) {
         let data = self.buffer.as_mut();
@@ -121,30 +167,58 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     /// Set the Router Advertisement flags.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p], RouterFlags)
+        requires 6 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
     #[inline]
     pub fn set_router_flags(&mut self, flags: RouterFlags) {
         self.buffer.as_mut()[field::ROUTER_FLAGS] = flags.bits();
     }
 
     /// Set the router lifetime field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p], Duration)
+        requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
     #[inline]
     pub fn set_router_lifetime(&mut self, value: Duration) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::ROUTER_LT], value.secs() as u16);
+        // field::ROUTER_LT (6..8)
+        crate::wire::write_u16_at(data, 6, value.secs() as u16);
     }
 
     /// Set the reachable time field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p], Duration)
+        requires 12 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
     #[inline]
     pub fn set_reachable_time(&mut self, value: Duration) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u32(&mut data[field::REACHABLE_TM], value.total_millis() as u32);
+        // field::REACHABLE_TM (8..12), written as the two big-endian halves it is defined to
+        // produce -- there is no `write_u32_at` helper. Identical bytes.
+        let v = value.total_millis() as u32;
+        crate::wire::write_u16_at(data, 8, (v >> 16) as u16);
+        crate::wire::write_u16_at(data, 10, v as u16);
     }
 
     /// Set the retransmit time field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p], Duration)
+        requires 16 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
     #[inline]
     pub fn set_retrans_time(&mut self, value: Duration) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u32(&mut data[field::RETRANS_TM], value.total_millis() as u32);
+        // field::RETRANS_TM (12..16), split for the same reason as `set_reachable_time`.
+        let v = value.total_millis() as u32;
+        crate::wire::write_u16_at(data, 12, (v >> 16) as u16);
+        crate::wire::write_u16_at(data, 14, v as u16);
     }
 }
 
@@ -156,10 +230,17 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 /// [Redirect]: https://tools.ietf.org/html/rfc4861#section-4.5
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the target address field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p], Ipv6Address)
+        requires 24 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_target_addr(&mut self, value: Ipv6Address) {
         let data = self.buffer.as_mut();
-        data[field::TARGET_ADDR].copy_from_slice(&value.octets());
+        // field::TARGET_ADDR (8..24)
+        crate::wire::write_octets16_at(data, 8, &value.octets());
     }
 }
 
@@ -169,6 +250,11 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 /// [RFC 4861 § 4.3]: https://tools.ietf.org/html/rfc4861#section-4.3
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the Neighbor Solicitation flags.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p], NeighborFlags)
+        requires 5 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
     #[inline]
     pub fn set_neighbor_flags(&mut self, flags: NeighborFlags) {
         self.buffer.as_mut()[field::NEIGH_FLAGS] = flags.bits();
@@ -181,10 +267,17 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 /// [RFC 4861 § 4.5]: https://tools.ietf.org/html/rfc4861#section-4.5
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the destination address field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p], Ipv6Address)
+        requires 40 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_dest_addr(&mut self, value: Ipv6Address) {
         let data = self.buffer.as_mut();
-        data[field::DEST_ADDR].copy_from_slice(&value.octets());
+        // field::DEST_ADDR (24..40)
+        crate::wire::write_octets16_at(data, 24, &value.octets());
     }
 }
 
@@ -344,21 +437,39 @@ impl<'a> Repr<'a> {
         }
     }
 
-    // PARKED, and re-measured on 2026-08-16. Restoring `trusted(no)` here does not merely fail
-    // to prove the buffer bound -- it is a hard spec error:
+    // PARKED at `trusted(yes)` (the crate default). One of the two blockers named in the previous
+    // note is now cleared, the other is not, and the other is not in this file.
     //
+    // CLEARED: `NdiscOptionRepr::emit` now has a buffer-preserving signature and a checked body
+    // (`requires 48 <= <T as AsMut<[u8]>>::as_mut_reft(opt.buffer)`), so the call below no longer
+    // havocs its bound.
+    //
+    // REMAINING: `icmpv6::Packet::payload_mut` returns a bare `&mut [u8]`. A *returned* `&mut`
+    // loses its length index (flux-rs/flux#1714), so `NdiscOption::new_unchecked(..)` below is an
+    // `NdiscOption<&mut [u8]>`, and `&mut [u8]` as the `T` of a refined wrapper instantiates
+    // core's blanket `impl<T, U> AsMut<U> for &mut T` -- which has no associated refinement and
+    // cannot be given one, because Flux assigns a reference self type the *unit* sort.
+    //
+    // Measured, not inferred: adding
+    //     #[flux_rs::trusted(no)]
+    //     #[flux_rs::sig(fn(&Repr, packet: &mut Packet<T>{v: 40 <= ..as_mut_reft(v.buffer)}))]
+    // here produces exactly one error,
     //     error[E0999]: associated refinement `as_mut_reft` is missing from implementation
+    //       --> src/wire/ndisc.rs:471:21
+    //           NdiscOptionRepr::SourceLinkLayerAddr(lladdr).emit(&mut opt_pkt);
     //
-    // raised at the first `packet.set_msg_type(..)`. `icmpv6::Packet::set_msg_type` now carries
-    // `requires 0 < <T as AsMut<[u8]>>::as_mut_reft(p.buffer)`, and instantiating it at
-    // `T = &mut T` hits core's blanket `impl AsMut<U> for &mut T`, which has no associated
-    // refinement -- flux gives a reference self type the unit sort (see the BLOCKED note in
-    // `flux_specs.rs`). So the message-type check cannot be recovered by flipping this alone;
-    // the fix is converting the icmpv6 `emit` chain to `wire::Buf` (13 call sites, its own
-    // pass), which would also unlock icmpv6's own panic proofs.
-    pub fn emit<T>(&self, packet: &mut Packet<&mut T>)
+    // The fix belongs in `icmpv6.rs` (another agent's file): `payload_mut` must hand back a
+    // `wire::Buf`, whose `AsRef`/`AsMut` impls are local and refined, carrying the length index
+    // `icmpv6_header_len(p.code)` subtracted from the buffer. The `RouterAdvert` and `Redirect`
+    // arms additionally slice at `offset`, which needs `Buf::with_offset(.., offset)` and so an
+    // `offset <= len` obligation that only an indexed `payload_mut` can discharge.
+    //
+    // When that lands, the `requires` here must be an existential (`&mut Packet<T>{v: ..}`), not
+    // indexed (`&mut Packet<T>[@p]`): `set_msg_type` changes the `code` index, so an indexed
+    // `&mut` fails Flux's invariance check.
+    pub fn emit<T>(&self, packet: &mut Packet<T>)
     where
-        T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,
+        T: AsRef<[u8]> + AsMut<[u8]>,
     {
         match *self {
             Repr::RouterSolicit { lladdr } => {
