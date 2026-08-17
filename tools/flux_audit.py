@@ -225,6 +225,21 @@ def measure(ref, logpath):
         # A gate is UNDISCHARGED if its own enclosing fn could not be proved.
         # This is what separates "this PR broke a proof" from "this PR stated
         # new obligations that gate nothing" -- only the former blocks a merge.
+        # A body that ICEd was never checked, so no error can appear for a gate
+        # inside it -- the same hole as a trusted body, arrived at by accident
+        # rather than by annotation. Track those defs separately.
+        iced_defs = set()
+        for blk in re.split(r"(?=^error\[E0999\])", log, flags=re.M):
+            if "internal flux error" not in blk:
+                continue
+            m = re.search(r"--only-check='def:([^']+)'", blk)
+            if m:
+                iced_defs.add(m.group(1))
+
+        def _in(fn, defs):
+            return any(re.search(rf"(^|::){re.escape(fn)}\b", dd) for dd in defs)
+
+        gates_iced = [g for g in gates if _in(g["fn"], iced_defs)]
         gates_broken = [g for g in gates
                         if any(re.search(rf"(^|::){re.escape(g['fn'])}$|(^|::){re.escape(g['fn'])}\b",
                                          fd) for fd in failed_defs)]
@@ -241,6 +256,8 @@ def measure(ref, logpath):
             "gates": gates,
             "failed_defs": failed_defs,
             "gates_broken": gates_broken,
+            "gates_iced": gates_iced,
+            "iced_defs": iced_defs,
             "trusted_fns": trusted_fns,
             "gated_in_trusted": [g for g in gates if g["erased"]],
             "trusted_ok": [t for t in trusted_fns if t["states_precondition"]],
@@ -254,10 +271,65 @@ def measure(ref, logpath):
         shutil.rmtree(d, ignore_errors=True)
 
 
+
+def gate_mode(args):
+    """Absolute check on one tree. No base, no deltas -- just: is it sound?
+
+    A gate is a site where a runtime check has ALREADY been replaced with
+    `unreachable_unchecked`. If flux cannot prove the enclosing function, the
+    justification for that removal does not hold and the code is UB. That is
+    the only condition that fails CI here; everything else is progress-tracking.
+    """
+    ref = args.refs[0] if args.refs else "HEAD"
+    r = measure(ref, os.path.join(args.logdir, "gate.log"))
+
+    if r["panicked"] or not r["ran"]:
+        why = "rustc panicked (an ICE drops most diagnostics)" if r["panicked"] else "flux never ran"
+        print(f"FAIL  unreportable: {why}\n      see {r['log']}")
+        return 2
+
+    broken, erased = r["gates_broken"], r["gated_in_trusted"]
+    print(f"tree                     {ref}")
+    print(f"gates                    {len(r['gates'])}")
+    print(f"undischarged obligations {r['fail']}  (context, not a gate)")
+    print(f"other errors             {r['errors'] - r['fail']}  (checks still present)")
+    if r["internal"]:
+        print(f"internal flux errors     {r['internal']}  (those bodies are NOT checked)")
+    print()
+
+    if broken:
+        print(f"FAIL  {len(broken)} gate(s) whose enclosing fn cannot be proved.")
+        print("      The runtime check is gone and the justification does not hold:")
+        for g in broken:
+            print(f"        {g['file']}:{g['line']}  fn {g['fn']}  {g['text']}")
+    else:
+        print(f"PASS  all {len(r['gates'])} gate(s) discharge under whole-crate checking.")
+
+    if r["gates_iced"]:
+        print()
+        print(f"FAIL  {len(r['gates_iced'])} gate(s) inside a body that ICEd -- never checked,")
+        print("      so no error can ever appear for them:")
+        for g in r["gates_iced"]:
+            print(f"        {g['file']}:{g['line']}  fn {g['fn']}  {g['text']}")
+
+    if erased:
+        print()
+        print(f"WARN  {len(erased)} gate(s) inside a trusted body that states no precondition.")
+        print("      The obligation is erased rather than exported; no error can appear.")
+        print("      A human must read these -- the gate above cannot see them:")
+        for g in erased:
+            print(f"        {g['file']}:{g['line']}  fn {g['fn']}  {g['text']}")
+
+    return 1 if (broken or r["gates_iced"]) else 0
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("refs", nargs="+")
+    ap.add_argument("refs", nargs="*",
+                    help="branches/commits to audit; omit with --gate to check the working tree")
+    ap.add_argument("--gate", action="store_true",
+                    help="CI mode: check ONE tree absolutely (no base). Exit 1 if any gate "
+                         "is undischarged. This is the merge gate.")
     ap.add_argument("--base", default=None,
                     help="compare against this ref (default: each ref's merge-base with main)")
     ap.add_argument("--logdir", default=tempfile.mkdtemp(prefix="fluxaudit-"))
@@ -265,6 +337,9 @@ def main():
 
     os.makedirs(args.logdir, exist_ok=True)
     print(f"config: firmware   logs: {args.logdir}\n")
+
+    if args.gate:
+        return gate_mode(args)
 
     cache, rows = {}, []
 
