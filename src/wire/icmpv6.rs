@@ -771,6 +771,10 @@ impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
 // conjunct still applies to them, and it is all they carried before -- but the bound
 // `NdiscRepr::emit` / `MldRepr::emit` actually need is still owed by nobody. Refining those
 // two reprs is what closes it.
+// Every variant writes at least the 4-octet ICMPv6 header, so `fill_checksum` / `set_checksum`
+// (which require `4 <= buffer`) follow from `r.blen <= buffer` alone. Flux checks this against
+// each `variant` below, so it is an obligation discharged here, not an assumption.
+#[flux_rs::invariant(4 <= blen)]
 #[flux_rs::refined_by(blen: int)]
 pub enum Repr<'a> {
     #[flux_rs::variant({DstUnreachable, Ipv6Repr, &[u8][@m]} -> Repr[icmpv6_err_buffer_len(m)])]
@@ -811,12 +815,12 @@ pub enum Repr<'a> {
         data: &'a [u8],
     },
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
-    #[flux_rs::variant((NdiscRepr) -> Repr[0])]
+    #[flux_rs::variant((NdiscRepr[@n]) -> Repr[n])]
     Ndisc(NdiscRepr<'a>),
-    #[flux_rs::variant((MldRepr) -> Repr[0])]
+    #[flux_rs::variant((MldRepr[@m]) -> Repr[m])]
     Mld(MldRepr<'a>),
     #[cfg(feature = "proto-rpl")]
-    #[flux_rs::variant((RplRepr) -> Repr[0])]
+    #[flux_rs::variant((RplRepr) -> Repr[4])]
     Rpl(RplRepr<'a>),
 }
 
@@ -971,8 +975,7 @@ impl<'a> Repr<'a> {
     #[flux_rs::sig(
         fn(self: &Self[@r], &Ipv6Address, &Ipv6Address,
            packet: &strg Packet<T>[@p], &ChecksumCapabilities)
-        requires 40 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
-              && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
+        requires <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
               && r.blen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
         ensures packet: Packet<T>
     )]
