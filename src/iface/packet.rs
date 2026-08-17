@@ -70,6 +70,29 @@ impl<'p> Packet<'p> {
         }
     }
 
+    /// Emit this packet's payload into `payload`.
+    ///
+    /// Checked, but with no `flux_rs::sig`: this function cannot be given a sound one yet, and
+    /// the obvious ones are false. `Icmpv6Repr::emit` wants `40 <= m` on the payload slice, but
+    /// `m` is `IpRepr::payload_len`, which *is* the payload repr's `buffer_len()` -- an ICMPv6
+    /// `EchoRequest` over four data octets makes that 12, so any constant floor is refuted by a
+    /// real packet. `Icmpv6Repr::emit` also wants `r.blen <= m`, where `r.blen` is that same
+    /// `buffer_len()`; that is the true contract, and it is the only one worth stating.
+    ///
+    /// Stating it means refining `IpPayload` by its payload's buffer length and `Packet` through
+    /// it, which needs `UdpRepr`, `TcpRepr` and `DhcpRepr` refined -- none of them is -- and then
+    /// an indexed `packet: &Packet[@blen]` on `Interface::emit_ip_into`, whose closure caller can
+    /// only relate `n` to `IpRepr::buffer_len()`. Until that chain exists, `trusted(no)` alone is
+    /// what this function can honestly carry: the body is checked, so the obligations its callees
+    /// state are *reported* here rather than erased, but nothing is propagated upwards.
+    ///
+    /// The unproved obligations left in the body are, per arm: the two `unreachable!()` arms
+    /// (`MightPanic`); the hop-by-hop header slices and `Buf::with_offset(payload, hbh_end)`,
+    /// where `hbh_end` is unconstrained because neither `Ipv6ExtHeaderRepr::header_len` nor
+    /// `Ipv6HopByHopRepr::buffer_len` has a Flux signature; the two `Icmpv6Repr::emit` calls, per
+    /// the paragraph above; the TCP window clamp's two `-=` underflows; and the `udp`/`dhcpv4`
+    /// closures, whose bodies Flux does not check.
+    #[flux_rs::trusted(no, reason = "checks the body; the true contract needs IpPayload refined")]
     pub(crate) fn emit_payload(
         &self,
         _ip_repr: &IpRepr,
