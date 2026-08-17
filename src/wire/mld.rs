@@ -401,21 +401,21 @@ impl<'a> Repr<'a> {
     }
 
     /// Emit a high-level representation into an MLDv2 packet.
-    // PARKED, and re-measured on 2026-08-16. Restoring `trusted(no)` here does not merely fail
-    // to prove the buffer bound -- it is a hard spec error:
+    // PARKED, but the hard spec error is gone as of the `Packet<T>`/`T: Sized` signature change.
+    // This used to raise
     //
     //     error[E0999]: associated refinement `as_mut_reft` is missing from implementation
     //
-    // raised at the first `packet.set_msg_type(..)`. `icmpv6::Packet::set_msg_type` now carries
-    // `requires 0 < <T as AsMut<[u8]>>::as_mut_reft(p.buffer)`, and instantiating it at
-    // `T = &mut T` hits core's blanket `impl AsMut<U> for &mut T`, which has no associated
-    // refinement -- flux gives a reference self type the unit sort (see the BLOCKED note in
-    // `flux_specs.rs`). So the message-type check cannot be recovered by flipping this alone;
-    // the fix is converting the icmpv6 `emit` chain to `wire::Buf` (13 call sites, its own
-    // pass), which would also unlock icmpv6's own panic proofs.
-    pub fn emit<T>(&self, packet: &mut Packet<&mut T>)
+    // at the first `packet.set_msg_type(..)`, because `Packet<&mut T>` instantiated core's blanket
+    // `impl AsMut<U> for &mut T`, which has no associated refinement. With `Packet<T>` a caller
+    // can pass `wire::Buf`, whose impl is local and refined, and the bound is an ordinary
+    // obligation again. See the parked note on `NdiscRepr::emit` for what is still needed; the
+    // extra item here is `packet.payload_mut().copy_from_slice(&data[..])`, whose bound is a
+    // relation between the buffer length and `data.len()`, so it needs `payload_mut` to return a
+    // `Buf` (a returned `&mut [u8]` loses its index, flux-rs/flux#1714).
+    pub fn emit<T>(&self, packet: &mut Packet<T>)
     where
-        T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,
+        T: AsRef<[u8]> + AsMut<[u8]>,
     {
         match self {
             Repr::Query {

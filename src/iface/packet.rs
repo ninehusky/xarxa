@@ -91,10 +91,13 @@ impl<'p> Packet<'p> {
                     IpRepr::Ipv6(repr) => repr,
                 };
 
+                // Routed through `Buf` so the destination keeps its length: a bare `&mut [u8]`
+                // instantiates core's blanket `AsMut for &mut T`, which carries no associated
+                // refinement, and the buffer bound would then bind nothing.
                 icmpv6_repr.emit(
                     &ipv6_repr.src_addr,
                     &ipv6_repr.dst_addr,
-                    &mut Icmpv6Packet::new_unchecked(payload),
+                    &mut Icmpv6Packet::new_unchecked(Buf::new(payload)),
                     &caps.checksum,
                 )
             }
@@ -121,10 +124,12 @@ impl<'p> Packet<'p> {
                     &mut payload[hbh_start..hbh_end],
                 ));
 
+                // As above: `Buf::with_offset` carries the tail's length into the refinement,
+                // where `&mut payload[hbh_end..]` would lose it (flux-rs/flux#1714).
                 icmpv6_repr.emit(
                     &ipv6_repr.src_addr,
                     &ipv6_repr.dst_addr,
-                    &mut Icmpv6Packet::new_unchecked(&mut payload[hbh_end..]),
+                    &mut Icmpv6Packet::new_unchecked(Buf::with_offset(payload, hbh_end)),
                     &caps.checksum,
                 );
             }
