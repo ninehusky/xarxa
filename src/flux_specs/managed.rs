@@ -5,16 +5,6 @@
 
 use flux_rs::*;
 
-// `managed::ManagedSlice::Owned(Vec<T>)` is itself `#[cfg(any(feature = "std", feature =
-// "alloc"))]`, and `extern crate alloc` is gated on `feature = "alloc"` in lib.rs. An extern spec
-// must list every variant of the real definition *for the active configuration* or flux rejects
-// it, so the enum is written twice rather than once with an unconditional `alloc::` path.
-//
-// Without this split the crate does not compile under flux at all in a no-`alloc` configuration --
-// which is every embedded one, including the nRF52840 `usb_ethernet` firmware the panic counts are
-// measured on. That failure is three `E0433`/`E0425`s here and it aborts the whole run, so the lib
-// is never checked and every count from it is meaningless.
-
 /// `Vec`'s sort is opaque here, so `ManagedSlice::Owned` has no length to name without this.
 #[cfg(feature = "alloc")]
 #[extern_spec]
