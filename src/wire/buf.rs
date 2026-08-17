@@ -135,25 +135,51 @@ impl AsMut<[u8]> for Buf<'_> {
 // NOT CONVERTED to unchecked indexing, deliberately. `read_u16_at`, `write_u16_at`,
 // `write_u24_at` and `write_octets16_at` each have their `requires` discharged at every
 // immediate call site, but the *transitive* chain above at least one of those callers runs
-// through a function whose body is unchecked under `default_trusted = true`, so the bound is
-// asserted by nobody. Making these unchecked would trade a panic for UB. Blockers, one each:
+// through a function whose body is unchecked under `default_trusted = true`, or through a
+// bound flux cannot state at all. The bound is then asserted by nobody, and making these
+// unchecked would trade a panic for UB.
 //
-//   read_u16_at        `Ipv4Packet::total_len` (ipv4.rs:317) is `trusted(no)` and requires
-//                      `4 <= len`, but five in-crate callers have unchecked bodies and so
-//                      discharge nothing: `Ipv4Packet::{payload, payload_mut}`, `Ipv4Repr::parse`,
-//                      its `fmt`, and `iface::interface::ipv4::process_ipv4`.
-//   write_u16_at       `Ipv4Packet::fill_checksum` (ipv4.rs:674) calls `set_checksum` from an
-//                      unchecked body -- it carries a flux `sig` but no `trusted(no)`, and is
-//                      documented there as ASSUMED, NOT PROVEN. Live caller: `socket/raw.rs:412`.
-//   write_u24_at       two blockers. (a) the `Ipv6Repr::emit` chain below; (b) byteorder's
-//                      `write_uint` also asserts `pack_size(n) <= 3`, a *value* bound that no
-//                      signature here states, so it is discharged by nobody either.
-//   write_octets16_at  `Ipv6Repr::emit` (ipv6.rs:708) requires `40 <= len`, but
-//                      `iface::interface::sixlowpan::sixlowpan_to_ipv6` (sixlowpan.rs:198) calls
-//                      it from an unchecked body.
+// The blocker list below was re-measured against the *firmware* feature set
+// (`medium-ethernet,socket-udp,socket-tcp,socket-dhcpv4,proto-ipv4,proto-ipv6`), which is what
+// the nRF52840 `usb_ethernet` binary actually contains. The previously named sixlowpan blocker
+// is compiled out there, but two other unchecked callers take its place, so nothing was freed.
 //
-// Each becomes convertible the moment its blocker gains `#[flux_rs::trusted(no)]` and verifies;
-// none is fixable from inside this file.
+//   write_octets16_at  `Ipv6Repr::emit` (ipv6.rs:708) requires `40 <= len`. Under the firmware
+//   write_u24_at       config its unchecked callers are `Icmpv6Repr::emit`'s inner
+//   write_u16_at       `emit_contained_packet` (icmpv6.rs:811) and `NdiscOption Repr::emit`
+//                      (ndiscoption.rs:573) -- both hand it a `payload_mut()` of unbounded
+//                      length. Verified by control: strengthening `Ipv6Repr::emit`'s `requires`
+//                      with an absurd conjunct produced exactly one new error, at
+//                      `IpRepr::emit` (ip.rs:892), and none at either of those two, i.e. they
+//                      carry nothing. `write_u16_at` reaches the same chain through
+//                      `Ipv6Packet::set_payload_len`.
+//   write_u24_at       additionally: byteorder's `write_uint` asserts `pack_size(n) <= 3`, a
+//                      *value* bound. Adding `value < 16777216` here was tried; flux cannot
+//                      discharge it at `Ipv6Packet::set_flow_label` (ipv6.rs:549), whose `raw`
+//                      is `((data[1] & 0xf0) as u32) << 16 | (value & 0x0fffff)` -- true, but it
+//                      needs bitvector reasoning flux does not do here.
+//   write_u16_at       additionally, on the v4 side: `Ipv4Packet::fill_checksum` (ipv4.rs:674)
+//                      calls `set_checksum` from a body that cannot be proved at all (see the
+//                      note on that function), and `socket/raw.rs:412` calls it from inside a
+//                      `dequeue_with` closure, which flux does not check either.
+//   read_u16_at        NOT an annotation gap -- a flux limitation. `Ipv4Packet::total_len`
+//                      (ipv4.rs:317) requires `4 <= as_ref_reft(buf.buffer)`, but three of its
+//                      callers -- `Packet::payload`, `Ipv4Repr::parse` and the `Display` impl --
+//                      are all over `Packet<&T>` with `T: ?Sized`. Giving each `trusted(no)`
+//                      was tried: the bodies are checked and every one fails with
+//                      `associated refinement 'as_ref_reft' is missing from implementation`,
+//                      because core's blanket `AsRef for &T` has no associated refinement (the
+//                      same unit-sort problem this module's header describes). Writing the
+//                      `requires` explicitly fails earlier still, with
+//                      `mismatched sorts: expected 'T::sort', found '()'`. `Display::fmt` could
+//                      not carry it in any case -- a trait impl's signature is fixed, so no
+//                      consumer owes it anything. `Packet::payload_mut` is separately
+//                      unprovable: its `header_len()..total_len()` range is a property of
+//                      buffer *contents*.
+//
+// The first three become convertible only once the icmpv6/ndiscoption emit bodies are checked
+// (they belong to another agent's file) *and* the v4-side items above are resolved.
+// `read_u16_at` is not convertible until flux can refine a reference self type.
 
 /// Read a big-endian `u16` at `at`.
 ///
