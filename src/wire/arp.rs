@@ -2,7 +2,7 @@ use core::fmt;
 
 use super::{Error, Result};
 use super::{EthernetAddress, Ipv4Address};
-use super::{read_u16_at, write_u16_at};
+use super::{copy_window_at, read_u16_at, sub, write_u16_at};
 
 pub use super::EthernetProtocol as Protocol;
 
@@ -21,13 +21,66 @@ enum_with_unknown! {
     }
 }
 
+/// A ghost field: carries an integer in the refinement and nothing at runtime.
+///
+/// ARP's field offsets are functions of `hardware_len` and `protocol_len`, which live in the
+/// buffer's *contents* -- and contents are not in the refinement, so no accessor's bound can
+/// mention them. This is the way to name them anyway. `Packet` holds two of these, and because
+/// the struct is a ZST it costs no space and `Packet<T>`'s layout is unchanged.
+///
+/// The values are anchored by [`Packet::hardware_len`] and [`Packet::protocol_len`], the two
+/// trusted getters that assert the header byte equals the ghost. Everything else is proved.
+#[flux_rs::opaque]
+#[flux_rs::refined_by(val: int)]
+#[flux_rs::invariant(0 <= val && val <= 255)]
+#[derive(PartialEq, Eq, Clone, Copy)]
+struct Ghost;
+
+impl Ghost {
+    /// A ghost whose value is unconstrained.
+    #[flux_rs::trusted(yes, reason = "opaque: the ghost carries no runtime value")]
+    #[flux_rs::sig(fn() -> Ghost{v: 0 <= v && v <= 255})]
+    #[flux_rs::no_panic]
+    const fn unknown() -> Ghost {
+        Ghost
+    }
+
+    /// A ghost pinned to `val`.
+    #[flux_rs::trusted(yes, reason = "opaque: establishes the ghost value")]
+    #[flux_rs::sig(fn(val: u8) -> Ghost[val])]
+    #[flux_rs::no_panic]
+    const fn new(_val: u8) -> Ghost {
+        Ghost
+    }
+}
+
 /// A read/write wrapper around an Address Resolution Protocol packet buffer.
-#[derive(Debug, PartialEq, Eq, Clone)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[flux_rs::refined_by(buffer: T)]
+#[derive(PartialEq, Eq, Clone)]
+#[flux_rs::refined_by(buffer: T, hlen: int, plen: int)]
+#[flux_rs::invariant(0 <= hlen && hlen <= 255 && 0 <= plen && plen <= 255)]
 pub struct Packet<T: AsRef<[u8]>> {
     #[flux_rs::field(T[buffer])]
     buffer: T,
+    #[flux_rs::field(Ghost[hlen])]
+    hlen: Ghost,
+    #[flux_rs::field(Ghost[plen])]
+    plen: Ghost,
+}
+
+// Written out rather than derived so the ghosts stay out of the output: a derive would print
+// `Packet { buffer: .., hlen: Ghost, plen: Ghost }`, and the ghosts are not supposed to be
+// observable. These reproduce the derived form for the one field that existed before.
+impl<T: AsRef<[u8]> + fmt::Debug> fmt::Debug for Packet<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Packet").field("buffer", &self.buffer).finish()
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl<T: AsRef<[u8]> + defmt::Format> defmt::Format for Packet<T> {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "Packet {{ buffer: {} }}", self.buffer)
+    }
 }
 
 mod field {
@@ -68,8 +121,17 @@ mod field {
 
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Imbue a raw octet buffer with ARP packet structure.
+    ///
+    /// The two ghosts start unconstrained: this reads nothing, so it learns nothing. They are
+    /// pinned to the header bytes the first time `hardware_len`/`protocol_len` is called.
+    #[flux_rs::sig(fn(T[@b]) -> Packet<T>{p: p.buffer == b})]
+    #[flux_rs::no_panic]
     pub const fn new_unchecked(buffer: T) -> Packet<T> {
-        Packet { buffer }
+        Packet {
+            buffer,
+            hlen: Ghost::unknown(),
+            plen: Ghost::unknown(),
+        }
     }
 
     /// Shorthand for a combination of [new_unchecked] and [check_len].
@@ -105,17 +167,17 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// The whole of `check_len`; the public method just discards the length. It exists because
     /// `Result<()>`'s `Ok` payload is `()` and so carries no refinement, which leaves a caller
     /// with nothing to show for a successful check. Returning the length instead lets the `Ok`
-    /// arm say `8 <= len`, and that is what discharges the header accessors' bounds in
-    /// [`Repr::parse`].
+    /// arm say something, and what it says is the postcondition every accessor below wants.
     ///
-    /// `8 <= v` is the first test only. The second is `8 + 2 * hardware_len + 2 * protocol_len`,
-    /// which is not statable: both lengths are read from the buffer, and the buffer's *contents*
-    /// are not in the refinement, so nothing ties them to the values a later read returns.
+    /// Both tests are in the bound, the second one only because the ghosts make
+    /// `hardware_len`/`protocol_len` nameable. `Repr::parse` matches them against `6` and `4`,
+    /// which turns this into `28 <= v` and discharges the address accessors.
     #[allow(clippy::if_same_then_else)]
     #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
     #[flux_rs::sig(
         fn(self: &Packet<T>[@p])
-            -> Result<usize{v: v == <T as AsRef<[u8]>>::as_ref_reft(p.buffer) && 8 <= v}>
+            -> Result<usize{v: v == <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+                             && 8 + 2 * p.hlen + 2 * p.plen <= v}>
     )]
     #[flux_rs::no_panic]
     fn checked_len(&self) -> Result<usize> {
@@ -168,7 +230,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
         Protocol::from(raw)
     }
 
-    /// Return the hardware length field.
+    /// The octet at offset 4, with its bound proved and no claim about its value.
     #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
     #[flux_rs::sig(
         fn(&Packet<T>[@p]) -> u8
@@ -176,12 +238,12 @@ impl<T: AsRef<[u8]>> Packet<T> {
     )]
     #[flux_rs::no_panic]
     #[inline]
-    pub fn hardware_len(&self) -> u8 {
+    fn hardware_len_octet(&self) -> u8 {
         let data = self.buffer.as_ref();
         data[field::HLEN]
     }
 
-    /// Return the protocol length field.
+    /// The octet at offset 5, with its bound proved and no claim about its value.
     #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
     #[flux_rs::sig(
         fn(&Packet<T>[@p]) -> u8
@@ -189,9 +251,44 @@ impl<T: AsRef<[u8]>> Packet<T> {
     )]
     #[flux_rs::no_panic]
     #[inline]
-    pub fn protocol_len(&self) -> u8 {
+    fn protocol_len_octet(&self) -> u8 {
         let data = self.buffer.as_ref();
         data[field::PLEN]
+    }
+
+    /// Return the hardware length field.
+    ///
+    /// One of the two anchors for the ghost fields: the return type *claims* the octet at
+    /// offset 4 is `hlen`. Nothing proves that -- the buffer's contents are not in the
+    /// refinement -- so it is the assumption the address accessors' bounds rest on, and it is
+    /// kept true by [`set_hardware_len`](Self::set_hardware_len), the only thing that writes
+    /// this octet, which updates the ghost in the same step.
+    ///
+    /// The read itself stays checked: the trusted body is a call and an index expression it
+    /// does not contain. All this assumes is the equality, which is the part flux cannot see.
+    #[flux_rs::trusted(yes, reason = "anchors the `hlen` ghost to the octet at offset 4")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u8[p.hlen]
+        requires 5 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
+    #[inline]
+    pub fn hardware_len(&self) -> u8 {
+        self.hardware_len_octet()
+    }
+
+    /// Return the protocol length field.
+    ///
+    /// See [`hardware_len`](Self::hardware_len); this is the same anchor for `plen`.
+    #[flux_rs::trusted(yes, reason = "anchors the `plen` ghost to the octet at offset 5")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u8[p.plen]
+        requires 6 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
+    #[inline]
+    pub fn protocol_len(&self) -> u8 {
+        self.protocol_len_octet()
     }
 
     /// Return the operation field.
@@ -209,27 +306,63 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the source hardware address field.
+    ///
+    /// The four address accessors take their offsets from the ghosts rather than from
+    /// `field::SHA` and friends: those are `const fn`s returning `Range<usize>`, and flux cannot
+    /// see through one, so `r.start <= r.end` is unprovable however well the length is known.
+    /// The original spelling is kept in a trailing comment.
+    #[flux_rs::trusted(no, reason = "panic site: reads a variable-length address field")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> &[u8][p.hlen]
+        requires 8 + p.hlen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn source_hardware_addr(&self) -> &[u8] {
+        let hardware_len = self.hardware_len() as usize;
         let data = self.buffer.as_ref();
-        &data[field::SHA(self.hardware_len(), self.protocol_len())]
+        sub(data, 8, hardware_len) // field::SHA
     }
 
     /// Return the source protocol address field.
+    #[flux_rs::trusted(no, reason = "panic site: reads a variable-length address field")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> &[u8][p.plen]
+        requires 8 + p.hlen + p.plen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn source_protocol_addr(&self) -> &[u8] {
+        let hardware_len = self.hardware_len() as usize;
+        let protocol_len = self.protocol_len() as usize;
         let data = self.buffer.as_ref();
-        &data[field::SPA(self.hardware_len(), self.protocol_len())]
+        sub(data, 8 + hardware_len, protocol_len) // field::SPA
     }
 
     /// Return the target hardware address field.
+    #[flux_rs::trusted(no, reason = "panic site: reads a variable-length address field")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> &[u8][p.hlen]
+        requires 8 + 2 * p.hlen + p.plen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn target_hardware_addr(&self) -> &[u8] {
+        let hardware_len = self.hardware_len() as usize;
+        let protocol_len = self.protocol_len() as usize;
         let data = self.buffer.as_ref();
-        &data[field::THA(self.hardware_len(), self.protocol_len())]
+        sub(data, 8 + hardware_len + protocol_len, hardware_len) // field::THA
     }
 
     /// Return the target protocol address field.
+    #[flux_rs::trusted(no, reason = "panic site: reads a variable-length address field")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> &[u8][p.plen]
+        requires 8 + 2 * p.hlen + 2 * p.plen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn target_protocol_addr(&self) -> &[u8] {
+        let hardware_len = self.hardware_len() as usize;
+        let protocol_len = self.protocol_len() as usize;
         let data = self.buffer.as_ref();
-        &data[field::TPA(self.hardware_len(), self.protocol_len())]
+        sub(data, 8 + 2 * hardware_len + protocol_len, protocol_len) // field::TPA
     }
 }
 
@@ -261,29 +394,40 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     /// Set the hardware length field.
+    ///
+    /// Writes the ghost as well as the octet. This is the whole of what keeps
+    /// [`hardware_len`](Self::hardware_len)'s claim true, so the two must not drift apart:
+    /// `&strg` rather than `&mut` because a `&mut T{v: ..}` weakening does not compose through
+    /// a call chain, and `Repr::emit` needs the new value to survive into the setters after it.
     #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
     #[flux_rs::sig(
-        fn(self: &mut Packet<T>[@p], _)
+        fn(self: &strg Packet<T>[@p], value: u8)
         requires 5 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        ensures self: Packet<T>[p.buffer, value, p.plen]
     )]
     #[flux_rs::no_panic]
     #[inline]
     pub fn set_hardware_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::HLEN] = value
+        data[field::HLEN] = value;
+        self.hlen = Ghost::new(value);
     }
 
     /// Set the protocol length field.
+    ///
+    /// See [`set_hardware_len`](Self::set_hardware_len); this is the same for `plen`.
     #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
     #[flux_rs::sig(
-        fn(self: &mut Packet<T>[@p], _)
+        fn(self: &strg Packet<T>[@p], value: u8)
         requires 6 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        ensures self: Packet<T>[p.buffer, p.hlen, value]
     )]
     #[flux_rs::no_panic]
     #[inline]
     pub fn set_protocol_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::PLEN] = value
+        data[field::PLEN] = value;
+        self.plen = Ghost::new(value);
     }
 
     /// Set the operation field.
@@ -303,40 +447,70 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     ///
     /// # Panics
     /// The function panics if `value` is not `self.hardware_len()` long.
+    ///
+    /// The assert is still there; `value: &[u8][p.hlen]` states the same condition where flux
+    /// can see it, so a checked caller proves it cannot fire.
+    #[flux_rs::trusted(no, reason = "panic site: writes a variable-length address field")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p], value: &[u8][p.hlen])
+        requires 5 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+              && 8 + p.hlen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
     pub fn set_source_hardware_addr(&mut self, value: &[u8]) {
-        let (hardware_len, protocol_len) = (self.hardware_len(), self.protocol_len());
+        let hardware_len = self.hardware_len() as usize;
         let data = self.buffer.as_mut();
-        data[field::SHA(hardware_len, protocol_len)].copy_from_slice(value)
+        copy_window_at(data, 8, hardware_len, value) // field::SHA
     }
 
     /// Set the source protocol address field.
     ///
-    /// # Panics
-    /// The function panics if `value` is not `self.protocol_len()` long.
+    /// See [`set_source_hardware_addr`](Self::set_source_hardware_addr) for the length
+    /// precondition.
+    #[flux_rs::trusted(no, reason = "panic site: writes a variable-length address field")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p], value: &[u8][p.plen])
+        requires 6 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+              && 8 + p.hlen + p.plen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
     pub fn set_source_protocol_addr(&mut self, value: &[u8]) {
-        let (hardware_len, protocol_len) = (self.hardware_len(), self.protocol_len());
+        let hardware_len = self.hardware_len() as usize;
+        let protocol_len = self.protocol_len() as usize;
         let data = self.buffer.as_mut();
-        data[field::SPA(hardware_len, protocol_len)].copy_from_slice(value)
+        copy_window_at(data, 8 + hardware_len, protocol_len, value) // field::SPA
     }
 
     /// Set the target hardware address field.
     ///
-    /// # Panics
-    /// The function panics if `value` is not `self.hardware_len()` long.
+    /// See [`set_source_hardware_addr`](Self::set_source_hardware_addr) for the length
+    /// precondition.
+    #[flux_rs::trusted(no, reason = "panic site: writes a variable-length address field")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p], value: &[u8][p.hlen])
+        requires 6 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+              && 8 + 2 * p.hlen + p.plen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
     pub fn set_target_hardware_addr(&mut self, value: &[u8]) {
-        let (hardware_len, protocol_len) = (self.hardware_len(), self.protocol_len());
+        let hardware_len = self.hardware_len() as usize;
+        let protocol_len = self.protocol_len() as usize;
         let data = self.buffer.as_mut();
-        data[field::THA(hardware_len, protocol_len)].copy_from_slice(value)
+        copy_window_at(data, 8 + hardware_len + protocol_len, hardware_len, value) // field::THA
     }
 
     /// Set the target protocol address field.
     ///
-    /// # Panics
-    /// The function panics if `value` is not `self.protocol_len()` long.
+    /// See [`set_source_hardware_addr`](Self::set_source_hardware_addr) for the length
+    /// precondition.
+    #[flux_rs::trusted(no, reason = "panic site: writes a variable-length address field")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p], value: &[u8][p.plen])
+        requires 6 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+              && 8 + 2 * p.hlen + 2 * p.plen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
     pub fn set_target_protocol_addr(&mut self, value: &[u8]) {
-        let (hardware_len, protocol_len) = (self.hardware_len(), self.protocol_len());
+        let hardware_len = self.hardware_len() as usize;
+        let protocol_len = self.protocol_len() as usize;
         let data = self.buffer.as_mut();
-        data[field::TPA(hardware_len, protocol_len)].copy_from_slice(value)
+        copy_window_at(data, 8 + 2 * hardware_len + protocol_len, protocol_len, value) // field::TPA
     }
 }
 
@@ -423,8 +597,10 @@ impl Repr {
     /// method already had, now stated where a checker can see it.
     #[flux_rs::trusted(no, reason = "gates every setter below it")]
     #[flux_rs::sig(
-        fn(&Repr, packet: &mut Packet<T>[@p])
+        fn(&Repr, packet: &strg Packet<T>[@p])
         requires 28 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+              && 6 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+        ensures packet: Packet<T>[p.buffer, 6, 4]
     )]
     pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, packet: &mut Packet<T>) {
         match *self {
@@ -520,6 +696,15 @@ mod test {
         0x00, 0x01, 0x08, 0x00, 0x06, 0x04, 0x00, 0x01, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x21,
         0x22, 0x23, 0x24, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x41, 0x42, 0x43, 0x44,
     ];
+
+    #[test]
+    fn ghost_fields_are_not_observable() {
+        let bytes = [0u8; 28];
+        let packet = Packet::new_unchecked(&bytes[..]);
+        let s = format!("{packet:?}");
+        assert!(!s.contains("Ghost"), "ghosts leaked into Debug: {s}");
+        assert!(s.starts_with("Packet { buffer: "), "Debug shape changed: {s}");
+    }
 
     #[test]
     fn test_deconstruct() {

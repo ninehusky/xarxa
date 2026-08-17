@@ -256,3 +256,25 @@ pub fn write_octets16_at(data: &mut [u8], at: usize, octets: &[u8; 16]) {
 pub fn prefix(data: &[u8], n: usize) -> &[u8] {
     &data[..n]
 }
+
+/// Borrow `n` octets of `data` starting at `at`. See [`read_u16_at`] for why this is trusted.
+#[flux_rs::trusted(yes, reason = "sub-slice length is not recoverable; see flux-rs/flux#1714")]
+#[flux_rs::sig(fn(&[u8][@len], at: usize, n: usize) -> &[u8][n] requires at + n <= len)]
+#[flux_rs::no_panic]
+pub fn sub(data: &[u8], at: usize, n: usize) -> &[u8] {
+    &data[at..at + n]
+}
+
+/// Copy `src` into the `len`-octet window of `data` at `at`. See [`read_u16_at`] for why the
+/// bound is trusted.
+///
+/// `copy_from_slice`'s own length assert is deliberately retained -- writing the window as
+/// `data[at..at + len]` rather than `data[at..at + src.len()]` is what keeps it comparing two
+/// different quantities. `src: &[u8][len]` is stated *alongside* that check, not instead of it,
+/// so a checked caller proves the assert cannot fire while an unchecked one still gets the
+/// panic rather than a silently shorter or longer write. Hence no `no_panic` here.
+#[flux_rs::trusted(yes, reason = "sub-slice length is not recoverable; see flux-rs/flux#1714")]
+#[flux_rs::sig(fn(&mut [u8][@n], at: usize, len: usize, src: &[u8][len]) requires at + len <= n)]
+pub fn copy_window_at(data: &mut [u8], at: usize, len: usize, src: &[u8]) {
+    data[at..at + len].copy_from_slice(src)
+}
