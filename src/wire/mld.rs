@@ -555,7 +555,22 @@ impl<'a> AddressRecordRepr<'a> {
 /// A high-level representation of an MLDv2 packet header.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+// Indexed to agree with `buffer_len()` exactly, variant for variant: `28 + data.len()` for
+// Query (`field::QUERY_NUM_SRCS.end`), `8 + data.len()` for Report (`NR_MCAST_RCRDS.end`) and
+// a bare `8` for ReportRecordReprs.
+//
+// The `ReportRecordReprs` index is deliberately *approximate*: `buffer_len()` returns only 8 for
+// that variant, omitting `20 * records.len()`, and `iface::interface::ipv6` compensates by adding
+// the record lengths at the call site. `AddressRecordRepr` is unrefined, so the true length is not
+// statable here anyway. Indexing it 8 reproduces today's behaviour and today's obligation -- the
+// record loop's `8 + 20 * records.len() <= buffer` stays owed by nobody, exactly as before. It is
+// NOT fixed here, because correcting `buffer_len()` would change what `ipv6.rs` allocates.
+// Smallest variant is Report/ReportRecordReprs at `field::NR_MCAST_RCRDS.end` == 8. Flux checks
+// this against the `variant` indices below; `Icmpv6Repr`'s `4 <= blen` invariant rests on it.
+#[flux_rs::invariant(8 <= blen)]
+#[flux_rs::refined_by(blen: int)]
 pub enum Repr<'a> {
+    #[flux_rs::variant({u16, Ipv6Address, bool, u8, u8, u16, &[u8][@m]} -> Repr[28 + m])]
     Query {
         max_resp_code: u16,
         mcast_addr: Ipv6Address,
@@ -565,10 +580,12 @@ pub enum Repr<'a> {
         num_srcs: u16,
         data: &'a [u8],
     },
+    #[flux_rs::variant({u16, &[u8][@m]} -> Repr[8 + m])]
     Report {
         nr_mcast_addr_rcrds: u16,
         data: &'a [u8],
     },
+    #[flux_rs::variant((&[AddressRecordRepr]) -> Repr[8])]
     ReportRecordReprs(&'a [AddressRecordRepr<'a>]),
 }
 
@@ -631,8 +648,8 @@ impl<'a> Repr<'a> {
     // bound; see the parked note there.
     #[flux_rs::trusted(no, reason = "calls the header setters, clear_reserved and the record loop")]
     #[flux_rs::sig(
-        fn(&Self, packet: &strg Packet<T>[@p])
-        requires 28 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        fn(&Self[@r], packet: &strg Packet<T>[@p])
+        requires r.blen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
         ensures packet: Packet<T>{v: v.buffer == p.buffer}
     )]
     pub fn emit<T>(&self, packet: &mut Packet<T>)
