@@ -1,8 +1,8 @@
-use byteorder::{ByteOrder, NetworkEndian};
 use core::fmt;
 
 use super::{Error, Result};
 use super::{EthernetAddress, Ipv4Address};
+use super::{read_u16_at, write_u16_at};
 
 pub use super::EthernetProtocol as Protocol;
 
@@ -90,15 +90,48 @@ impl<T: AsRef<[u8]>> Packet<T> {
     ///
     /// [set_hardware_len]: #method.set_hardware_len
     /// [set_protocol_len]: #method.set_protocol_len
-    #[allow(clippy::if_same_then_else)]
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(fn(self: &Packet<T>[@p]) -> Result<()>)]
+    #[flux_rs::no_panic]
     pub fn check_len(&self) -> Result<()> {
+        match self.checked_len() {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// [`check_len`](Self::check_len), returning the buffer length it validated.
+    ///
+    /// The whole of `check_len`; the public method just discards the length. It exists because
+    /// `Result<()>`'s `Ok` payload is `()` and so carries no refinement, which leaves a caller
+    /// with nothing to show for a successful check. Returning the length instead lets the `Ok`
+    /// arm say `8 <= len`, and that is what discharges the header accessors' bounds in
+    /// [`Repr::parse`].
+    ///
+    /// `8 <= v` is the first test only. The second is `8 + 2 * hardware_len + 2 * protocol_len`,
+    /// which is not statable: both lengths are read from the buffer, and the buffer's *contents*
+    /// are not in the refinement, so nothing ties them to the values a later read returns.
+    #[allow(clippy::if_same_then_else)]
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(
+        fn(self: &Packet<T>[@p])
+            -> Result<usize{v: v == <T as AsRef<[u8]>>::as_ref_reft(p.buffer) && 8 <= v}>
+    )]
+    #[flux_rs::no_panic]
+    fn checked_len(&self) -> Result<usize> {
         let len = self.buffer.as_ref().len();
-        if len < field::OPER.end {
-            Err(Error)
-        } else if len < field::TPA(self.hardware_len(), self.protocol_len()).end {
+        if len < 8 {
+            // field::OPER.end
             Err(Error)
         } else {
-            Ok(())
+            // field::TPA(hardware_len, protocol_len).end, in arithmetic flux can follow.
+            let hardware_len = self.hardware_len() as usize;
+            let protocol_len = self.protocol_len() as usize;
+            if len < 8 + 2 * hardware_len + 2 * protocol_len {
+                Err(Error)
+            } else {
+                Ok(len)
+            }
         }
     }
 
@@ -108,22 +141,40 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the hardware type field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> Hardware
+        requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn hardware_type(&self) -> Hardware {
         let data = self.buffer.as_ref();
-        let raw = NetworkEndian::read_u16(&data[field::HTYPE]);
+        let raw = read_u16_at(data, 0); // field::HTYPE
         Hardware::from(raw)
     }
 
     /// Return the protocol type field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> Protocol
+        requires 4 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn protocol_type(&self) -> Protocol {
         let data = self.buffer.as_ref();
-        let raw = NetworkEndian::read_u16(&data[field::PTYPE]);
+        let raw = read_u16_at(data, 2); // field::PTYPE
         Protocol::from(raw)
     }
 
     /// Return the hardware length field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u8
+        requires 5 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn hardware_len(&self) -> u8 {
         let data = self.buffer.as_ref();
@@ -131,6 +182,12 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the protocol length field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u8
+        requires 6 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn protocol_len(&self) -> u8 {
         let data = self.buffer.as_ref();
@@ -138,10 +195,16 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the operation field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> Operation
+        requires 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn operation(&self) -> Operation {
         let data = self.buffer.as_ref();
-        let raw = NetworkEndian::read_u16(&data[field::OPER]);
+        let raw = read_u16_at(data, 6); // field::OPER
         Operation::from(raw)
     }
 
@@ -172,20 +235,38 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the hardware type field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p], _)
+        requires 2 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_hardware_type(&mut self, value: Hardware) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::HTYPE], value.into())
+        write_u16_at(data, 0, value.into()) // field::HTYPE
     }
 
     /// Set the protocol type field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p], _)
+        requires 4 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_protocol_type(&mut self, value: Protocol) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::PTYPE], value.into())
+        write_u16_at(data, 2, value.into()) // field::PTYPE
     }
 
     /// Set the hardware length field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p], _)
+        requires 5 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_hardware_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
@@ -193,6 +274,12 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     /// Set the protocol length field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p], _)
+        requires 6 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_protocol_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
@@ -200,10 +287,16 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     /// Set the operation field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p], _)
+        requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_operation(&mut self, value: Operation) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::OPER], value.into())
+        write_u16_at(data, 6, value.into()) // field::OPER
     }
 
     /// Set the source hardware address field.
@@ -278,8 +371,16 @@ pub enum Repr {
 impl Repr {
     /// Parse an Address Resolution Protocol packet and return a high-level representation,
     /// or return `Err(Error)` if the packet is not recognized.
+    ///
+    /// `check_len` is matched on rather than `?`-ed: `?` discards the `Result`'s refinement,
+    /// so the bound it proves does not survive into this body.
+    #[flux_rs::trusted(no, reason = "gates every accessor below it")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> Result<Repr>)]
     pub fn parse<T: AsRef<[u8]>>(packet: &Packet<T>) -> Result<Repr> {
-        packet.check_len()?;
+        match packet.checked_len() {
+            Ok(_) => {}
+            Err(e) => return Err(e),
+        }
 
         match (
             packet.hardware_type(),
@@ -287,17 +388,23 @@ impl Repr {
             packet.hardware_len(),
             packet.protocol_len(),
         ) {
-            (Hardware::Ethernet, Protocol::Ipv4, 6, 4) => Ok(Repr::EthernetIpv4 {
-                operation: packet.operation(),
-                source_hardware_addr: EthernetAddress::from_bytes(packet.source_hardware_addr()),
-                source_protocol_addr: Ipv4Address::from_octets(
-                    packet.source_protocol_addr().try_into().unwrap(),
-                ),
-                target_hardware_addr: EthernetAddress::from_bytes(packet.target_hardware_addr()),
-                target_protocol_addr: Ipv4Address::from_octets(
-                    packet.target_protocol_addr().try_into().unwrap(),
-                ),
-            }),
+            (Hardware::Ethernet, Protocol::Ipv4, 6, 4) => {
+                Ok(Repr::EthernetIpv4 {
+                    operation: packet.operation(),
+                    source_hardware_addr: EthernetAddress::from_bytes(
+                        packet.source_hardware_addr(),
+                    ),
+                    source_protocol_addr: Ipv4Address::from_octets(
+                        packet.source_protocol_addr().try_into().unwrap(),
+                    ),
+                    target_hardware_addr: EthernetAddress::from_bytes(
+                        packet.target_hardware_addr(),
+                    ),
+                    target_protocol_addr: Ipv4Address::from_octets(
+                        packet.target_protocol_addr().try_into().unwrap(),
+                    ),
+                })
+            }
             _ => Err(Error),
         }
     }
@@ -310,6 +417,15 @@ impl Repr {
     }
 
     /// Emit a high-level representation into an Address Resolution Protocol packet.
+    ///
+    /// The `requires` is `buffer_len()` for the one representation there is: the caller must
+    /// hand over a buffer long enough for what this writes, which is the same contract the
+    /// method already had, now stated where a checker can see it.
+    #[flux_rs::trusted(no, reason = "gates every setter below it")]
+    #[flux_rs::sig(
+        fn(&Repr, packet: &mut Packet<T>[@p])
+        requires 28 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
     pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, packet: &mut Packet<T>) {
         match *self {
             Repr::EthernetIpv4 {
