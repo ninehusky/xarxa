@@ -36,6 +36,7 @@ flux-rs = { path = "../flux/lib/flux-rs" }
 [package.metadata.flux]
 enabled = true
 cache = true
+check_overflow = "lazy"
 # Restrict checking to the library; otherwise the crate-level settings below also
 # apply to build.rs, whose errors abort the run before the lib is checked.
 include = ["src/**/*.rs"]
