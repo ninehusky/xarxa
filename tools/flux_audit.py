@@ -274,9 +274,22 @@ def measure(ref, logpath):
             # An ICE aborts rustc and silently drops most diagnostics; any count
             # from such a run is fiction. Checked before anything is reported.
             "panicked": "panicked" in log,
-            # Did flux actually look at the crate? A config or path error yields
-            # zero errors, which is indistinguishable from success if unchecked.
-            "ran": "Checking xarxa" in log or "Compiling xarxa" in log,
+            # Did flux actually CHECK the crate?
+            #
+            # "Checking xarxa" only means cargo STARTED. If the crate then fails
+            # to compile -- a plain rustc error, not a flux one -- flux never
+            # runs on a single body and the log contains ZERO E0999s. That is
+            # indistinguishable from a clean proof unless you look for it, and
+            # it is exactly how a broken tree reads as PASS. Seen for real:
+            # `src/flux_specs/managed.rs` referencing `alloc` under a feature
+            # set that does not link it -> E0433/E0425 -> 0 errors -> "PASS".
+            #
+            # So: any rustc error code other than E0999, or a "could not
+            # compile", makes this run unreportable.
+            "ran": ("Checking xarxa" in log or "Compiling xarxa" in log)
+                   and not re.search(r"^error\[E(?!0999)\d+\]", log, flags=re.M)
+                   and not re.search(r"^error: could not compile `xarxa`", log, flags=re.M),
+            "compile_errors": sorted(set(re.findall(r"^error\[E(?!0999)(\d+)\]", log, flags=re.M))),
             "fail": log.count(GATE_FAIL),
             "errors": len(re.findall(r"^error\[E0999\]", log, flags=re.M)),
             "internal": log.count("internal flux error"),
@@ -323,8 +336,17 @@ def gate_mode(args):
     r = measure(ref, os.path.join(args.logdir, "gate.log"))
 
     if r["panicked"] or not r["ran"]:
-        why = "rustc panicked (an ICE drops most diagnostics)" if r["panicked"] else "flux never ran"
+        if r["panicked"]:
+            why = "rustc panicked (an ICE drops most diagnostics)"
+        elif r.get("compile_errors"):
+            why = ("the crate FAILED TO COMPILE (E" + ", E".join(r["compile_errors"]) +
+                   ") -- flux checked nothing, so 0 errors here means nothing")
+        else:
+            why = "flux never ran"
         print(f"FAIL  unreportable: {why}\n      see {r['log']}")
+        write_summary(args.summary, "Flux soundness gate",
+                      [f"### FAIL - unreportable\n", f"{why}\n",
+                       "A run that did not check the crate cannot be evidence of anything."])
         return 2
 
     broken, erased = r["gates_broken"], r["gated_in_trusted"]
@@ -440,7 +462,13 @@ def main():
                if x["panicked"] or not x["ran"]]
         if bad:
             for n, x in bad:
-                why = "rustc panicked (ICE drops diagnostics)" if x["panicked"] else "flux never ran"
+                if x["panicked"]:
+                    why = "rustc panicked (ICE drops diagnostics)"
+                elif x.get("compile_errors"):
+                    why = ("crate failed to compile (E" + ", E".join(x["compile_errors"]) +
+                           ") -- flux checked nothing")
+                else:
+                    why = "flux never ran"
                 print(f"  UNREPORTABLE [{n}]: {why} -- see {x['log']}")
             print()
             continue
