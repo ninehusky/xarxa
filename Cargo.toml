@@ -41,41 +41,29 @@ check_overflow = "lazy"
 # apply to build.rs, whose errors abort the run before the lib is checked.
 include = ["src/**/*.rs"]
 
-# Check every body in the crate. Nothing is trusted unless it says so in source.
-#
-# This was `true` until this commit. Under `default_trusted = true` a body with no
-# explicit `#[flux_rs::trusted(no)]` is *assumed*, and the output is byte-identical
-# to a discharged obligation: silence. That made "did my change actually prove
-# anything?" unanswerable without hand-walking the caller chain to a checked
-# ancestor, which is both expensive and easy to get wrong -- discharge is
-# transitive, so an immediate caller passing means nothing if *its* caller is
-# unchecked. Flipping this is what makes the question answerable by running Flux.
-#
-# Cost, measured on this commit's tree (firmware feature set, 0 rustc panics):
-#   default_trusted = true          45 errors    6.8 s
-#   default_trusted = false        238 errors    6.2 s
+# Every body in the crate is checked; nothing is trusted unless it says so in
+# source. Were this `true`, an unannotated body would be *assumed*, and the
+# output would be byte-identical to a discharged obligation: silence. Discharge
+# is transitive, so an immediate caller passing would then say nothing about
+# whether the obligation is met anywhere further up.
 default_trusted = false
 
-# `no_panic` is OFF for now, and this is a deliberate staging decision, not a
-# retreat -- we do want it back on.
+# Off deliberately, and intended to come back on.
 #
-# With `no_panic = true` the same tree reports 2109 errors instead of 238. The
-# extra 1871 are almost entirely downstream of the panics we are actually
-# removing, and they are dominated by cones that are not on any firmware panic
-# path at all: ~502 `core::fmt::*`, 140 `discriminant_value`, 89 `cmp::impls::eq`
-# and 62 `hash::*`, i.e. ~793 from `#[derive(Debug, PartialEq, Ord, Hash)]` --
-# `src/macros.rs:102` (the derive inside `enum_with_unknown!`) alone accounts for
-# 147 of them. Only ~94 of the 1871 are the real-panic family (53
-# `panicking::panic`, 36 `unwrap`, 5 `expect`), and those are genuine gating
-# panics we still owe.
+# Turning it on adds ~1870 errors. About 793 are `#[derive(Debug, PartialEq,
+# Ord, Hash)]` cones -- `core::fmt::*`, `discriminant_value`, `cmp::impls::eq`,
+# `hash::*` -- of which the derive inside `enum_with_unknown!` in `src/macros.rs`
+# is ~147 by itself. None of that lies on a firmware panic path. Only ~94 are the
+# real-panic family (`panicking::panic`, `unwrap`, `expect`), which are genuine
+# gating panics still owed.
 #
-# What we keep at 238: all 153 `possible out-of-bounds access` obligations, which
-# is `panic_bounds_check` -- the largest panic category in the firmware binary.
-# So turning `no_panic` off costs us no bounds-checking work.
+# All 153 `possible out-of-bounds access` obligations are reported either way,
+# and those are `panic_bounds_check` -- the largest panic category in the
+# firmware binary -- so no bounds-checking work is hidden while this is off.
 #
-# Re-enable by flipping this line; it runs in ~23 s and needs no other change.
-# The intended end state is `no_panic = true` with the formatting/derive cones
-# quarantined via `include_trusted` rather than left as noise.
+# The end state is `no_panic = true` with the formatting/derive cones quarantined
+# via `include_trusted`. Flipping this line is the only change needed to see
+# where that stands; it costs ~20 s.
 no_panic = false
 
 [dev-dependencies]

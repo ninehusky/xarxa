@@ -26,11 +26,10 @@ one string matters:
     "a precondition cannot be proved"      MUST NOT RISE
 
 Flux emits it both when a stated `requires` is unmet at a call site and when a
-gate cannot be proved unreachable -- verified by negative control:
-`flux_rs::assert(false)` in an otherwise-clean function produces exactly this.
-Measured on three trees, it was 100% of all `refinement type error`s (13/13,
-20/20, 568/568), and it does not collide with the `note: this is the condition
-that cannot be proved` lines.
+gate cannot be proved unreachable. To confirm it is still the right string, put
+`flux_rs::assert(false)` in an otherwise-clean function: the count rises by one
+and names that def. It does not collide with the `note: this is the condition
+that cannot be proved` lines, which are notes rather than errors.
 
 Everything else Flux reports -- `assertion might fail`, `arithmetic operation
 may underflow` -- means the runtime check is STILL THERE. Not unsound, just not
@@ -236,8 +235,7 @@ def measure(ref, logpath):
         # This is what separates "this PR broke a proof" from "this PR stated
         # new obligations that gate nothing" -- only the former blocks a merge.
         # A body that ICEd was never checked, so no error can appear for a gate
-        # inside it -- the same hole as a trusted body, arrived at by accident
-        # rather than by annotation. Track those defs separately.
+        # inside it. Same hole as a trusted body. Track those defs separately.
         iced_defs = set()
         for blk in re.split(r"(?=^error\[E0999\])", log, flags=re.M):
             if "internal flux error" not in blk:
@@ -276,21 +274,17 @@ def measure(ref, logpath):
             "panicked": "panicked" in log,
             # Did flux actually CHECK the crate?
             #
-            # "Checking xarxa" only means cargo STARTED. If the crate then fails
+            # "Checking xarxa" only means cargo started. If the crate then fails
             # to compile -- a plain rustc error, not a flux one -- flux never
-            # runs on a single body and the log contains ZERO E0999s. That is
-            # indistinguishable from a clean proof unless you look for it, and
-            # it is exactly how a broken tree reads as PASS. Seen for real:
-            # `src/flux_specs/managed.rs` referencing `alloc` under a feature
-            # set that does not link it -> E0433/E0425 -> 0 errors -> "PASS".
+            # runs on a single body and the log holds zero E0999s, which is
+            # indistinguishable from a clean proof. A stray `alloc` reference
+            # under a feature set that does not link it is enough to cause this.
             #
-            # So: any rustc error code other than E0999, or a "could not
-            # compile", makes this run unreportable.
-            # NB: flux ALWAYS emits "could not compile `xarxa` due to N previous
-            # errors" whenever it reports any E0999, so that line alone means
-            # nothing. What distinguishes a real compile failure is a rustc error
-            # CODE other than E0999 -- or, for an uncoded fatal error, a failed
-            # build with no E0999s at all.
+            # Note that flux always emits "could not compile `xarxa` due to N
+            # previous errors" whenever it reports any E0999, so that line alone
+            # proves nothing. A real compile failure is a rustc error CODE other
+            # than E0999, or -- for an uncoded fatal error -- a failed build with
+            # no E0999s at all.
             "ran": ("Checking xarxa" in log or "Compiling xarxa" in log)
                    and not re.search(r"^error\[E(?!0999)\d+\]", log, flags=re.M)
                    and not (re.search(r"^error: could not compile `xarxa`", log, flags=re.M)

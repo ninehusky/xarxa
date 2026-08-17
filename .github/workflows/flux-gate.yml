@@ -1,13 +1,12 @@
-# NOT YET RUN IN GITHUB ACTIONS. Written from the local invocation that does
-# work; the flux build/install step in particular is unverified in a runner.
-# Expect to iterate on the first PR run.
-#
-# Fails only when a panic that was ALREADY removed has lost its justification --
+# Fails only when a panic that has already been removed lacks justification --
 # a `flux_rs::assert(false); unreachable_unchecked()` whose enclosing function
 # cannot be proved, or whose exported precondition some caller cannot establish.
 # The raw error count is deliberately NOT a gate: adding a correct refinement
 # raises it, so gating on the total would block the branches doing the most real
 # verification work.
+#
+# Needs `cargo flux`, a sibling `flux` checkout for the `flux-rs` path dep,
+# `fixpoint`, and `z3`.
 
 name: flux soundness gate
 
@@ -22,13 +21,11 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # The driver every number in this repo was measured against, identified by
-  # hashing ~/.flux/flux-driver and finding its byte-identical twin:
-  #   ~/.flux/flux-driver  ==  flux-composed/target/release/flux-driver
-  # (the `flux-composed/sysroot` copy is the DEBUG build and does not match).
-  # Branch: ninehusky/flux hotfix/composed-2026-08-17. Pinned by SHA, not by
-  # branch name, so the driver cannot move under us -- every count re-baselines
-  # when it does, which makes bumping this a deliberate, reviewed change.
+  # ninehusky/flux, branch hotfix/composed-2026-08-17. Pinned by SHA rather than
+  # branch name: every count in this repo re-baselines when the driver moves, so
+  # bumping it must be a deliberate, reviewed change. Flux carries no provenance
+  # stamp, so to identify which driver a local `~/.flux` is, hash
+  # `~/.flux/flux-driver` against the build trees under ~/research.
   FLUX_SHA: 71fef2717071c8fdb29fce819a4d5c0608f10089
 
 jobs:
@@ -37,7 +34,7 @@ jobs:
     timeout-minutes: 90
     steps:
       # xarxa's Cargo.toml carries `flux-rs = { path = "../flux/lib/flux-rs" }`,
-      # so the two checkouts must be SIBLINGS. Checking xarxa out at the
+      # so the two checkouts must be siblings. Checking xarxa out at the
       # workspace root would put `../flux` outside $GITHUB_WORKSPACE.
       - name: Check out xarxa
         uses: actions/checkout@v4
@@ -81,30 +78,22 @@ jobs:
         if: steps.fluxcache.outputs.cache-hit != 'true'
         working-directory: flux
         # `xtask install` hardcodes ~/.flux and `cargo install --force`s over
-        # ~/.cargo/bin. That is destructive on a shared machine and must never be
-        # run locally -- on a throwaway runner it is the right call. It defaults
-        # to `--profile release`, which is what ~/.flux actually is.
+        # ~/.cargo/bin, so it is destructive on a shared machine and belongs only
+        # on a throwaway runner. It defaults to `--profile release`.
         run: cargo xtask install
 
       - name: Put flux on PATH
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       # flux shells out to `fixpoint` (liquid-fixpoint, a Haskell binary) to
-      # discharge constraints. `cargo xtask install` does NOT provide it, and
-      # without it every check dies with
-      #   internal compiler error: failed to run fixpoint: No such file or directory
-      # Reuse flux's own composite action from the sibling checkout, so the
-      # download stays in sync with the pinned driver rather than drifting.
+      # discharge constraints, and `cargo xtask install` does not provide it.
+      # Taken from the sibling checkout so it tracks the pinned driver.
       - name: Install fixpoint
         uses: ./flux/.github/actions/install-fixpoint
 
-      # fixpoint in turn shells out to z3 as its SMT solver. Without it every
-      # check dies with
-      #   fixpoint crash: z3: createProcess: posix_spawnp: does not exist
-      # Version matters: the solver decides what is provable, so pin it to the
-      # one the local numbers were taken against (4.16.0 here) rather than
-      # whatever the runner happens to ship. flux's own CI notes that versions
-      # older than ~4.15 hang.
+      # fixpoint in turn shells out to z3. The solver decides what is provable,
+      # so the version is pinned to match local runs rather than tracking
+      # whatever the runner ships. Versions older than ~4.15 hang.
       - name: Install z3
         uses: cda-tum/setup-z3@v1.6.6
         with:
