@@ -1,7 +1,6 @@
 use core::fmt;
 
 use super::{Error, Result};
-use crate::flux_util::{copy_prefix, sub, sub_mut};
 use crate::wire::{read_u16_at, write_u16_at};
 
 enum_with_unknown! {
@@ -150,14 +149,19 @@ impl Address {
     }
 
     /// Convert the address to an Extended Unique Identifier (EUI-64)
-    #[flux_rs::no_panic]
+    //
+    // Left indexing directly. Flux cannot see an array's length through the slice coercion, so
+    // it reports these two as unproven, but the indices are constant ranges into fixed-size
+    // arrays and rustc elides the checks. Routing them through `flux_util` would silence flux
+    // by swapping a check rustc already removed for `get_unchecked`, which is the trade those
+    // helpers exist to make and is not earned until every path here is verified.
     pub fn as_eui_64(&self) -> Option<[u8; 8]> {
         let octets = self.octets();
         let mut bytes = [0; 8];
-        copy_prefix(&mut bytes, &octets, 3);
+        bytes[0..3].copy_from_slice(&octets[0..3]);
         bytes[3] = 0xFF;
         bytes[4] = 0xFE;
-        sub_mut(&mut bytes, 5, 3).copy_from_slice(sub(&octets, 3, 3));
+        bytes[5..8].copy_from_slice(&octets[3..6]);
         bytes[0] ^= 1 << 1;
         Some(bytes)
     }
