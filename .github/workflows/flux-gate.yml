@@ -22,9 +22,14 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Pin the driver. Every number re-baselines when this moves, so bumping it is
-  # a deliberate, reviewed change -- not `main`.
-  FLUX_REF: hotfix/composed-2026-08-17
+  # The driver every number in this repo was measured against, identified by
+  # hashing ~/.flux/flux-driver and finding its byte-identical twin:
+  #   ~/.flux/flux-driver  ==  flux-composed/target/release/flux-driver
+  # (the `flux-composed/sysroot` copy is the DEBUG build and does not match).
+  # Branch: ninehusky/flux hotfix/composed-2026-08-17. Pinned by SHA, not by
+  # branch name, so the driver cannot move under us -- every count re-baselines
+  # when it does, which makes bumping this a deliberate, reviewed change.
+  FLUX_SHA: 71fef2717071c8fdb29fce819a4d5c0608f10089
 
 jobs:
   gate:
@@ -46,12 +51,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ninehusky/flux
-          ref: ${{ env.FLUX_REF }}
+          ref: ${{ env.FLUX_SHA }}
           path: flux
-
-      - name: Record pinned flux commit
-        id: fluxsha
-        run: echo "sha=$(git -C flux rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       # flux is a rustc driver: it needs the exact nightly it was built against,
       # plus rustc-dev/llvm-tools. Read from flux's own rust-toolchain.toml
@@ -74,14 +75,15 @@ jobs:
             flux/target
           # Keyed on the flux commit: rebuild only when the pinned driver moves.
           # Without this the rustc-driver build dominates the run.
-          key: flux-${{ runner.os }}-${{ steps.fluxsha.outputs.sha }}-v1
+          key: flux-${{ runner.os }}-${{ env.FLUX_SHA }}-v1
 
       - name: Build and install flux
         if: steps.fluxcache.outputs.cache-hit != 'true'
         working-directory: flux
         # `xtask install` hardcodes ~/.flux and `cargo install --force`s over
         # ~/.cargo/bin. That is destructive on a shared machine and must never be
-        # run locally -- on a throwaway runner it is the right call.
+        # run locally -- on a throwaway runner it is the right call. It defaults
+        # to `--profile release`, which is what ~/.flux actually is.
         run: cargo xtask install
 
       - name: Put flux on PATH
