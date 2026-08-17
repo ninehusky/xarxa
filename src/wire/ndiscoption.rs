@@ -1,5 +1,4 @@
 use bitflags::bitflags;
-use byteorder::{ByteOrder, NetworkEndian};
 use core::fmt;
 
 use super::{Error, Result};
@@ -50,7 +49,9 @@ bitflags! {
 /// [NDISC Option]: https://tools.ietf.org/html/rfc4861#section-4.6
 #[derive(Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(buffer: T)]
 pub struct NdiscOption<T: AsRef<[u8]>> {
+    #[flux_rs::field(T[buffer])]
     buffer: T,
 }
 
@@ -108,10 +109,15 @@ mod field {
     // Flags field of prefix header.
     pub const FLAGS: usize = 3;
     // Valid lifetime.
+    // Kept for documentation: the accessors spell `4` and `6` as literals, because a `const`
+    // of struct type is opaque to Flux, and cite this name in a comment.
+    #[allow(dead_code)]
     pub const VALID_LT: Field = 4..8;
-    // Preferred lifetime.
+    // Preferred lifetime. Kept for documentation; see `VALID_LT`.
+    #[allow(dead_code)]
     pub const PREF_LT: Field = 8..12;
-    // Reserved bits
+    // Reserved bits. Kept for documentation; see `VALID_LT`.
+    #[allow(dead_code)]
     pub const PREF_RESERVED: Field = 12..16;
     // Prefix
     pub const PREFIX: Field = 16..32;
@@ -145,6 +151,9 @@ mod field {
 /// Core getter methods relevant to any type of NDISC option.
 impl<T: AsRef<[u8]>> NdiscOption<T> {
     /// Create a raw octet buffer with an NDISC Option structure.
+    #[flux_rs::trusted(no, reason = "carries the buffer index into the wrapper")]
+    #[flux_rs::sig(fn(T[@b]) -> NdiscOption<T>{v: v.buffer == b})]
+    #[flux_rs::no_panic]
     pub const fn new_unchecked(buffer: T) -> NdiscOption<T> {
         NdiscOption { buffer }
     }
@@ -199,6 +208,11 @@ impl<T: AsRef<[u8]>> NdiscOption<T> {
     }
 
     /// Return the option type.
+    #[flux_rs::trusted(no, reason = "panic site: reads the option header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&NdiscOption<T>[@p]) -> Type
+        requires 1 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
     #[inline]
     pub fn option_type(&self) -> Type {
         let data = self.buffer.as_ref();
@@ -206,6 +220,12 @@ impl<T: AsRef<[u8]>> NdiscOption<T> {
     }
 
     /// Return the length of the data.
+    #[flux_rs::trusted(no, reason = "panic site: reads the option header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&NdiscOption<T>[@p]) -> u8
+        requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn data_len(&self) -> u8 {
         let data = self.buffer.as_ref();
@@ -227,39 +247,77 @@ impl<T: AsRef<[u8]>> NdiscOption<T> {
 /// Getter methods only relevant for the MTU option.
 impl<T: AsRef<[u8]>> NdiscOption<T> {
     /// Return the MTU value.
+    #[flux_rs::trusted(no, reason = "panic site: reads the option header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&NdiscOption<T>[@p]) -> u32
+        requires 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn mtu(&self) -> u32 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u32(&data[field::MTU])
+        // field::MTU (4..8), read as two big-endian halves: there is no `read_u32_at` helper,
+        // and `NetworkEndian::read_u32` takes a sub-slice whose length the caller cannot
+        // recover (flux-rs/flux#1714). Same four bytes, same value.
+        let hi = crate::wire::read_u16_at(data, 4) as u32;
+        let lo = crate::wire::read_u16_at(data, 6) as u32;
+        (hi << 16) | lo
     }
 }
 
 /// Getter methods only relevant for the Prefix Information option.
 impl<T: AsRef<[u8]>> NdiscOption<T> {
     /// Return the prefix length.
+    #[flux_rs::trusted(no, reason = "panic site: reads the option header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&NdiscOption<T>[@p]) -> u8
+        requires 3 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn prefix_len(&self) -> u8 {
         self.buffer.as_ref()[field::PREFIX_LEN]
     }
 
     /// Return the prefix information flags.
+    #[flux_rs::trusted(no, reason = "panic site: reads the option header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&NdiscOption<T>[@p]) -> PrefixInfoFlags
+        requires 4 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
     #[inline]
     pub fn prefix_flags(&self) -> PrefixInfoFlags {
         PrefixInfoFlags::from_bits_truncate(self.buffer.as_ref()[field::FLAGS])
     }
 
     /// Return the valid lifetime of the prefix.
+    #[flux_rs::trusted(no, reason = "panic site: reads the option header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&NdiscOption<T>[@p]) -> Duration
+        requires 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
     #[inline]
     pub fn valid_lifetime(&self) -> Duration {
         let data = self.buffer.as_ref();
-        Duration::from_secs(NetworkEndian::read_u32(&data[field::VALID_LT]) as u64)
+        // field::VALID_LT (4..8), split for the same reason as `mtu`.
+        let hi = crate::wire::read_u16_at(data, 4) as u32;
+        let lo = crate::wire::read_u16_at(data, 6) as u32;
+        Duration::from_secs(((hi << 16) | lo) as u64)
     }
 
     /// Return the preferred lifetime of the prefix.
+    #[flux_rs::trusted(no, reason = "panic site: reads the option header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&NdiscOption<T>[@p]) -> Duration
+        requires 12 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
     #[inline]
     pub fn preferred_lifetime(&self) -> Duration {
         let data = self.buffer.as_ref();
-        Duration::from_secs(NetworkEndian::read_u32(&data[field::PREF_LT]) as u64)
+        // field::PREF_LT (8..12), split for the same reason as `mtu`.
+        let hi = crate::wire::read_u16_at(data, 8) as u32;
+        let lo = crate::wire::read_u16_at(data, 10) as u32;
+        Duration::from_secs(((hi << 16) | lo) as u64)
     }
 
     /// Return the prefix.
@@ -283,6 +341,11 @@ impl<'a, T: AsRef<[u8]> + ?Sized> NdiscOption<&'a T> {
 /// Core setter methods relevant to any type of NDISC option.
 impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
     /// Set the option type.
+    #[flux_rs::trusted(no, reason = "panic site: writes the option header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut NdiscOption<T>[@p], Type)
+        requires 1 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
     #[inline]
     pub fn set_option_type(&mut self, value: Type) {
         let data = self.buffer.as_mut();
@@ -290,6 +353,12 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
     }
 
     /// Set the option data length.
+    #[flux_rs::trusted(no, reason = "panic site: writes the option header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut NdiscOption<T>[@p], u8)
+        requires 2 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_data_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
@@ -300,6 +369,20 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
 /// Setter methods only relevant for Source/Target Link-layer Address options.
 impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
     /// Set the Source/Target Link-layer Address.
+    //
+    // `trusted(yes)`, but *with* a `requires`, so it states an obligation rather than deleting
+    // one. `2 + addr.len() <= 2 + MAX_HARDWARE_ADDRESS_LEN <= 10` holds by construction of
+    // `RawHardwareAddress` (its `data` is `[u8; MAX_HARDWARE_ADDRESS_LEN]` and `from_bytes`
+    // rejects anything longer), so `10 <= n` is sufficient. Flux cannot *derive* it:
+    // `RawHardwareAddress` is unrefined and defined in `wire/mod.rs`, so `len()` and
+    // `as_bytes()` carry no length index and `copy_from_slice`'s length equality is unstatable.
+    // Refining `RawHardwareAddress` by its `len` would let this become `trusted(no)`.
+    #[flux_rs::trusted(yes, reason = "RawHardwareAddress is unrefined (wire/mod.rs); len() and \
+as_bytes() carry no index, so 2 + addr.len() <= n is unstatable")]
+    #[flux_rs::sig(
+        fn(&mut NdiscOption<T>[@p], RawHardwareAddress)
+        requires 10 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
     #[inline]
     pub fn set_link_layer_addr(&mut self, addr: RawHardwareAddress) {
         let data = self.buffer.as_mut();
@@ -310,68 +393,139 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
 /// Setter methods only relevant for the MTU option.
 impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
     /// Set the MTU value.
+    #[flux_rs::trusted(no, reason = "panic site: writes the option header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut NdiscOption<T>[@p], u32)
+        requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_mtu(&mut self, value: u32) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u32(&mut data[field::MTU], value);
+        // field::MTU (4..8), written as the two big-endian halves it is defined to produce --
+        // there is no `write_u32_at` helper. Identical bytes.
+        crate::wire::write_u16_at(data, 4, (value >> 16) as u16);
+        crate::wire::write_u16_at(data, 6, value as u16);
     }
 }
 
 /// Setter methods only relevant for the Prefix Information option.
 impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
     /// Set the prefix length.
+    #[flux_rs::trusted(no, reason = "panic site: writes the option header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut NdiscOption<T>[@p], u8)
+        requires 3 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_prefix_len(&mut self, value: u8) {
         self.buffer.as_mut()[field::PREFIX_LEN] = value;
     }
 
     /// Set the prefix information flags.
+    #[flux_rs::trusted(no, reason = "panic site: writes the option header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut NdiscOption<T>[@p], PrefixInfoFlags)
+        requires 4 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
     #[inline]
     pub fn set_prefix_flags(&mut self, flags: PrefixInfoFlags) {
         self.buffer.as_mut()[field::FLAGS] = flags.bits();
     }
 
     /// Set the valid lifetime of the prefix.
+    #[flux_rs::trusted(no, reason = "panic site: writes the option header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut NdiscOption<T>[@p], Duration)
+        requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
     #[inline]
     pub fn set_valid_lifetime(&mut self, time: Duration) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u32(&mut data[field::VALID_LT], time.secs() as u32);
+        // field::VALID_LT (4..8), split for the same reason as `set_mtu`.
+        let v = time.secs() as u32;
+        crate::wire::write_u16_at(data, 4, (v >> 16) as u16);
+        crate::wire::write_u16_at(data, 6, v as u16);
     }
 
     /// Set the preferred lifetime of the prefix.
+    #[flux_rs::trusted(no, reason = "panic site: writes the option header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut NdiscOption<T>[@p], Duration)
+        requires 12 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
     #[inline]
     pub fn set_preferred_lifetime(&mut self, time: Duration) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u32(&mut data[field::PREF_LT], time.secs() as u32);
+        // field::PREF_LT (8..12), split for the same reason as `set_mtu`.
+        let v = time.secs() as u32;
+        crate::wire::write_u16_at(data, 8, (v >> 16) as u16);
+        crate::wire::write_u16_at(data, 10, v as u16);
     }
 
     /// Clear the reserved bits.
+    #[flux_rs::trusted(no, reason = "panic site: writes the option header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut NdiscOption<T>[@p])
+        requires 16 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn clear_prefix_reserved(&mut self) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u32(&mut data[field::PREF_RESERVED], 0);
+        // field::PREF_RESERVED (12..16), split for the same reason as `set_mtu`. Writing 0 to
+        // 12..14 then 14..16 is the same four zero bytes.
+        crate::wire::write_u16_at(data, 12, 0);
+        crate::wire::write_u16_at(data, 14, 0);
     }
 
     /// Set the prefix.
+    #[flux_rs::trusted(no, reason = "panic site: writes the option header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut NdiscOption<T>[@p], Ipv6Address)
+        requires 32 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_prefix(&mut self, addr: Ipv6Address) {
         let data = self.buffer.as_mut();
-        data[field::PREFIX].copy_from_slice(&addr.octets());
+        // field::PREFIX (16..32)
+        crate::wire::write_octets16_at(data, 16, &addr.octets());
     }
 }
 
 /// Setter methods only relevant for the Redirected Header option.
 impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
     /// Clear the reserved bits.
+    #[flux_rs::trusted(no, reason = "panic site: writes the option header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut NdiscOption<T>[@p])
+        requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn clear_redirected_reserved(&mut self) {
         let data = self.buffer.as_mut();
-        data[field::REDIRECTED_RESERVED].fill_with(|| 0);
+        // field::REDIRECTED_RESERVED (2..8). The original `fill_with(|| 0)` runs inside a
+        // closure, whose body Flux does not check; three big-endian zero halves write exactly
+        // the same six bytes and are checked.
+        crate::wire::write_u16_at(data, 2, 0);
+        crate::wire::write_u16_at(data, 4, 0);
+        crate::wire::write_u16_at(data, 6, 0);
     }
 }
 
 impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
     /// Return a mutable pointer to the option data.
+    //
+    // OBLIGATION STOPS HERE. The bound this needs is `data_len() * 8 <= n`, a property of the
+    // buffer's *contents*. `NdiscOption` carries no mirror of the length octet -- the way
+    // `icmpv6::Packet` mirrors its type octet in `ty` -- so the bound is not expressible, and
+    // this `trusted(yes)` therefore *erases* the obligation rather than passing it up. Adding a
+    // `#[flux_rs::field(u8[len])] len: u8` mirror (set by `new_unchecked`/`set_data_len`) is
+    // what would make it statable; that changes `new_unchecked`, which is `pub const fn`.
+    #[flux_rs::trusted(yes, reason = "needs a data_len mirror field to state data_len()*8 <= n")]
     #[inline]
     pub fn data_mut(&mut self) -> &mut [u8] {
         let len = self.data_len();
@@ -529,22 +683,26 @@ impl<'a> Repr<'a> {
     }
 
     /// Emit a high-level representation into an NDISC Option.
+    ///
+    /// The caller owes `field::REDIR_MIN_SZ` (48) octets: that is the largest *fixed* lower
+    /// bound any arm needs (Prefix Information reaches `field::PREFIX.end` = 32, a Redirected
+    /// Header at least 48). It is a lower bound, not the full contract -- the variable-length
+    /// arms additionally need `buffer_len()`, which is content-dependent. See the notes on
+    /// `emit_redirected_header`, `emit_unknown` and `data_mut` for what is still owed.
+    #[flux_rs::trusted(no, reason = "carries the option buffer bound to the setters")]
+    #[flux_rs::sig(
+        fn(&Repr, opt: &mut NdiscOption<T>{v: 48 <= <T as AsMut<[u8]>>::as_mut_reft(v.buffer)})
+    )]
     pub fn emit<T>(&self, opt: &mut NdiscOption<T>)
     where
         T: AsRef<[u8]> + AsMut<[u8]>,
     {
         match *self {
             Repr::SourceLinkLayerAddr(addr) => {
-                opt.set_option_type(Type::SourceLinkLayerAddr);
-                let opt_len = addr.len() + 2;
-                opt.set_data_len(opt_len.div_ceil(8) as u8); // round to next multiple of 8.
-                opt.set_link_layer_addr(addr);
+                emit_link_layer_addr(opt, Type::SourceLinkLayerAddr, addr);
             }
             Repr::TargetLinkLayerAddr(addr) => {
-                opt.set_option_type(Type::TargetLinkLayerAddr);
-                let opt_len = addr.len() + 2;
-                opt.set_data_len(opt_len.div_ceil(8) as u8); // round to next multiple of 8.
-                opt.set_link_layer_addr(addr);
+                emit_link_layer_addr(opt, Type::TargetLinkLayerAddr, addr);
             }
             Repr::PrefixInformation(PrefixInformation {
                 prefix_len,
@@ -563,15 +721,7 @@ impl<'a> Repr<'a> {
                 opt.set_prefix(prefix);
             }
             Repr::RedirectedHeader(RedirectedHeader { header, data }) => {
-                // TODO(thvdveld): I think we need to check if the data we are sending is not
-                // exceeding the MTU.
-                opt.clear_redirected_reserved();
-                opt.set_option_type(Type::RedirectedHeader);
-                opt.set_data_len((8 + header.buffer_len() + data.len()).div_ceil(8) as u8);
-                let mut packet = &mut opt.data_mut()[field::REDIRECTED_RESERVED.end - 2..];
-                let mut ip_packet = Ipv6Packet::new_unchecked(&mut packet);
-                header.emit(&mut ip_packet);
-                ip_packet.payload_mut().copy_from_slice(data);
+                emit_redirected_header(opt, header, data);
             }
             Repr::Mtu(mtu) => {
                 opt.set_option_type(Type::Mtu);
@@ -583,12 +733,102 @@ impl<'a> Repr<'a> {
                 length,
                 data,
             } => {
-                opt.set_option_type(Type::Unknown(id));
-                opt.set_data_len(length);
-                opt.data_mut().copy_from_slice(data);
+                emit_unknown(opt, id, length, data);
             }
         }
     }
+}
+
+/// Emit a Source/Target Link-layer Address option.
+///
+/// Lifted out of [`Repr::emit`] so the rest of that function can be checked. This arm cannot
+/// be: `opt_len` is `addr.len() + 2`, and `RawHardwareAddress` is unrefined (it lives in
+/// `wire/mod.rs`), so Flux cannot see `addr.len() <= MAX_HARDWARE_ADDRESS_LEN`. Without that
+/// bound `opt_len.div_ceil(8)` reports `MightPanic(SynthesizedPanic)` -- `div_ceil` panics on
+/// the `self + rhs - 1` overflow, which is only ruled out by a bound on `addr.len()`.
+/// Confirmed by running: with the arm inline and `emit` at `trusted(no)`, both copies of this
+/// arm produce exactly that error.
+///
+/// Refining `RawHardwareAddress` by its `len` (with the `len <= MAX_HARDWARE_ADDRESS_LEN`
+/// invariant its `[u8; MAX_HARDWARE_ADDRESS_LEN]` field already guarantees) would make this
+/// `trusted(no)` and would also unblock `set_link_layer_addr` and `link_layer_addr`.
+#[flux_rs::trusted(yes, reason = "RawHardwareAddress is unrefined (wire/mod.rs), so \
+addr.len() <= MAX_HARDWARE_ADDRESS_LEN is unstatable and div_ceil's overflow check fails")]
+// The bound is `emit`'s 48 rather than the 10 this body needs: `&mut` is invariant in Flux,
+// so a weaker bound here would leave `emit` unable to re-establish its own on return.
+#[flux_rs::sig(
+    fn(opt: &mut NdiscOption<T>{v: 48 <= <T as AsMut<[u8]>>::as_mut_reft(v.buffer)},
+       Type, RawHardwareAddress)
+)]
+fn emit_link_layer_addr<T>(opt: &mut NdiscOption<T>, ty: Type, addr: RawHardwareAddress)
+where
+    T: AsRef<[u8]> + AsMut<[u8]>,
+{
+    opt.set_option_type(ty);
+    let opt_len = addr.len() + 2;
+    opt.set_data_len(opt_len.div_ceil(8) as u8); // round to next multiple of 8.
+    opt.set_link_layer_addr(addr);
+}
+
+/// Emit an option of an unrecognised type.
+///
+/// Lifted out of [`Repr::emit`] for the same reason as the others. `copy_from_slice` requires
+/// `data_mut().len() == data.len()`; `data_mut()` spans `2..data_len() * 8`, so the equality is
+/// a property of the length octet just written, and `NdiscOption` carries no mirror of it (see
+/// the note on `data_mut`). This is the one arm where the residual obligation is a *real*
+/// reachable panic rather than a Flux limitation: `Repr::Unknown { length, data, .. }` with
+/// `data.len() != length as usize * 8 - 2` panics here today, and nothing in the type rules it
+/// out. Recorded, not fixed -- fixing it is a behaviour change, which is out of scope.
+#[flux_rs::trusted(yes, reason = "copy_from_slice length equality needs a data_len mirror; \
+the mismatch is moreover reachable -- see the doc comment")]
+// Stated at `emit`'s 48 for the invariance reason noted on `emit_link_layer_addr`.
+#[flux_rs::sig(
+    fn(opt: &mut NdiscOption<T>{v: 48 <= <T as AsMut<[u8]>>::as_mut_reft(v.buffer)},
+       u8, u8, &[u8])
+)]
+fn emit_unknown<T>(opt: &mut NdiscOption<T>, id: u8, length: u8, data: &[u8])
+where
+    T: AsRef<[u8]> + AsMut<[u8]>,
+{
+    opt.set_option_type(Type::Unknown(id));
+    opt.set_data_len(length);
+    opt.data_mut().copy_from_slice(data);
+}
+
+/// Emit a Redirected Header option.
+///
+/// Lifted out of [`Repr::emit`] so that the rest of that function can be checked. This arm
+/// cannot be: it nests an `Ipv6Packet` over `&mut &mut [u8]`, which instantiates core's blanket
+/// `impl<T, U> AsMut<U> for &mut T`. That impl has no associated refinement, and one cannot be
+/// written -- Flux gives a reference self type the *unit* sort, so an extern spec fails with
+/// `mismatched sorts: expected 'T::sort', found '()'`. Confirmed by running: with `trusted(no)`
+/// the body reports `associated refinement 'as_mut_reft' is missing from implementation` at the
+/// `header.emit(&mut ip_packet)` call.
+///
+/// The stated `requires` is `field::REDIR_MIN_SZ` (48), the *minimum* a Redirected Header
+/// option occupies. It is not the full bound: the true requirement is
+/// `(8 + header.buffer_len() + data.len()).div_ceil(8) * 8 <= n`, which is content-dependent
+/// and needs `Repr` refined by its `buffer_len()`. This helper therefore assumes more than it
+/// states, and the residual obligation is recorded rather than discharged.
+#[flux_rs::trusted(yes, reason = "flux limitation: Ipv6Packet over `&mut &mut [u8]` hits core's \
+blanket AsMut impl, which has no associated refinement and cannot be given one (unit sort)")]
+#[flux_rs::sig(
+    fn(opt: &mut NdiscOption<T>{v: 48 <= <T as AsMut<[u8]>>::as_mut_reft(v.buffer)},
+       Ipv6Repr, &[u8])
+)]
+fn emit_redirected_header<T>(opt: &mut NdiscOption<T>, header: Ipv6Repr, data: &[u8])
+where
+    T: AsRef<[u8]> + AsMut<[u8]>,
+{
+    // TODO(thvdveld): I think we need to check if the data we are sending is not
+    // exceeding the MTU.
+    opt.clear_redirected_reserved();
+    opt.set_option_type(Type::RedirectedHeader);
+    opt.set_data_len((8 + header.buffer_len() + data.len()).div_ceil(8) as u8);
+    let mut packet = &mut opt.data_mut()[field::REDIRECTED_RESERVED.end - 2..];
+    let mut ip_packet = Ipv6Packet::new_unchecked(&mut packet);
+    header.emit(&mut ip_packet);
+    ip_packet.payload_mut().copy_from_slice(data);
 }
 
 impl<'a> fmt::Display for Repr<'a> {
