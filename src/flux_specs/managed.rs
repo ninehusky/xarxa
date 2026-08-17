@@ -6,20 +6,31 @@
 use flux_rs::*;
 
 /// `Vec`'s sort is opaque here, so `ManagedSlice::Owned` has no length to name without this.
+#[cfg(feature = "alloc")]
 #[extern_spec]
 #[refined_by(len: int)]
 #[invariant(0 <= len)]
 struct Vec<T, A: core::alloc::Allocator = alloc::alloc::Global>;
 
+#[cfg(feature = "alloc")]
 #[extern_spec(managed)]
 #[refined_by(len: int)]
 #[invariant(len >= 0)]
 enum ManagedSlice<'a, T> {
     #[variant((&mut [T][@n]) -> ManagedSlice<T>[n])]
     Borrowed(&'a mut [T]),
-    // An extern spec must list every variant of the real definition or flux rejects it.
     #[variant((alloc::vec::Vec<T>[@n]) -> ManagedSlice<T>[n])]
     Owned(alloc::vec::Vec<T>),
+}
+
+/// No-`alloc` configuration: `Borrowed` is the only variant that exists.
+#[cfg(not(feature = "alloc"))]
+#[extern_spec(managed)]
+#[refined_by(len: int)]
+#[invariant(len >= 0)]
+enum ManagedSlice<'a, T> {
+    #[variant((&mut [T][@n]) -> ManagedSlice<T>[n])]
+    Borrowed(&'a mut [T]),
 }
 
 #[extern_spec(managed)]
