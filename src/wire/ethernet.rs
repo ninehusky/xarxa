@@ -460,16 +460,17 @@ impl Repr {
 
     /// Emit a high-level representation into an Ethernet II frame.
     //
-    // The `assert!(len >= buffer_len())` this used to open with is now the `requires` below:
-    // the same condition, owed by the caller and discharged statically, rather than checked at
-    // run time. It is also exactly what the three setters need, so they discharge here.
-    #[flux_rs::trusted(no, reason = "panic site: the length assert becomes a caller obligation")]
-    #[flux_rs::sig(
-        fn(self: &Self, frame: &mut Frame<T>[@f])
-        requires 14 <= <T as AsMut<[u8]>>::as_mut_reft(f.buffer)
-    )]
-    #[flux_rs::no_panic]
+    // The assert stays. It is the only thing that establishes `14 <= len` here, and nothing
+    // proves a caller cannot hand over a shorter buffer, so deleting it would remove the panic
+    // without discharging it -- the failure mode would become an out-of-bounds write through the
+    // unchecked helpers the setters below now use. Flux reads the passed assert as an assumption,
+    // so the three setters discharge their `requires` from it rather than from a caller.
+    //
+    // The length is read through `as_mut` rather than `as_ref` because the setters' bounds are
+    // stated over `as_mut_reft`, and flux relates the two associated refinements only if the
+    // fact arrives in that form. Same check, same condition, same value.
     pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, frame: &mut Frame<T>) {
+        assert!(frame.buffer.as_mut().len() >= self.buffer_len());
         frame.set_src_addr(self.src_addr);
         frame.set_dst_addr(self.dst_addr);
         frame.set_ethertype(self.ethertype);
