@@ -286,9 +286,15 @@ def measure(ref, logpath):
             #
             # So: any rustc error code other than E0999, or a "could not
             # compile", makes this run unreportable.
+            # NB: flux ALWAYS emits "could not compile `xarxa` due to N previous
+            # errors" whenever it reports any E0999, so that line alone means
+            # nothing. What distinguishes a real compile failure is a rustc error
+            # CODE other than E0999 -- or, for an uncoded fatal error, a failed
+            # build with no E0999s at all.
             "ran": ("Checking xarxa" in log or "Compiling xarxa" in log)
                    and not re.search(r"^error\[E(?!0999)\d+\]", log, flags=re.M)
-                   and not re.search(r"^error: could not compile `xarxa`", log, flags=re.M),
+                   and not (re.search(r"^error: could not compile `xarxa`", log, flags=re.M)
+                            and not re.search(r"^error\[E0999\]", log, flags=re.M)),
             "compile_errors": sorted(set(re.findall(r"^error\[E(?!0999)(\d+)\]", log, flags=re.M))),
             "fail": log.count(GATE_FAIL),
             "errors": len(re.findall(r"^error\[E0999\]", log, flags=re.M)),
