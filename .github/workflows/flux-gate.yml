@@ -1,0 +1,102 @@
+# NOT YET RUN IN GITHUB ACTIONS. Written from the local invocation that does
+# work; the flux build/install step in particular is unverified in a runner.
+# Expect to iterate on the first PR run.
+#
+# Fails only when a panic that was ALREADY removed has lost its justification --
+# a `flux_rs::assert(false); unreachable_unchecked()` whose enclosing function
+# cannot be proved, or whose exported precondition some caller cannot establish.
+# The raw error count is deliberately NOT a gate: adding a correct refinement
+# raises it, so gating on the total would block the branches doing the most real
+# verification work.
+
+name: flux soundness gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: flux-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pin the driver. Every number re-baselines when this moves, so bumping it is
+  # a deliberate, reviewed change -- not `main`.
+  FLUX_REF: hotfix/composed-2026-08-17
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      # xarxa's Cargo.toml carries `flux-rs = { path = "../flux/lib/flux-rs" }`,
+      # so the two checkouts must be SIBLINGS. Checking xarxa out at the
+      # workspace root would put `../flux` outside $GITHUB_WORKSPACE.
+      - name: Check out xarxa
+        uses: actions/checkout@v4
+        with:
+          path: xarxa
+          # flux_audit creates a git worktree to measure; a depth-1 clone cannot
+          # resolve an arbitrary ref.
+          fetch-depth: 0
+
+      - name: Check out flux
+        uses: actions/checkout@v4
+        with:
+          repository: ninehusky/flux
+          ref: ${{ env.FLUX_REF }}
+          path: flux
+
+      - name: Record pinned flux commit
+        id: fluxsha
+        run: echo "sha=$(git -C flux rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # flux is a rustc driver: it needs the exact nightly it was built against,
+      # plus rustc-dev/llvm-tools. Read from flux's own rust-toolchain.toml
+      # rather than duplicated here, so the two cannot drift.
+      - name: Install toolchain
+        run: |
+          set -euxo pipefail
+          chan=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' flux/rust-toolchain.toml)
+          rustup toolchain install "$chan" \
+            --component rust-src --component rustc-dev --component llvm-tools
+
+      - name: Cache flux build
+        id: fluxcache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/cargo-flux
+            ~/.cargo/bin/flux
+            ~/.flux
+            flux/target
+          # Keyed on the flux commit: rebuild only when the pinned driver moves.
+          # Without this the rustc-driver build dominates the run.
+          key: flux-${{ runner.os }}-${{ steps.fluxsha.outputs.sha }}-v1
+
+      - name: Build and install flux
+        if: steps.fluxcache.outputs.cache-hit != 'true'
+        working-directory: flux
+        # `xtask install` hardcodes ~/.flux and `cargo install --force`s over
+        # ~/.cargo/bin. That is destructive on a shared machine and must never be
+        # run locally -- on a throwaway runner it is the right call.
+        run: cargo xtask install
+
+      - name: Put flux on PATH
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # Appends its verdict to $GITHUB_STEP_SUMMARY, so the result is readable on
+      # the run page without opening the log. Exits nonzero on an unjustified gate.
+      - name: Gate
+        working-directory: xarxa
+        run: ./flux-gate.sh
+
+      - name: Upload flux logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flux-logs
+          path: /tmp/fluxaudit-*/
+          if-no-files-found: ignore

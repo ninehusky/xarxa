@@ -299,6 +299,18 @@ def measure(ref, logpath):
 
 
 
+
+def write_summary(path, title, lines):
+    """Append a markdown report. In GitHub Actions this renders on the run page."""
+    if not path:
+        return
+    try:
+        with open(path, "a") as f:
+            f.write(f"## {title}\n\n")
+            f.write("\n".join(lines) + "\n\n")
+    except OSError as exc:
+        print(f"(could not write summary to {path}: {exc})")
+
 def gate_mode(args):
     """Absolute check on one tree. No base, no deltas -- just: is it sound?
 
@@ -348,6 +360,38 @@ def gate_mode(args):
         for g in erased:
             print(f"        {g['file']}:{g['line']}  fn {g['fn']}  {g['text']}")
 
+    md = []
+    if broken or r["gates_iced"]:
+        md.append(f"### FAIL - {len(broken) + len(r['gates_iced'])} unjustified gate(s)\n")
+        md.append("A panic that was **already removed** has lost its justification. "
+                  "This is UB, not debt.\n")
+        md.append("| site | fn | why |")
+        md.append("|---|---|---|")
+        for g in broken:
+            md.append(f"| `{g['file']}:{g['line']}` | `{g['fn']}` | {g.get('why','?')} |")
+        for g in r["gates_iced"]:
+            md.append(f"| `{g['file']}:{g['line']}` | `{g['fn']}` | body ICEd, never checked |")
+    else:
+        md.append(f"### PASS - all {len(r['gates'])} gate(s) discharge\n")
+        md.append("Every panic removed so far is justified under whole-crate checking "
+                  "(`default_trusted = false`), with no trusted caller absorbing an obligation.\n")
+    md.append("")
+    md.append("| metric | value |")
+    md.append("|---|---:|")
+    md.append(f"| gates | {len(r['gates'])} |")
+    md.append(f"| undischarged obligations | {r['fail']} |")
+    md.append(f"| other errors (checks still present) | {r['errors'] - r['fail']} |")
+    md.append(f"| bodies never checked (ICE) | {r['internal']} |")
+    if erased:
+        md.append("")
+        md.append(f"> **{len(erased)} gate(s) inside a trusted body stating no precondition.** "
+                  "The obligation is erased rather than exported; no error can appear for these. "
+                  "A human must read them.")
+    md.append("")
+    md.append("<sub>The error total is deliberately **not** a gate: adding a correct refinement "
+              "raises it. Only an unjustified gate fails this check.</sub>")
+    write_summary(args.summary, "Flux soundness gate", md)
+
     return 1 if (broken or r["gates_iced"]) else 0
 
 def main():
@@ -360,6 +404,8 @@ def main():
                          "is undischarged. This is the merge gate.")
     ap.add_argument("--base", default=None,
                     help="compare against this ref (default: each ref's merge-base with main)")
+    ap.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY"),
+                    help="append a markdown report here (defaults to $GITHUB_STEP_SUMMARY)")
     ap.add_argument("--logdir", default=tempfile.mkdtemp(prefix="fluxaudit-"))
     args = ap.parse_args()
 
@@ -462,6 +508,18 @@ def main():
             print(f"{ref[:34]:<34} {v:<10} {g:>5} {d:>+6} {t:>8}")
         print("\nBLOCKED = a gate's own fn is unproved (UB).  REVIEW = new obligations")
         print("stated but no gate depends on them (inventory).  dFAIL is context only.")
+
+        md = ["| branch | verdict | gates | new obligations | erasing-trusted |",
+              "|---|---|---:|---:|---:|"]
+        for ref, v, g, d, t in rows:
+            mark = {"MERGEABLE": "PASS", "REVIEW": "REVIEW", "BLOCKED": "FAIL"}.get(v, v)
+            md.append(f"| `{ref}` | **{mark}** | {g} | {d:+} | {t} |")
+        md += ["",
+               "**FAIL** = a gate's own justification does not hold (UB) - do not merge.  ",
+               "**REVIEW** = new obligations stated, but no gate depends on them; that is "
+               "inventory, which is what a spec PR is supposed to produce.  ",
+               "**PASS** = no gate broken and the count did not rise."]
+        write_summary(args.summary, "Flux merge grading", md)
     return 0
 
 
