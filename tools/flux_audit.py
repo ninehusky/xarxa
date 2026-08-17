@@ -123,15 +123,23 @@ def scan(tree):
             # signature exports the obligation to every call site, which is
             # checked. A trusted body with no `requires` ERASES the obligation
             # instead of moving it -- that is the one that hides UB.
-            trusted_decl, sigless = set(), set()
+            trusted_decl, sigless, fn_sig_span = set(), set(), {}
             for i, line in enumerate(lines):
                 if not FN_RE.match(line):
                     continue
-                j, attrs = i - 1, []
-                while j >= 0 and (is_attr_or_comment(lines[j]) or not lines[j].strip()):
-                    attrs.append(lines[j])
+                j, attrs, depth = i - 1, [], 0
+                while j >= 0:
+                    ln = lines[j]
+                    depth += ln.count(")") + ln.count("]") - ln.count("(") - ln.count("[")
+                    if not (is_attr_or_comment(ln) or not ln.strip() or depth > 0):
+                        break
+                    attrs.append(ln)
+                    if is_attr_or_comment(ln) and depth <= 0:
+                        depth = 0
                     j -= 1
                 blob = "\n".join(attrs)
+                attr_start = j + 1
+                fn_sig_span[i] = (attr_start, i)
                 if TRUSTED_NO.search(blob) or not TRUSTED_YES.search(blob):
                     continue
                 trusted_decl.add(i)
@@ -151,8 +159,10 @@ def scan(tree):
                 # is prose, not a gate.
                 if is_attr_or_comment(line) or not GATE_RE.search(line):
                     continue
+                sig_span = fn_sig_span.get(cur, (cur or 0, cur or 0))
                 gates.append({
                     "file": rel, "line": i + 1, "text": line.strip()[:58],
+                    "sig_lo": sig_span[0] + 1, "sig_hi": sig_span[1] + 1,
                     "fn": FN_RE.match(lines[cur]).group(1) if cur is not None else "?",
                     "trusted": cur in trusted_decl,
                     "erased": cur in sigless,
@@ -240,9 +250,26 @@ def measure(ref, logpath):
             return any(re.search(rf"(^|::){re.escape(fn)}\b", dd) for dd in defs)
 
         gates_iced = [g for g in gates if _in(g["fn"], iced_defs)]
-        gates_broken = [g for g in gates
-                        if any(re.search(rf"(^|::){re.escape(g['fn'])}$|(^|::){re.escape(g['fn'])}\b",
-                                         fd) for fd in failed_defs)]
+        fails, origins = [], []
+        for blk in re.split(r"(?=^error\[E0999\])", log, flags=re.M):
+            if GATE_FAIL not in blk:
+                continue
+            at = re.search(r"-->\s+(\S+?):(\d+):", blk)
+            if at:
+                fails.append((at.group(1), int(at.group(2))))
+            og = re.search(r"note: this is the condition that cannot be proved\s*\n\s*-->\s+(\S+?):(\d+):", blk)
+            if og:
+                origins.append((og.group(1), int(og.group(2))))
+        failset = set(fails)
+
+        gates_broken = []
+        for g in gates:
+            direct = (g["file"], g["line"]) in failset          # (a)
+            caller = any(f == g["file"] and g["sig_lo"] <= l <= g["sig_hi"]
+                         for f, l in origins)                    # (b)
+            if direct or caller:
+                g = dict(g, why="gate unprovable" if direct else "caller cannot establish its precondition")
+                gates_broken.append(g)
         res = {
             # An ICE aborts rustc and silently drops most diagnostics; any count
             # from such a run is fiction. Checked before anything is reported.
@@ -301,7 +328,8 @@ def gate_mode(args):
         print(f"FAIL  {len(broken)} gate(s) whose enclosing fn cannot be proved.")
         print("      The runtime check is gone and the justification does not hold:")
         for g in broken:
-            print(f"        {g['file']}:{g['line']}  fn {g['fn']}  {g['text']}")
+            print(f"        {g['file']}:{g['line']}  fn {g['fn']}  [{g.get('why','?')}]")
+            print(f"          {g['text']}")
     else:
         print(f"PASS  all {len(r['gates'])} gate(s) discharge under whole-crate checking.")
 
