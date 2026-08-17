@@ -89,6 +89,15 @@ jobs:
       - name: Put flux on PATH
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
+      # flux shells out to `fixpoint` (liquid-fixpoint, a Haskell binary) to
+      # discharge constraints. `cargo xtask install` does NOT provide it, and
+      # without it every check dies with
+      #   internal compiler error: failed to run fixpoint: No such file or directory
+      # Reuse flux's own composite action from the sibling checkout, so the
+      # download stays in sync with the pinned driver rather than drifting.
+      - name: Install fixpoint
+        uses: ./flux/.github/actions/install-fixpoint
+
       # Appends its verdict to $GITHUB_STEP_SUMMARY, so the result is readable on
       # the run page without opening the log. Exits nonzero on an unjustified gate.
       - name: Gate
