@@ -15,6 +15,22 @@ use crate::wire::{IpProtocol, Ipv6Address, Ipv6Packet, Ipv6Repr};
 /// Error packets must not exceed min MTU
 const MAX_ERROR_PACKET_LEN: usize = IPV6_MIN_MTU - IPV6_HEADER_LEN;
 
+flux_rs::defs! {
+    // `Packet::header_len`, as a function of the message type octet. Kept in lockstep with
+    // that method's body, which is `trusted(no)` and so has to prove it returns exactly this.
+    // The `_ => 4` default covers `RplControl` and every `Unknown`, matching the comment on
+    // the method: types outside RFC 4443 keep the last 32 bits of the header in `payload`.
+    fn icmpv6_header_len(code: int) -> int {
+        if code == 0x89 { 40 }
+        else if code == 0x82 { 28 }
+        else if code == 0x87 || code == 0x88 { 24 }
+        else if code == 0x86 { 16 }
+        else if code == 0x01 || code == 0x02 || code == 0x03 || code == 0x04
+             || code == 0x80 || code == 0x81 || code == 0x85 || code == 0x8f { 8 }
+        else { 4 }
+    }
+}
+
 enum_with_unknown! {
     #[refined]
     /// Internet protocol control message type.
@@ -412,26 +428,38 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the header length. The result depends on the value of
     /// the message type field.
+    // The arms return literals rather than `field::X.end`: a `const` of struct type is opaque
+    // to Flux, so `field::UNUSED.end` is an unconstrained `usize` and the postcondition below
+    // cannot be discharged. The literal on each arm is the value that `const` has; the
+    // original spelling is kept in a trailing comment so the two stay reviewable together.
+    #[flux_rs::trusted(no, reason = "carries the per-type header length to payload/payload_mut")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> usize[icmpv6_header_len(p.code)])]
+    #[flux_rs::no_panic]
     pub fn header_len(&self) -> usize {
         match self.msg_type() {
-            Message::DstUnreachable => field::UNUSED.end,
-            Message::PktTooBig => field::MTU.end,
-            Message::TimeExceeded => field::UNUSED.end,
-            Message::ParamProblem => field::POINTER.end,
-            Message::EchoRequest => field::ECHO_SEQNO.end,
-            Message::EchoReply => field::ECHO_SEQNO.end,
-            Message::RouterSolicit => field::UNUSED.end,
-            Message::RouterAdvert => field::RETRANS_TM.end,
-            Message::NeighborSolicit => field::TARGET_ADDR.end,
-            Message::NeighborAdvert => field::TARGET_ADDR.end,
-            Message::Redirect => field::DEST_ADDR.end,
-            Message::MldQuery => field::QUERY_NUM_SRCS.end,
-            Message::MldReport => field::NR_MCAST_RCRDS.end,
+            Message::DstUnreachable => 8,   // field::UNUSED.end
+            Message::PktTooBig => 8,        // field::MTU.end
+            Message::TimeExceeded => 8,     // field::UNUSED.end
+            Message::ParamProblem => 8,     // field::POINTER.end
+            Message::EchoRequest => 8,      // field::ECHO_SEQNO.end
+            Message::EchoReply => 8,        // field::ECHO_SEQNO.end
+            Message::RouterSolicit => 8,    // field::UNUSED.end
+            Message::RouterAdvert => 16,    // field::RETRANS_TM.end
+            Message::NeighborSolicit => 24, // field::TARGET_ADDR.end
+            Message::NeighborAdvert => 24,  // field::TARGET_ADDR.end
+            Message::Redirect => 40,        // field::DEST_ADDR.end
+            Message::MldQuery => 28,        // field::QUERY_NUM_SRCS.end
+            Message::MldReport => 8,        // field::NR_MCAST_RCRDS.end
             // For packets that are not included in RFC 4443, do not
             // include the last 32 bits of the ICMPv6 header in
             // `header_bytes`. This must be done so that these bytes
             // can be accessed in the `payload`.
-            _ => field::CHECKSUM.end,
+            //
+            // Spelled out rather than left to a `_`, for the same reason as `clear_reserved`:
+            // Flux only learns `code != <every named value>` from the named `Unknown` pattern,
+            // and that is what discharges `icmpv6_header_len(code) == 4` here.
+            Message::RplControl => 4,  // field::CHECKSUM.end
+            Message::Unknown(_) => 4,  // field::CHECKSUM.end
         }
     }
 
@@ -516,16 +544,19 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
             | Message::NeighborAdvert
             | Message::Redirect => {
                 let data = self.buffer.as_mut();
-                NetworkEndian::write_u32(&mut data[4..8], 0);
+                // Two big-endian halves rather than one `write_u32`: see the note on
+                // `set_pkt_too_big_mtu`. Writing 0 to 4..6 then 6..8 is the same four bytes.
+                crate::wire::write_u16_at(data, 4, 0);
+                crate::wire::write_u16_at(data, 6, 0);
             }
             Message::MldQuery => {
                 let data = self.buffer.as_mut();
-                NetworkEndian::write_u16(&mut data[6..8], 0);
+                crate::wire::write_u16_at(data, 6, 0);
                 data[field::SQRV] &= 0xf;
             }
             Message::MldReport => {
                 let data = self.buffer.as_mut();
-                NetworkEndian::write_u16(&mut data[4..6], 0);
+                crate::wire::write_u16_at(data, 4, 0);
             }
             // Spelled out rather than left to a `_`: Flux only rules an arm out for named
             // patterns.
@@ -545,50 +576,88 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         }
     }
 
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p], u16)
+        requires 4 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_checksum(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::CHECKSUM], value)
+        crate::wire::write_u16_at(data, 2, value) // field::CHECKSUM
     }
 
     /// Set the identifier field (for echo request and reply packets).
     ///
     /// # Panics
     /// This function may panic if this packet is not an echo request or reply packet.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p], u16)
+        requires 6 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_echo_ident(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::ECHO_IDENT], value)
+        crate::wire::write_u16_at(data, 4, value) // field::ECHO_IDENT
     }
 
     /// Set the sequence number field (for echo request and reply packets).
     ///
     /// # Panics
     /// This function may panic if this packet is not an echo request or reply packet.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p], u16)
+        requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_echo_seq_no(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::ECHO_SEQNO], value)
+        crate::wire::write_u16_at(data, 6, value) // field::ECHO_SEQNO
     }
 
     /// Set the MTU field (for packet too big messages).
     ///
     /// # Panics
     /// This function may panic if this packet is not an packet too big packet.
+    // The single `write_u32` over `4..8` is written as the two big-endian halves it is defined
+    // to produce. There is no `write_u32_at` helper, and `byteorder::write_u32` has no extern
+    // spec (its body is `NoMIRAvailable`), so the u32 form is unprovable; `write_u16` has both.
+    // The emitted bytes are identical -- `u32::to_be_bytes(v)` is
+    // `to_be_bytes(v >> 16) ++ to_be_bytes(v as u16)`.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p], u32)
+        requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_pkt_too_big_mtu(&mut self, value: u32) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u32(&mut data[field::MTU], value)
+        crate::wire::write_u16_at(data, 4, (value >> 16) as u16); // field::MTU
+        crate::wire::write_u16_at(data, 6, value as u16);
     }
 
     /// Set the pointer field (for parameter problem messages).
     ///
     /// # Panics
     /// This function may panic if this packet is not a parameter problem message.
+    // Split into two big-endian halves for the same reason as `set_pkt_too_big_mtu`.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p], u32)
+        requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_param_problem_ptr(&mut self, value: u32) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u32(&mut data[field::POINTER], value)
+        crate::wire::write_u16_at(data, 4, (value >> 16) as u16); // field::POINTER
+        crate::wire::write_u16_at(data, 6, value as u16);
     }
 
     /// Compute and fill in the header checksum.
@@ -610,6 +679,17 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     /// Return a mutable pointer to the type-specific data.
+    ///
+    /// The caller owes room for this message type's header; the bound is exactly what
+    /// [check_len] tests at runtime, stated statically.
+    ///
+    /// [check_len]: #method.check_len
+    #[flux_rs::trusted(no, reason = "panic site: the `header_len()..` split")]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p]) -> &mut [u8]
+        requires icmpv6_header_len(p.code) <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn payload_mut(&mut self) -> &mut [u8] {
         let range = self.header_len()..;
