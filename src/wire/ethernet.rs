@@ -490,11 +490,11 @@ impl Repr {
 
     /// Emit a high-level representation into an Ethernet II frame.
     //
-    // The assert stays. It is the only thing that establishes `14 <= len` here, and nothing
-    // proves a caller cannot hand over a shorter buffer, so deleting it would remove the panic
-    // without discharging it -- the failure mode would become an out-of-bounds write through the
-    // unchecked helpers the setters below now use. Flux reads the passed assert as an assumption,
-    // so the three setters discharge their `requires` from it rather than from a caller.
+    // The assert stays. It is the only thing that establishes `14 <= len` here: nothing proves a
+    // caller cannot hand over a shorter buffer, so deleting it in favour of a `requires` would
+    // remove a panic the callers do not discharge. Flux reads the passed assert as an assumption,
+    // so the three setters discharge their `requires` from it rather than from a caller, which is
+    // why `emit` needs no signature of its own.
     //
     // The length is read through `as_mut` rather than `as_ref` because the setters' bounds are
     // stated over `as_mut_reft`, and flux relates the two associated refinements only if the
