@@ -35,17 +35,36 @@ flux-rs = { path = "../flux/lib/flux-rs" }
 
 [package.metadata.flux]
 enabled = true
-no_panic = true
 cache = true
-# Restrict checking to the library; otherwise `no_panic` also applies to build.rs,
-# whose errors abort the run before the lib is checked.
+check_overflow = "lazy"
+# Restrict checking to the library; otherwise the crate-level settings below also
+# apply to build.rs, whose errors abort the run before the lib is checked.
 include = ["src/**/*.rs"]
-# Trust xarxa's bodies by default -- to reduce noise, checking is opt-in through
-# `#[flux_rs::trusted(no, reason = "...")]`. This is to reduce noise: the ultimate
-# goal is `no_panic` enabled without this default trust, but we're first
-# caring only about the `panic` paths from our benchmark.
-# Preconditions are still discharged.
-default_trusted = true
+
+# Every body in the crate is checked; nothing is trusted unless it says so in
+# source. Were this `true`, an unannotated body would be *assumed*, and the
+# output would be byte-identical to a discharged obligation: silence. Discharge
+# is transitive, so an immediate caller passing would then say nothing about
+# whether the obligation is met anywhere further up.
+default_trusted = false
+
+# Off deliberately, and intended to come back on.
+#
+# Turning it on adds ~1870 errors. About 793 are `#[derive(Debug, PartialEq,
+# Ord, Hash)]` cones -- `core::fmt::*`, `discriminant_value`, `cmp::impls::eq`,
+# `hash::*` -- of which the derive inside `enum_with_unknown!` in `src/macros.rs`
+# is ~147 by itself. None of that lies on a firmware panic path. Only ~94 are the
+# real-panic family (`panicking::panic`, `unwrap`, `expect`), which are genuine
+# gating panics still owed.
+#
+# All 153 `possible out-of-bounds access` obligations are reported either way,
+# and those are `panic_bounds_check` -- the largest panic category in the
+# firmware binary -- so no bounds-checking work is hidden while this is off.
+#
+# The end state is `no_panic = true` with the formatting/derive cones quarantined
+# via `include_trusted`. Flipping this line is the only change needed to see
+# where that stands; it costs ~20 s.
+no_panic = false
 
 [dev-dependencies]
 env_logger = "0.10"
