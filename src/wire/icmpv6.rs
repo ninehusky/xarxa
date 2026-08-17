@@ -872,30 +872,56 @@ impl<'a> Repr<'a> {
 
     /// Emit a high-level representation into an Internet Control Message Protocol version 6
     /// packet.
+    // The buffer parameter is `Packet<T>` with `T: Sized`, not `Packet<&mut T>` with `T: ?Sized`.
+    // The old shape instantiated core's blanket `impl<T, U> AsMut<U> for &mut T`, which carries no
+    // associated refinement, so every `requires ... as_mut_reft(p.buffer)` on the setters below
+    // raised `associated refinement 'as_mut_reft' is missing from implementation` rather than an
+    // obligation flux could discharge. The `Sized` form lets a caller pass `wire::Buf`, whose
+    // `AsMut` impl is local and refined; `&mut [u8]` still satisfies the bounds, so this is
+    // strictly more permissive.
+    //
+    // PARKED at `trusted(yes)` (the crate default), but no longer by a flux limitation. With
+    // `trusted(no)` and `requires 40 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)` the body now
+    // checks and every header setter discharges; what is left is ordinary and statable:
+    //
+    //   * `packet.payload_mut()[..data_len]` in the two echo arms. `data_len` is
+    //     `min(payload_mut().len(), data.len())`, and `payload_mut` returns a `&mut [u8]` whose
+    //     index the caller cannot recover (flux-rs/flux#1714). Needs `payload_mut -> Buf`, which
+    //     is a separate pass over its 13 call sites.
+    //   * `emit_contained_packet`, `fill_checksum`, `NdiscRepr::emit` and `MldRepr::emit` take
+    //     `&mut Packet<T>` with no signature, so the buffer bound is havoced across each call.
+    //     Each needs a buffer-preserving `#[flux_rs::sig]`; none needs a body proof.
+    //   * `emit_contained_packet`'s own bound is `icmpv6_header_len(code) + 40 + data.len() <=
+    //     len || 1240 <= len` -- true at every real call site, but it mentions `data.len()`, which
+    //     lives in `self: &Repr`. Stating it requires refining `Repr` by its `buffer_len()`.
     pub fn emit<T>(
         &self,
         src_addr: &Ipv6Address,
         dst_addr: &Ipv6Address,
-        packet: &mut Packet<&mut T>,
+        packet: &mut Packet<T>,
         checksum_caps: &ChecksumCapabilities,
     ) where
-        T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,
+        T: AsRef<[u8]> + AsMut<[u8]>,
     {
-        fn emit_contained_packet<T>(packet: &mut Packet<&mut T>, header: Ipv6Repr, data: &[u8])
+        fn emit_contained_packet<T>(packet: &mut Packet<T>, header: Ipv6Repr, data: &[u8])
         where
-            T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,
+            T: AsRef<[u8]> + AsMut<[u8]>,
         {
             let icmp_header_len = packet.header_len();
-            let mut ip_packet = Ipv6Packet::new_unchecked(packet.payload_mut());
+            // Routed through `Buf` so the destination keeps its length: `&mut [u8]` instantiates
+            // core's blanket `AsMut for &mut T`, which carries no associated refinement.
+            let payload = crate::wire::Buf::new(packet.payload_mut());
+            let mut ip_packet = Ipv6Packet::new_unchecked(payload);
             header.emit(&mut ip_packet);
-            let payload = &mut ip_packet.into_inner()[header.buffer_len()..];
             // FIXME: this should rather be checked at link level, as we can't know in advance how
             // much space we have for the packet due to IPv6 options and etc
             let payload_len = cmp::min(
                 data.len(),
                 MAX_ERROR_PACKET_LEN - icmp_header_len - IPV6_HEADER_LEN,
             );
-            payload[..payload_len].copy_from_slice(&data[..payload_len]);
+            ip_packet
+                .into_inner()
+                .copy_at(header.buffer_len(), &data[..payload_len]);
         }
 
         match *self {

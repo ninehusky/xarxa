@@ -370,7 +370,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
     }
 }
 
-impl<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> NdiscOption<&mut T> {
+impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
     /// Return a mutable pointer to the option data.
     #[inline]
     pub fn data_mut(&mut self) -> &mut [u8] {
@@ -529,9 +529,9 @@ impl<'a> Repr<'a> {
     }
 
     /// Emit a high-level representation into an NDISC Option.
-    pub fn emit<T>(&self, opt: &mut NdiscOption<&'a mut T>)
+    pub fn emit<T>(&self, opt: &mut NdiscOption<T>)
     where
-        T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,
+        T: AsRef<[u8]> + AsMut<[u8]>,
     {
         match *self {
             Repr::SourceLinkLayerAddr(addr) => {
