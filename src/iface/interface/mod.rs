@@ -1272,7 +1272,7 @@ impl InterfaceInner {
     #[flux_rs::trusted(no, reason = "will carry the length once ethernet setters have sigs")]
     #[flux_rs::sig(
         fn(
-            repr: &IpRepr[@ip_ty],
+            repr: &IpRepr[@ip],
             tx_buffer: &mut [u8][@n],
             src_addr: EthernetAddress[@src],
             dst_addr: EthernetAddress[@dst],
@@ -1305,15 +1305,17 @@ impl InterfaceInner {
     #[flux_rs::trusted(no, reason = "carries the tx buffer length into IpRepr::emit")]
     #[flux_rs::sig(
         fn(
-            repr: &IpRepr[@ip_ty],
+            repr: &IpRepr[@ip],
             buf: Buf[@n],
-            packet: &Packet,
+            packet: &Packet[@p],
             caps: &DeviceCapabilities,
             checksum_caps: &ChecksumCapabilities,
         )
         requires
-            (ip_ty == 0 => 20 <= n) &&
-            (ip_ty == 1 => 40 <= n)
+            // The header floor and the payload bound are stated separately: `blen` has no
+            // `0 <=` invariant (see `IpPayload`), so `20 + blen <= n` does not imply `20 <= n`.
+            (ip.ip_ty == 0 => 20 <= n && 20 + p.blen <= n) &&
+            (ip.ip_ty == 1 => 40 <= n && 40 + p.blen <= n)
     )]
     fn emit_ip_into(
         repr: &IpRepr,

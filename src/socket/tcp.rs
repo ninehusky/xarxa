@@ -2453,7 +2453,7 @@ impl<'a> Socket<'a> {
     // built inside a trusted body would have its invariant assumed rather than proved.
     // Here it is proved -- both addresses come from the same `IpRepr`, whose accessors
     // are indexed by its version.
-    #[flux_rs::sig(fn(&IpRepr[@v], u16, u16) -> Tuple[v])]
+    #[flux_rs::sig(fn(&IpRepr[@v], u16, u16) -> Tuple[v.ip_ty])]
     #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
     fn tuple_from_repr(ip_repr: &IpRepr, local_port: u16, remote_port: u16) -> Tuple {
         Tuple {

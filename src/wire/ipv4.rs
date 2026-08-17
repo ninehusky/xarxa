@@ -716,12 +716,21 @@ impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
 }
 
 /// A high-level representation of an Internet Protocol version 4 packet header.
+///
+/// Indexed by `payload_len`: `ip::Repr` forwards this index, and it is the only value a
+/// caller of `Interface::emit_ip_into` holds that bounds the payload slice handed to
+/// `Packet::emit_payload`.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(plen: int)]
+// `plen` indexes a `usize` field, but an abstract `Repr[@r]` does not unpack that field, so
+// `r.plen >= 0` has to be stated or `buffer_len`'s exact `20 + plen` no longer implies `20 <=`.
+#[flux_rs::invariant(0 <= plen)]
 pub struct Repr {
     pub src_addr: Address,
     pub dst_addr: Address,
     pub next_header: Protocol,
+    #[field(usize[plen])]
     pub payload_len: usize,
     pub hop_limit: u8,
 }

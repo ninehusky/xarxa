@@ -654,7 +654,12 @@ impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
 }
 
 /// A high-level representation of an Internet Protocol version 6 packet header.
+///
+/// Indexed by `payload_len`; see `ipv4::Repr` for why.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[flux_rs::refined_by(plen: int)]
+// See `ipv4::Repr` for why this is stated rather than left to the field type.
+#[flux_rs::invariant(0 <= plen)]
 pub struct Repr {
     /// IPv6 address of the source node.
     pub src_addr: Address,
@@ -663,6 +668,7 @@ pub struct Repr {
     /// Protocol contained in the next header.
     pub next_header: Protocol,
     /// Length of the payload including the extension headers.
+    #[field(usize[plen])]
     pub payload_len: usize,
     /// The 8-bit hop limit field.
     pub hop_limit: u8,

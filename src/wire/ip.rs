@@ -613,17 +613,17 @@ impl<T: Into<Address>> From<(T, u16)> for ListenEndpoint {
 /// or IPv6 concrete high-level representation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[flux_rs::refined_by(ip_ty: int)]
+#[flux_rs::refined_by(ip_ty: int, plen: int)]
 // The enum has exactly these two variants, so `ip_ty` is 0 or 1. Without stating it, a
 // per-variant precondition like `(ip_ty == 0 => ..) && (ip_ty == 1 => ..)` is vacuous for any
 // other value and discharges nothing at the call site.
-#[flux_rs::invariant(ip_ty == 0 || ip_ty == 1)]
+#[flux_rs::invariant((ip_ty == 0 || ip_ty == 1) && 0 <= plen)]
 pub enum Repr {
     #[cfg(feature = "proto-ipv4")]
-    #[flux_rs::variant((Ipv4Repr) -> Repr[0])]
+    #[flux_rs::variant((Ipv4Repr[@r]) -> Repr[0, r.plen])]
     Ipv4(Ipv4Repr),
     #[cfg(feature = "proto-ipv6")]
-    #[flux_rs::variant((Ipv6Repr) -> Repr[1])]
+    #[flux_rs::variant((Ipv6Repr[@r]) -> Repr[1, r.plen])]
     Ipv6(Ipv6Repr),
 }
 
@@ -705,7 +705,7 @@ impl Repr {
     // unchecked form is a-okay here.
     #[allow(unsafe_code)]
     #[flux_rs::trusted(no, reason = "discharges the assert(false) licensing unreachable_unchecked")]
-    #[flux_rs::sig(fn(Address[@v], Address[v], Protocol, usize, u8) -> Repr[v])]
+    #[flux_rs::sig(fn(Address[@v], Address[v], Protocol, usize[@plen], u8) -> Repr[v, plen])]
     pub fn new(
         src_addr: Address,
         dst_addr: Address,
@@ -792,7 +792,7 @@ impl Repr {
     }
 
     /// Return the source address.
-    #[flux_rs::sig(fn(&Repr[@v]) -> Address[v])]
+    #[flux_rs::sig(fn(&Repr[@v]) -> Address[v.ip_ty])]
     pub const fn src_addr(&self) -> Address {
         match *self {
             #[cfg(feature = "proto-ipv4")]
@@ -803,7 +803,7 @@ impl Repr {
     }
 
     /// Return the destination address.
-    #[flux_rs::sig(fn(&Repr[@v]) -> Address[v])]
+    #[flux_rs::sig(fn(&Repr[@v]) -> Address[v.ip_ty])]
     pub const fn dst_addr(&self) -> Address {
         match *self {
             #[cfg(feature = "proto-ipv4")]
@@ -824,6 +824,9 @@ impl Repr {
     }
 
     /// Return the payload length.
+    #[flux_rs::trusted(no, reason = "carries the payload_len index out of the repr")]
+    #[flux_rs::sig(fn(self: &Self[@ip]) -> usize[ip.plen])]
+    #[flux_rs::no_panic]
     pub const fn payload_len(&self) -> usize {
         match *self {
             #[cfg(feature = "proto-ipv4")]
@@ -834,6 +837,14 @@ impl Repr {
     }
 
     /// Set the payload length.
+    ///
+    /// `&strg` rather than `&mut`: the index changes, and a `&mut Self[@ip]` would claim it
+    /// does not.
+    #[flux_rs::trusted(no, reason = "strong update of the payload_len index")]
+    #[flux_rs::sig(
+        fn(self: &strg Self[@ip], length: usize[@l]) ensures self: Self[ip.ip_ty, l]
+    )]
+    #[flux_rs::no_panic]
     pub fn set_payload_len(&mut self, length: usize) {
         match self {
             #[cfg(feature = "proto-ipv4")]
@@ -856,8 +867,8 @@ impl Repr {
     /// Return the length of a header that will be emitted from this high-level representation.
     #[flux_rs::trusted(no, reason = "carries the per-variant header length to `emit`'s callers")]
     #[flux_rs::sig(
-        fn(self: &Self[@ip_ty]) -> usize{n:
-            (ip_ty == 0 => n == 20) && (ip_ty == 1 => n == 40)
+        fn(self: &Self[@ip]) -> usize{n:
+            (ip.ip_ty == 0 => n == 20) && (ip.ip_ty == 1 => n == 40)
         }
     )]
     #[flux_rs::no_panic]
@@ -873,11 +884,11 @@ impl Repr {
     /// Emit this high-level representation into a buffer.
     #[flux_rs::trusted(no, reason = "fan-in for any version of IP packet")]
     #[flux_rs::sig(
-        fn (self: &Self[@ip_ty], buffer: T[@buf], _checksum_caps: &ChecksumCapabilities)
+        fn (self: &Self[@ip], buffer: T[@buf], _checksum_caps: &ChecksumCapabilities)
         requires
-            (ip_ty == 0 => 20 <= <T as AsMut<[u8]>>::as_mut_reft(buf)) &&
-            (ip_ty == 0 => 20 <= <T as AsRef<[u8]>>::as_ref_reft(buf)) &&
-            (ip_ty == 1 => 40 <= <T as AsMut<[u8]>>::as_mut_reft(buf))
+            (ip.ip_ty == 0 => 20 <= <T as AsMut<[u8]>>::as_mut_reft(buf)) &&
+            (ip.ip_ty == 0 => 20 <= <T as AsRef<[u8]>>::as_ref_reft(buf)) &&
+            (ip.ip_ty == 1 => 40 <= <T as AsMut<[u8]>>::as_mut_reft(buf))
     )]
     #[flux_rs::no_panic]
     pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(
@@ -899,8 +910,8 @@ impl Repr {
     /// This is the same as `repr.buffer_len() + repr.payload_len()`.
     #[flux_rs::trusted(no, reason = "carries the per-variant header floor to dispatch_ip")]
     #[flux_rs::sig(
-        fn(self: &Self[@ip_ty]) -> usize{n:
-            (ip_ty == 0 => 20 <= n) && (ip_ty == 1 => 40 <= n)
+        fn(self: &Self[@ip]) -> usize{n:
+            (ip.ip_ty == 0 => n == 20 + ip.plen) && (ip.ip_ty == 1 => n == 40 + ip.plen)
         }
     )]
     #[flux_rs::no_panic]
