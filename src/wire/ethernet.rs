@@ -1,7 +1,7 @@
 use core::fmt;
 
 use super::{Error, Result};
-use crate::flux_util::{copy_prefix, sub, sub_mut, suffix, suffix_mut};
+use crate::flux_util::{copy_prefix, sub, sub_mut};
 use crate::wire::{read_u16_at, write_u16_at};
 
 enum_with_unknown! {
@@ -264,11 +264,17 @@ impl<T: AsRef<[u8]>> Frame<T> {
         fn(self: &Frame<T>[@f]) -> Address
         requires 6 <= <T as AsRef<[u8]>>::as_ref_reft(f.buffer)
     )]
-    #[flux_rs::no_panic]
+    // Body stays bounds-checked. The `requires` above states the bound, but six in-crate call
+    // sites cannot yet discharge it: `dispatch_ethernet` hands its closure an
+    // `EthernetFrame<&mut [u8]>`, and at `T = &mut [u8]` the length index would have to come
+    // from core's blanket `impl AsMut for &mut T`, which carries no associated refinement.
+    // Until those route through `wire::Buf`, indexing unchecked here would trade a panic for an
+    // out-of-bounds write rather than prove the panic away (#16). Literal offsets rather than
+    // the `field::` consts only because flux cannot see through a `Range` const.
     #[inline]
     pub fn dst_addr(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_bytes(sub(data, 0, 6)) // field::DESTINATION
+        Address::from_bytes(&data[0..6]) // field::DESTINATION
     }
 
     /// Return the source address field.
@@ -277,11 +283,17 @@ impl<T: AsRef<[u8]>> Frame<T> {
         fn(self: &Frame<T>[@f]) -> Address
         requires 12 <= <T as AsRef<[u8]>>::as_ref_reft(f.buffer)
     )]
-    #[flux_rs::no_panic]
+    // Body stays bounds-checked. The `requires` above states the bound, but six in-crate call
+    // sites cannot yet discharge it: `dispatch_ethernet` hands its closure an
+    // `EthernetFrame<&mut [u8]>`, and at `T = &mut [u8]` the length index would have to come
+    // from core's blanket `impl AsMut for &mut T`, which carries no associated refinement.
+    // Until those route through `wire::Buf`, indexing unchecked here would trade a panic for an
+    // out-of-bounds write rather than prove the panic away (#16). Literal offsets rather than
+    // the `field::` consts only because flux cannot see through a `Range` const.
     #[inline]
     pub fn src_addr(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_bytes(sub(data, 6, 6)) // field::SOURCE
+        Address::from_bytes(&data[6..12]) // field::SOURCE
     }
 
     /// Return the EtherType field, without checking for 802.1Q.
@@ -321,11 +333,17 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
         fn(self: &mut Frame<T>[@f], _)
         requires 6 <= <T as AsMut<[u8]>>::as_mut_reft(f.buffer)
     )]
-    #[flux_rs::no_panic]
+    // Body stays bounds-checked. The `requires` above states the bound, but six in-crate call
+    // sites cannot yet discharge it: `dispatch_ethernet` hands its closure an
+    // `EthernetFrame<&mut [u8]>`, and at `T = &mut [u8]` the length index would have to come
+    // from core's blanket `impl AsMut for &mut T`, which carries no associated refinement.
+    // Until those route through `wire::Buf`, indexing unchecked here would trade a panic for an
+    // out-of-bounds write rather than prove the panic away (#16). Literal offsets rather than
+    // the `field::` consts only because flux cannot see through a `Range` const.
     #[inline]
     pub fn set_dst_addr(&mut self, value: Address) {
         let data = self.buffer.as_mut();
-        sub_mut(data, 0, 6).copy_from_slice(value.as_bytes()) // field::DESTINATION
+        data[0..6].copy_from_slice(value.as_bytes()) // field::DESTINATION
     }
 
     /// Set the source address field.
@@ -334,11 +352,17 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
         fn(self: &mut Frame<T>[@f], _)
         requires 12 <= <T as AsMut<[u8]>>::as_mut_reft(f.buffer)
     )]
-    #[flux_rs::no_panic]
+    // Body stays bounds-checked. The `requires` above states the bound, but six in-crate call
+    // sites cannot yet discharge it: `dispatch_ethernet` hands its closure an
+    // `EthernetFrame<&mut [u8]>`, and at `T = &mut [u8]` the length index would have to come
+    // from core's blanket `impl AsMut for &mut T`, which carries no associated refinement.
+    // Until those route through `wire::Buf`, indexing unchecked here would trade a panic for an
+    // out-of-bounds write rather than prove the panic away (#16). Literal offsets rather than
+    // the `field::` consts only because flux cannot see through a `Range` const.
     #[inline]
     pub fn set_src_addr(&mut self, value: Address) {
         let data = self.buffer.as_mut();
-        sub_mut(data, 6, 6).copy_from_slice(value.as_bytes()) // field::SOURCE
+        data[6..12].copy_from_slice(value.as_bytes()) // field::SOURCE
     }
 
     /// Set the EtherType field.
@@ -360,11 +384,17 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
         fn(self: &mut Frame<T>[@f]) -> &mut [u8]
         requires 14 <= <T as AsMut<[u8]>>::as_mut_reft(f.buffer)
     )]
-    #[flux_rs::no_panic]
+    // Body stays bounds-checked. The `requires` above states the bound, but six in-crate call
+    // sites cannot yet discharge it: `dispatch_ethernet` hands its closure an
+    // `EthernetFrame<&mut [u8]>`, and at `T = &mut [u8]` the length index would have to come
+    // from core's blanket `impl AsMut for &mut T`, which carries no associated refinement.
+    // Until those route through `wire::Buf`, indexing unchecked here would trade a panic for an
+    // out-of-bounds write rather than prove the panic away (#16). Literal offsets rather than
+    // the `field::` consts only because flux cannot see through a `Range` const.
     #[inline]
     pub fn payload_mut(&mut self) -> &mut [u8] {
         let data = self.buffer.as_mut();
-        suffix_mut(data, 14) // field::PAYLOAD
+        &mut data[14..] // field::PAYLOAD
     }
 }
 
