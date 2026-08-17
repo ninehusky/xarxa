@@ -26,8 +26,9 @@
 //! constructors below are the complete set of ways a `Buf` comes into existence:
 //!
 //! * `new(inner)`        -- `offset = 0 <= inner.len()`, and `len = inner.len()`.
-//! * `with_offset(i, o)` -- `requires o <= n`, discharged by flux at all five call sites
-//!                          (`dispatch_ip`, `dispatch_ipv4_frag`, both `trusted(no)`).
+//! * `with_offset(i, o)` -- `requires o <= n`, discharged by flux at all four call sites
+//!                          (three in `dispatch_ip`, one in `dispatch_ipv4_frag`, both
+//!                          `trusted(no)`).
 //! * `reborrow(&mut self)` -- copies both fields verbatim, so it preserves whatever held before.
 //!
 //! Each establishes the stronger equality `inner.len() - offset == len`. No method mutates
@@ -186,22 +187,29 @@ pub fn write_u24_at(data: &mut [u8], at: usize, value: u32) {
 #[flux_rs::trusted(yes, reason = "sub-slice length is not recoverable; see flux-rs/flux#1714")]
 #[flux_rs::sig(fn(&mut [u8][@n], at: usize, octets: &[u8; 4]) requires at + 4 <= n)]
 #[flux_rs::no_panic]
-#[allow(unsafe_code)]
+// NOT CONVERTED to an unchecked write, though every *in-crate* call site discharges
+// `at + 4 <= n` along a chain with no unchecked body on it:
+//   TxToken::consume boundary -> dispatch_ip / dispatch_ipv4_frag -> IpRepr::emit /
+//   emit_ipv4_frag_header -> Ipv4Repr::emit -> Ipv4Packet::set_{src,dst}_addr, all trusted(no).
+//
+// That chain is real but it is not the whole story. Unlike every other helper in this file,
+// this one is reachable from *outside* the crate: `Ipv4Packet::set_src_addr`/`set_dst_addr`
+// are `pub`, and `Packet::new_unchecked` is a `pub const fn` whose use over a short buffer is
+// exactly what `wire/mod.rs`'s own doc example teaches. Flux's `requires 20 <= as_mut_reft`
+// binds only in-crate, so a downstream caller owes nothing and gets no check:
+//
+//     let mut bytes = [0u8; 4];
+//     Ipv4Packet::new_unchecked(&mut bytes[..]).set_dst_addr(addr);   // safe code
+//
+// With an unchecked body that writes 4 bytes at offset 16 of a 4-byte slice and returns
+// normally -- verified: it silently corrupted an adjacent stack array, and Miri reported
+// "attempting to offset pointer by 16 bytes, but got alloc..N.. which is only 4 bytes".
+// Checked, it panics, which is the documented behaviour. Trading that panic for UB is the one
+// thing this work must not do, so the bounds check stays until the setters stop being a public
+// unchecked entry point (make them `unsafe fn`, or drop `pub`). `flux_util::*` is
+// `pub(crate)` and `mod buf` is private, so no sibling helper has this escape.
 pub fn write_octets4_at(data: &mut [u8], at: usize, octets: &[u8; 4]) {
-    // SAFETY: `at + 4 <= n` is a precondition, discharged by the caller and checked by Flux at
-    // every call site, so `data[at..at + 4]` is in bounds; it also rules out the `at + 4`
-    // overflow, since the sum is bounded by a slice length. `octets` is a shared borrow and
-    // `data` a unique one, so the two regions cannot overlap.
-    //
-    // The transitive discharge chain for both call sites is
-    //   TxToken::consume  boundary
-    //   -> dispatch_ip / dispatch_ipv4_frag  trusted(no)
-    //   -> IpRepr::emit / emit_ipv4_frag_header  trusted(no)
-    //   -> Ipv4Repr::emit  trusted(no)
-    //   -> Ipv4Packet::set_{src,dst}_addr  trusted(no)
-    // with no unchecked body anywhere on it. That is what makes the unchecked write sound;
-    // the sibling helpers below do *not* have that property and are deliberately left checked.
-    unsafe { core::ptr::copy_nonoverlapping(octets.as_ptr(), data.as_mut_ptr().add(at), 4) }
+    data[at..at + 4].copy_from_slice(octets)
 }
 
 /// Copy a 16-octet address into `data` at `at`. See [`read_u16_at`] for why this is trusted.
