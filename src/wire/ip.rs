@@ -577,7 +577,6 @@ impl defmt::Format for ListenEndpoint {
 }
 
 /// See the note on `From<Endpoint>`: the assoc is what survives `.into()`.
-#[flux_rs::assoc(fn from_val(s: int, into: ListenEndpoint) -> bool { into == -1 })]
 impl From<u16> for ListenEndpoint {
     #[flux_rs::trusted(reason = "opaque: a bare port binds no address")]
     #[flux_rs::sig(fn(u16) -> ListenEndpoint[-1])]
@@ -588,7 +587,6 @@ impl From<u16> for ListenEndpoint {
 
 /// Ties the conversion's result index to the source, so `.into()` (which routes through the
 /// blanket `Into` spec, whose `from_val` defaults to `true`) does not lose the version.
-#[flux_rs::assoc(fn from_val(s: Endpoint, into: ListenEndpoint) -> bool { into == s })]
 impl From<Endpoint> for ListenEndpoint {
     #[flux_rs::trusted(reason = "opaque: constructs a bound endpoint from a full one")]
     #[flux_rs::sig(fn(Endpoint[@v]) -> ListenEndpoint[v])]
@@ -616,6 +614,10 @@ impl<T: Into<Address>> From<(T, u16)> for ListenEndpoint {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[flux_rs::refined_by(ip_ty: int)]
+// The enum has exactly these two variants, so `ip_ty` is 0 or 1. Without stating it, a
+// per-variant precondition like `(ip_ty == 0 => ..) && (ip_ty == 1 => ..)` is vacuous for any
+// other value and discharges nothing at the call site.
+#[flux_rs::invariant(ip_ty == 0 || ip_ty == 1)]
 pub enum Repr {
     #[cfg(feature = "proto-ipv4")]
     #[flux_rs::variant((Ipv4Repr) -> Repr[0])]
@@ -852,6 +854,13 @@ impl Repr {
     }
 
     /// Return the length of a header that will be emitted from this high-level representation.
+    #[flux_rs::trusted(no, reason = "carries the per-variant header length to `emit`'s callers")]
+    #[flux_rs::sig(
+        fn(self: &Self[@ip_ty]) -> usize{n:
+            (ip_ty == 0 => n == 20) && (ip_ty == 1 => n == 40)
+        }
+    )]
+    #[flux_rs::no_panic]
     pub const fn header_len(&self) -> usize {
         match *self {
             #[cfg(feature = "proto-ipv4")]
@@ -862,6 +871,15 @@ impl Repr {
     }
 
     /// Emit this high-level representation into a buffer.
+    #[flux_rs::trusted(no, reason = "fan-in for any version of IP packet")]
+    #[flux_rs::sig(
+        fn (self: &Self[@ip_ty], buffer: T[@buf], _checksum_caps: &ChecksumCapabilities)
+        requires
+            (ip_ty == 0 => 20 <= <T as AsMut<[u8]>>::as_mut_reft(buf)) &&
+            (ip_ty == 0 => 20 <= <T as AsRef<[u8]>>::as_ref_reft(buf)) &&
+            (ip_ty == 1 => 40 <= <T as AsMut<[u8]>>::as_mut_reft(buf))
+    )]
+    #[flux_rs::no_panic]
     pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(
         &self,
         buffer: T,
@@ -879,6 +897,13 @@ impl Repr {
     /// high-level representation.
     ///
     /// This is the same as `repr.buffer_len() + repr.payload_len()`.
+    #[flux_rs::trusted(no, reason = "carries the per-variant header floor to dispatch_ip")]
+    #[flux_rs::sig(
+        fn(self: &Self[@ip_ty]) -> usize{n:
+            (ip_ty == 0 => 20 <= n) && (ip_ty == 1 => 40 <= n)
+        }
+    )]
+    #[flux_rs::no_panic]
     pub const fn buffer_len(&self) -> usize {
         self.header_len() + self.payload_len()
     }
@@ -895,6 +920,14 @@ pub mod checksum {
     }
 
     /// Compute an RFC 1071 compliant checksum (without the final complement).
+    // Trusted, with a length bound rather than an unconditional `no_panic`. Two things could
+    // panic and neither can here: the `try_into().unwrap()`s convert fixed-size sub-slices of a
+    // `[u8; 4]` chunk and cannot fail; and `accum` cannot overflow, since the sum of at most
+    // `n / 2` `u16`s is at most 65535 * 65535 / 2 < 2^32 for `n <= 65535`. Larger inputs are not
+    // ruled out by the type, hence the precondition -- 65535 is the IPv4 total-length maximum.
+    #[flux_rs::trusted(yes, reason = "infallible unwraps; accum bounded by the length precondition")]
+    #[flux_rs::sig(fn(&[u8][@n]) -> u16 requires n <= 65535)]
+    #[flux_rs::no_panic]
     pub fn data(data: &[u8]) -> u16 {
         // We calculate the sum in native-endian before converting to big-endian at the end
         // see RFC 1071 section 2.(B) for details

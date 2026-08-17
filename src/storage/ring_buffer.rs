@@ -9,6 +9,14 @@ use crate::storage::Resettable;
 
 use super::{Empty, Full};
 
+flux_rs::defs! {
+    // `RingBuffer::get_idx`: the storage slot `idx` elements past `read_at`,
+    // with the zero-capacity case pinned to 0 the way the code does it.
+    fn idx_of(cap: int, read_at: int, idx: int) -> int {
+        if cap > 0 { (read_at + idx) % cap } else { 0 }
+    }
+}
+
 /// A ring buffer.
 ///
 /// This ring buffer implementation provides many ways to interact with it:
@@ -24,9 +32,15 @@ use super::{Empty, Full};
 /// This implementation is suitable for both simple uses such as a FIFO queue
 /// of UDP packets, and advanced ones such as a TCP reassembly buffer.
 #[derive(Debug)]
+#[flux_rs::refined_by(cap: int, read_at: int, length: int)]
+#[flux_rs::invariant(0 <= read_at && 0 <= length && length <= cap)]
+#[flux_rs::invariant(read_at < cap || read_at == 0)]
 pub struct RingBuffer<'a, T: 'a> {
+    #[flux_rs::field(ManagedSlice<T>[cap])]
     storage: ManagedSlice<'a, T>,
+    #[flux_rs::field(usize[read_at])]
     read_at: usize,
+    #[flux_rs::field(usize[length])]
     length: usize,
 }
 
@@ -34,6 +48,8 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     /// Create a ring buffer with the given storage.
     ///
     /// During creation, every element in `storage` is reset.
+    #[flux_rs::trusted(no, reason = "establishes the RingBuffer invariant")]
+    #[flux_rs::sig(fn(S) -> RingBuffer<T>{r: r.read_at == 0 && r.length == 0})]
     pub fn new<S>(storage: S) -> RingBuffer<'a, T>
     where
         S: Into<ManagedSlice<'a, T>>,
@@ -46,12 +62,17 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     }
 
     /// Clear the ring buffer.
+    #[flux_rs::trusted(no, reason = "re-establishes the RingBuffer invariant")]
+    #[flux_rs::sig(fn(self: &mut Self[@r]) ensures self: Self[r.cap, 0, 0])]
     pub fn clear(&mut self) {
         self.read_at = 0;
         self.length = 0;
     }
 
     /// Return the maximum number of elements in the ring buffer.
+    #[flux_rs::trusted(no, reason = "ties capacity() to the `cap` index")]
+    #[flux_rs::sig(fn(&Self[@r]) -> usize[r.cap])]
+    #[flux_rs::no_panic]
     pub fn capacity(&self) -> usize {
         self.storage.len()
     }
@@ -68,33 +89,52 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     }
 
     /// Return the current number of elements in the ring buffer.
+    #[flux_rs::trusted(no, reason = "ties len() to the `length` index")]
+    #[flux_rs::sig(fn(&Self[@r]) -> usize[r.length])]
+    #[flux_rs::no_panic]
     pub fn len(&self) -> usize {
         self.length
     }
 
     /// Return the number of elements that can be added to the ring buffer.
+    #[flux_rs::trusted(no, reason = "ties window() to cap - length")]
+    #[flux_rs::sig(fn(&Self[@r]) -> usize[r.cap - r.length])]
+    #[flux_rs::no_panic]
     pub fn window(&self) -> usize {
         self.capacity() - self.len()
     }
 
     /// Return the largest number of elements that can be added to the buffer
     /// without wrapping around (i.e. in a single `enqueue_many` call).
+    #[flux_rs::trusted(no, reason = "bounds the enqueue_many_with slice")]
+    #[flux_rs::sig(fn(&Self[@r]) -> usize{n:
+        n <= r.cap - r.length
+        && n <= r.cap - idx_of(r.cap, r.read_at, r.length)})]
     pub fn contiguous_window(&self) -> usize {
         cmp::min(self.window(), self.capacity() - self.get_idx(self.length))
     }
 
     /// Query whether the buffer is empty.
+    #[flux_rs::trusted(no, reason = "ties is_empty() to the `length` index")]
+    #[flux_rs::sig(fn(&Self[@r]) -> bool[r.length == 0])]
+    #[flux_rs::no_panic]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     /// Query whether the buffer is full.
+    #[flux_rs::trusted(no, reason = "ties is_full() to cap == length")]
+    #[flux_rs::sig(fn(&Self[@r]) -> bool[r.cap == r.length])]
+    #[flux_rs::no_panic]
     pub fn is_full(&self) -> bool {
         self.window() == 0
     }
 
     /// Shorthand for `(self.read + idx) % self.capacity()` with an
     /// additional check to ensure that the capacity is not zero.
+    #[flux_rs::trusted(no, reason = "the zero-guarded %; its value backs every storage index")]
+    #[flux_rs::sig(fn(&Self[@r], usize[@idx]) -> usize[idx_of(r.cap, r.read_at, idx)])]
+    #[flux_rs::no_panic]
     fn get_idx(&self, idx: usize) -> usize {
         let len = self.capacity();
         if len > 0 {
@@ -106,17 +146,46 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
 
     /// Shorthand for `(self.read + idx) % self.capacity()` with no
     /// additional checks to ensure the capacity is not zero.
+    #[flux_rs::trusted(no, reason = "panic site: rem-by-zero at `% self.capacity()`")]
+    #[flux_rs::sig(fn(&Self[@r], usize[@idx]) -> usize[idx_of(r.cap, r.read_at, idx)] requires r.cap > 0)]
+    #[flux_rs::no_panic]
     fn get_idx_unchecked(&self, idx: usize) -> usize {
         (self.read_at + idx) % self.capacity()
     }
 }
+
+// FIXME(flux): the struct invariant above is ASSUMED on entry to the four `*_with`
+// mutators (`{en,de}queue_{one,many}_with`) but is NOT proven to be MAINTAINED by them:
+// their `self.length` / `self.read_at` writes are reported as "assignment might be
+// unsafe". Stating the obligation needs `fn(self: &mut Self[@r], ..) ensures self: Self`,
+// and that ICEs flux (650d309447) on any function whose return value borrows out of
+// `self` -- which is every one of these, since the interface is zero-copy:
+//
+//   * unconstrained index (`ensures self: Self`)  -> `UnsolvedEvar`, flux-infer/src/infer.rs:416
+//   * determined index (`ensures self: Self[..]`) -> "incompatible types",
+//     flux-infer/src/infer.rs:888, reporting `storage: †ManagedSlice`. The field is still
+//     blocked by the borrow the result holds, so `self` cannot be folded back at exit.
+//
+// The closure is incidental: `fn(self: &mut Self[@r]) -> &mut T ensures self: Self` ICEs
+// identically with no closure anywhere, and `&strg` behaves the same as `&mut`. Dropping
+// the input index instead (`fn(&mut Self, F)`) avoids the ICE but re-unpacks a fresh
+// index at every read of `self`, so `!is_full()` no longer implies `cap > 0` and
+// `get_idx_unchecked`'s precondition stops verifying -- strictly worse than today.
 
 /// This is the "discrete" ring buffer interface: it operates with single elements,
 /// and boundary conditions (empty/full) are errors.
 impl<'a, T: 'a> RingBuffer<'a, T> {
     /// Call `f` with a single buffer element, and enqueue the element if `f`
     /// returns successfully, or return `Err(Full)` if the buffer is full.
-    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
+    // ASSUMED, NOT PROVEN: that this maintains the struct invariant. The body's `self.length` /
+    // `self.read_at` writes cannot be stated as `ensures self: Self{..}` -- flux reports
+    // `parameter inference error` at the function exit for any function whose return value
+    // borrows out of `self`, which is every one of these (the interface is zero-copy). This was
+    // an outright ICE on older flux; it is now a diagnosable inference failure, still blocking.
+    // The invariant *is* assumed on entry and relied on by every caller.
+    #[flux_rs::trusted(yes, reason = "invariant maintenance is not statable; see note")]
+    #[flux_rs::sig(fn(self: &mut Self[@r], F) -> Result<Result<R, E>, Full>)]
+    #[flux_rs::no_panic_if(F::no_panic())]
     pub fn enqueue_one_with<'b, R, E, F>(&'b mut self, f: F) -> Result<Result<R, E>, Full>
     where
         F: FnOnce(&'b mut T) -> Result<R, E>,
@@ -143,7 +212,15 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
 
     /// Call `f` with a single buffer element, and dequeue the element if `f`
     /// returns successfully, or return `Err(Empty)` if the buffer is empty.
-    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
+    // ASSUMED, NOT PROVEN: that this maintains the struct invariant. The body's `self.length` /
+    // `self.read_at` writes cannot be stated as `ensures self: Self{..}` -- flux reports
+    // `parameter inference error` at the function exit for any function whose return value
+    // borrows out of `self`, which is every one of these (the interface is zero-copy). This was
+    // an outright ICE on older flux; it is now a diagnosable inference failure, still blocking.
+    // The invariant *is* assumed on entry and relied on by every caller.
+    #[flux_rs::trusted(yes, reason = "invariant maintenance is not statable; see note")]
+    #[flux_rs::sig(fn(self: &mut Self[@r], F) -> Result<Result<R, E>, Empty>)]
+    #[flux_rs::no_panic_if(F::no_panic())]
     pub fn dequeue_one_with<'b, R, E, F>(&'b mut self, f: F) -> Result<Result<R, E>, Empty>
     where
         F: FnOnce(&'b mut T) -> Result<R, E>,
@@ -171,6 +248,14 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     }
 }
 
+// FIXME(flux): on top of the maintenance blocker above, the `assert!(size <= max_size)`
+// in the two functions below is a real panic site: `size` is whatever `f` returned and
+// nothing constrains it. Discharging it needs the documented "# Panics" contract written
+// as a refined bound, `where F: FnOnce(&mut [T][@n]) -> (usize{v: v <= n}, R)`. That is a
+// spec-only change, but it makes every caller owe the bound, and today no caller is opted
+// into checking (packet_buffer.rs has 0 of 29 functions checked), so adding it would move
+// the obligation somewhere nobody is looking rather than discharge it.
+
 /// This is the "continuous" ring buffer interface: it operates with element slices,
 /// and boundary conditions (empty/full) simply result in empty slices.
 impl<'a, T: 'a> RingBuffer<'a, T> {
@@ -180,7 +265,15 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     /// # Panics
     /// This function panics if the amount of elements returned by `f` is larger
     /// than the size of the slice passed into it.
-    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
+    // ASSUMED, NOT PROVEN: that this maintains the struct invariant. The body's `self.length` /
+    // `self.read_at` writes cannot be stated as `ensures self: Self{..}` -- flux reports
+    // `parameter inference error` at the function exit for any function whose return value
+    // borrows out of `self`, which is every one of these (the interface is zero-copy). This was
+    // an outright ICE on older flux; it is now a diagnosable inference failure, still blocking.
+    // The invariant *is* assumed on entry and relied on by every caller.
+    #[flux_rs::trusted(yes, reason = "invariant maintenance is not statable; see note")]
+    #[flux_rs::sig(fn(self: &mut Self[@r], F) -> (usize, R))]
+    #[flux_rs::no_panic_if(F::no_panic())]
     pub fn enqueue_many_with<'b, R, F>(&'b mut self, f: F) -> (usize, R)
     where
         F: FnOnce(&'b mut [T]) -> (usize, R),
@@ -216,18 +309,19 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     /// Enqueue as many elements from the given slice into the buffer as possible,
     /// and return the amount of elements that could fit.
     #[must_use]
+    #[flux_rs::trusted(no, reason = "panic site: slices `data` against the enqueued length")]
     pub fn enqueue_slice(&mut self, data: &[T]) -> usize
     where
         T: Copy,
     {
         let (size_1, data) = self.enqueue_many_with(|buf| {
             let size = cmp::min(buf.len(), data.len());
-            buf[..size].copy_from_slice(&data[..size]);
-            (size, &data[size..])
+            crate::flux_util::copy_prefix(buf, data, size);
+            (size, crate::flux_util::suffix(data, size))
         });
         let (size_2, ()) = self.enqueue_many_with(|buf| {
             let size = cmp::min(buf.len(), data.len());
-            buf[..size].copy_from_slice(&data[..size]);
+            crate::flux_util::copy_prefix(buf, data, size);
             (size, ())
         });
         size_1 + size_2
@@ -239,7 +333,15 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     /// # Panics
     /// This function panics if the amount of elements returned by `f` is larger
     /// than the size of the slice passed into it.
-    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
+    // ASSUMED, NOT PROVEN: that this maintains the struct invariant. The body's `self.length` /
+    // `self.read_at` writes cannot be stated as `ensures self: Self{..}` -- flux reports
+    // `parameter inference error` at the function exit for any function whose return value
+    // borrows out of `self`, which is every one of these (the interface is zero-copy). This was
+    // an outright ICE on older flux; it is now a diagnosable inference failure, still blocking.
+    // The invariant *is* assumed on entry and relied on by every caller.
+    #[flux_rs::trusted(yes, reason = "invariant maintenance is not statable; see note")]
+    #[flux_rs::sig(fn(self: &mut Self[@r], F) -> (usize, R))]
+    #[flux_rs::no_panic_if(F::no_panic())]
     pub fn dequeue_many_with<'b, R, F>(&'b mut self, f: F) -> (usize, R)
     where
         F: FnOnce(&'b mut [T]) -> (usize, R),
@@ -298,7 +400,9 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     /// Return the largest contiguous slice of unallocated buffer elements starting
     /// at the given offset past the last allocated element, and up to the given size.
     #[must_use]
-    pub fn get_unallocated(&mut self, offset: usize, mut size: usize) -> &mut [T] {
+    #[flux_rs::trusted(no, reason = "panic site: storage[start_at..start_at + size]")]
+    #[flux_rs::sig(fn(&mut Self[@r], usize, usize[@size]) -> &mut [T]{n: n <= size})]
+    pub fn get_unallocated(&mut self, offset: usize, size: usize) -> &mut [T] {
         let start_at = self.get_idx(self.length + offset);
         // We can't access past the end of unallocated data.
         if offset > self.window() {
@@ -306,22 +410,21 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
         }
         // We can't enqueue more than there is free space.
         let clamped_window = self.window() - offset;
-        if size > clamped_window {
-            size = clamped_window
-        }
+        // `let`-shadow rather than reassigning `size`: assigning through a `mut` binding
+        // widens its type and drops the index, losing the `n <= size` relation.
+        let size = cmp::min(size, clamped_window);
         // We can't contiguously enqueue past the end of the storage.
         let until_end = self.capacity() - start_at;
-        if size > until_end {
-            size = until_end
-        }
+        let size = cmp::min(size, until_end);
 
-        &mut self.storage[start_at..start_at + size]
+        crate::flux_util::sub_mut(&mut self.storage, start_at, size)
     }
 
     /// Write as many elements from the given slice into unallocated buffer elements
     /// starting at the given offset past the last allocated element, and return
     /// the amount written.
     #[must_use]
+    #[flux_rs::trusted(no, reason = "panic site: slices `data` by the length get_unallocated returned")]
     pub fn write_unallocated(&mut self, offset: usize, data: &[T]) -> usize
     where
         T: Copy,
@@ -329,13 +432,13 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
         let (size_1, offset, data) = {
             let slice = self.get_unallocated(offset, data.len());
             let slice_len = slice.len();
-            slice.copy_from_slice(&data[..slice_len]);
+            crate::flux_util::copy_prefix(slice, data, slice_len);
             (slice_len, offset + slice_len, &data[slice_len..])
         };
         let size_2 = {
             let slice = self.get_unallocated(offset, data.len());
             let slice_len = slice.len();
-            slice.copy_from_slice(&data[..slice_len]);
+            crate::flux_util::copy_prefix(slice, data, slice_len);
             slice_len
         };
         size_1 + size_2
@@ -345,6 +448,9 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     ///
     /// # Panics
     /// Panics if the number of elements given exceeds the number of unallocated elements.
+    #[flux_rs::trusted(no, reason = "panic site: assert!(count <= self.window())")]
+    #[flux_rs::sig(fn(self: &mut Self[@r], {usize[@count] | count <= r.cap - r.length})
+        ensures self: Self[r.cap, r.read_at, r.length + count])]
     pub fn enqueue_unallocated(&mut self, count: usize) {
         assert!(count <= self.window());
         self.length += count;
@@ -353,7 +459,9 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     /// Return the largest contiguous slice of allocated buffer elements starting
     /// at the given offset past the first allocated element, and up to the given size.
     #[must_use]
-    pub fn get_allocated(&self, offset: usize, mut size: usize) -> &[T] {
+    #[flux_rs::trusted(no, reason = "panic site: storage[start_at..start_at + size]")]
+    #[flux_rs::sig(fn(&Self[@r], usize, usize[@size]) -> &[T]{n: n <= size})]
+    pub fn get_allocated(&self, offset: usize, size: usize) -> &[T] {
         let start_at = self.get_idx(offset);
         // We can't read past the end of the allocated data.
         if offset > self.length {
@@ -361,35 +469,36 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
         }
         // We can't read more than we have allocated.
         let clamped_length = self.length - offset;
-        if size > clamped_length {
-            size = clamped_length
-        }
+        // `let`-shadow rather than reassigning `size`: assigning through a `mut` binding
+        // widens its type and drops the index, losing the `n <= size` relation.
+        let size = cmp::min(size, clamped_length);
         // We can't contiguously dequeue past the end of the storage.
         let until_end = self.capacity() - start_at;
-        if size > until_end {
-            size = until_end
-        }
+        let size = cmp::min(size, until_end);
 
-        &self.storage[start_at..start_at + size]
+        crate::flux_util::sub(&self.storage, start_at, size)
     }
 
     /// Read as many elements from allocated buffer elements into the given slice
     /// starting at the given offset past the first allocated element, and return
     /// the amount read.
     #[must_use]
+    #[flux_rs::trusted(no, reason = "panic site: slices `data` by the length get_allocated returned")]
     pub fn read_allocated(&mut self, offset: usize, data: &mut [T]) -> usize
     where
         T: Copy,
     {
         let (size_1, offset, data) = {
             let slice = self.get_allocated(offset, data.len());
-            data[..slice.len()].copy_from_slice(slice);
-            (slice.len(), offset + slice.len(), &mut data[slice.len()..])
+            let slice_len = slice.len();
+            crate::flux_util::copy_prefix(data, slice, slice_len);
+            (slice_len, offset + slice_len, &mut data[slice_len..])
         };
         let size_2 = {
             let slice = self.get_allocated(offset, data.len());
-            data[..slice.len()].copy_from_slice(slice);
-            slice.len()
+            let slice_len = slice.len();
+            crate::flux_util::copy_prefix(data, slice, slice_len);
+            slice_len
         };
         size_1 + size_2
     }
@@ -398,6 +507,8 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     ///
     /// # Panics
     /// Panics if the number of elements given exceeds the number of allocated elements.
+    #[flux_rs::trusted(no, reason = "panic site: assert!(count <= self.len())")]
+    #[flux_rs::sig(fn(self: &mut Self[@r], {usize[@count] | count <= r.length}) ensures self: Self[r.cap, idx_of(r.cap, r.read_at, count), r.length - count])]
     pub fn dequeue_allocated(&mut self, count: usize) {
         assert!(count <= self.len());
         self.length -= count;

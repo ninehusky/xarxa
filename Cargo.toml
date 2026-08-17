@@ -19,7 +19,7 @@ autoexamples = false
 members = ["xarxa-driver"]
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)', 'cfg(flux)'] }
 
 [dependencies]
 xarxa-driver = { version = "0.1.0", path = "xarxa-driver" }

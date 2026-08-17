@@ -701,10 +701,13 @@ impl Interface {
         })
     }
 
-    // Was `trusted(no)` for the IpRepr::new fan-in cone. That opt-in never actually
-    // checked: `socket_egress` ICEs on committed `main` too, so the cone was
-    // undischarged while reading as verified. Disclosed rather than silently failing.
-    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
+    // Was `trusted(no)` before this PR. Restored as an explicit `trusted(yes)` rather than left
+    // as a commented-out attribute, so the coverage loss is visible: checking this body aborts
+    // flux with `internal flux error: crates/flux-infer/src/infer.rs:896` at the `respond`
+    // closure below (`incompatible types: †impl Device + ?Sized`). That is a checker crash, not
+    // an undischarged obligation -- the `IpRepr::new` fan-in proof is not refuted, it is
+    // unreachable until the ICE is fixed. Flip this back to `trusted(no)` to re-test.
+    #[flux_rs::trusted(yes, reason = "flux ICE at infer.rs:896 on the `respond` closure")]
     fn socket_egress(
         &mut self,
         device: &mut (impl Device + ?Sized),
@@ -842,6 +845,15 @@ impl InterfaceInner {
     }
 
     #[allow(unused)] // unused depending on which sockets are enabled
+    // ASSUMED, NOT PROVEN: that the IP MTU leaves room for an IPv4 header. This is the device
+    // capability boundary -- `caps.max_transmission_unit` comes from the driver, is not refined,
+    // and on Ethernet this body subtracts 14 from it without a guard, so a device reporting an
+    // MTU under 14 would underflow here too. RFC 791 puts the IPv4 minimum at 576, so 20 is far
+    // inside any conforming device's range. Stating it here is what lets
+    // `max_ipv4_fragment_size` require `h <= m` instead of silently assuming it.
+    #[flux_rs::trusted(yes, reason = "device MTU is unrefined; RFC 791 minimum is 576")]
+    #[flux_rs::sig(fn(&Self) -> usize{v: 20 <= v})]
+    #[flux_rs::no_panic]
     pub(crate) fn ip_mtu(&self) -> usize {
         match self.medium {
             #[cfg(feature = "medium-ethernet")]
@@ -857,9 +869,21 @@ impl InterfaceInner {
     }
 
     /// The maximum IPv4 payload fragment size, aligned per spec.
+    ///
+    /// Takes the MTU explicitly rather than calling `ip_mtu()` internally, so a caller can
+    /// bind it once and relate this result to its own MTU test. `InterfaceInner` is not
+    /// refined, so two separate `self.ip_mtu()` calls are opaque and unrelatable to flux.
     #[cfg(feature = "proto-ipv4-fragmentation")]
-    pub(crate) fn max_ipv4_fragment_size(&self, ip_header_len: usize) -> usize {
-        let payload_mtu = self.ip_mtu() - ip_header_len;
+    // `requires h <= m` is load-bearing, not decoration: without it `mtu - ip_header_len`
+    // underflows and BOTH the postcondition and the `no_panic` claim are false.
+    #[flux_rs::trusted(no, reason = "the subtraction is only safe under `h <= m`")]
+    #[flux_rs::sig(
+        fn(&Self, ip_header_len: usize[@h], mtu: usize[@m]) -> usize{v: v + h <= m}
+        requires h <= m
+    )]
+    #[flux_rs::no_panic]
+    pub(crate) fn max_ipv4_fragment_size(&self, ip_header_len: usize, mtu: usize) -> usize {
+        let payload_mtu = mtu - ip_header_len;
         payload_mtu - (payload_mtu % crate::phy::IPV4_FRAGMENT_PAYLOAD_ALIGNMENT)
     }
 
@@ -1235,6 +1259,77 @@ impl InterfaceInner {
         self.neighbor_cache.flush()
     }
 
+    /// Write the Ethernet header for `repr` into the first 14 octets of `tx_buffer`.
+    ///
+    /// Split out of `dispatch_ip`'s `emit_ethernet` closure: flux cannot infer refinement
+    /// parameters at a closure call, and a closure parameter carries no length bound.
+    #[cfg(feature = "medium-ethernet")]
+    // NB: the `14 <= n` bound below is currently consumed by nothing -- `set_src_addr`,
+    // `set_dst_addr` and `set_ethertype` (ethernet.rs:285/292/299) have no signatures, so they
+    // impose no obligation. Callers do prove it, so it is not wrong, but the 14-byte Ethernet
+    // write is NOT yet verified. It becomes load-bearing once `ethernet::Frame` is refined by
+    // its buffer, which is the same recipe already applied to the other wire types.
+    #[flux_rs::trusted(no, reason = "will carry the length once ethernet setters have sigs")]
+    #[flux_rs::sig(
+        fn(
+            repr: &IpRepr[@ip_ty],
+            tx_buffer: &mut [u8][@n],
+            src_addr: EthernetAddress[@src],
+            dst_addr: EthernetAddress[@dst],
+        )
+        requires 14 <= n
+    )]
+    fn emit_ethernet_into(
+        repr: &IpRepr,
+        tx_buffer: &mut [u8],
+        src_addr: EthernetAddress,
+        dst_addr: EthernetAddress,
+    ) {
+        let mut frame = EthernetFrame::new_unchecked(tx_buffer);
+
+        frame.set_src_addr(src_addr);
+        frame.set_dst_addr(dst_addr);
+
+        match repr.version() {
+            #[cfg(feature = "proto-ipv4")]
+            IpVersion::Ipv4 => frame.set_ethertype(EthernetProtocol::Ipv4),
+            #[cfg(feature = "proto-ipv6")]
+            IpVersion::Ipv6 => frame.set_ethertype(EthernetProtocol::Ipv6),
+        }
+    }
+
+    /// Emit `repr`'s header and then the packet payload into `tx_buffer`.
+    ///
+    /// Split out of `dispatch_ip`'s `emit_ip` closure so the buffer is a refined parameter
+    /// rather than a returned `&mut` that has lost its length (flux-rs/flux#1714).
+    #[flux_rs::trusted(no, reason = "carries the tx buffer length into IpRepr::emit")]
+    #[flux_rs::sig(
+        fn(
+            repr: &IpRepr[@ip_ty],
+            buf: Buf[@n],
+            packet: &Packet,
+            caps: &DeviceCapabilities,
+            checksum_caps: &ChecksumCapabilities,
+        )
+        requires
+            (ip_ty == 0 => 20 <= n) &&
+            (ip_ty == 1 => 40 <= n)
+    )]
+    fn emit_ip_into(
+        repr: &IpRepr,
+        mut buf: Buf<'_>,
+        packet: &Packet,
+        caps: &DeviceCapabilities,
+        checksum_caps: &ChecksumCapabilities,
+    ) {
+        repr.emit(buf.reborrow(), checksum_caps);
+
+        let data = buf.as_mut();
+        let payload = crate::flux_util::suffix_mut(data, repr.header_len());
+        packet.emit_payload(repr, payload, caps)
+    }
+
+    #[flux_rs::trusted(no, reason = "entry point: must discharge Ipv4Repr::emit's buffer bound")]
     fn dispatch_ip<Tx: TxToken>(
         &mut self,
         // NOTE(unused_mut): tx_token isn't always mutated, depending on
@@ -1266,14 +1361,27 @@ impl InterfaceInner {
         #[cfg(feature = "proto-ipv4-fragmentation")]
         let ipv4_id = self.next_ipv4_frag_ident();
 
-        // First we calculate the total length that we will have to emit.
-        let mut total_len = ip_repr.buffer_len();
-
-        // Add the size of the Ethernet header if the medium is Ethernet.
+        // Bind the Ethernet header length once: the `tx_len` increments and the buffer
+        // reslices below are otherwise independent `matches!(self.medium, ..)` tests, which
+        // flux cannot correlate, leaving the remaining buffer length unprovable.
         #[cfg(feature = "medium-ethernet")]
-        if matches!(self.medium, Medium::Ethernet) {
-            total_len = EthernetFrame::<&[u8]>::buffer_len(total_len);
-        }
+        let eth_len = if matches!(self.medium, Medium::Ethernet) {
+            EthernetFrame::<&[u8]>::header_len()
+        } else {
+            0
+        };
+        #[cfg(not(feature = "medium-ethernet"))]
+        let eth_len = 0;
+
+        // First we calculate the total length that we will have to emit, including the Ethernet
+        // header when the medium is Ethernet. Expressed via `eth_len` rather than a third
+        // independent `matches!(self.medium, ..)` test, which flux could not correlate with the
+        // other two. `EthernetFrame::buffer_len(n)` is `HEADER_LEN + n`.
+        let total_len = ip_repr.buffer_len() + eth_len;
+
+        // Bound once so the fragmentation test below and `max_ipv4_fragment_size` refer to the
+        // same value; `ip_mtu()` is opaque to flux, so two calls would be unrelated.
+        let mtu = self.ip_mtu();
 
         // If the medium is Ethernet, then we need to retrieve the destination hardware address.
         #[cfg(feature = "medium-ethernet")]
@@ -1287,38 +1395,13 @@ impl InterfaceInner {
             _ => (EthernetAddress::from_octets([0; 6]), tx_token),
         };
 
-        // Emit function for the Ethernet header.
-        #[cfg(feature = "medium-ethernet")]
-        let emit_ethernet = |repr: &IpRepr, tx_buffer: &mut [u8]| {
-            let mut frame = EthernetFrame::new_unchecked(tx_buffer);
-
-            let src_addr = self.hardware_addr.ethernet_or_panic();
-            frame.set_src_addr(src_addr);
-            frame.set_dst_addr(dst_hardware_addr);
-
-            match repr.version() {
-                #[cfg(feature = "proto-ipv4")]
-                IpVersion::Ipv4 => frame.set_ethertype(EthernetProtocol::Ipv4),
-                #[cfg(feature = "proto-ipv6")]
-                IpVersion::Ipv6 => frame.set_ethertype(EthernetProtocol::Ipv6),
-            }
-        };
-
-        // Emit function for the IP header and payload.
-        let emit_ip = |repr: &IpRepr, tx_buffer: &mut [u8]| {
-            repr.emit(&mut *tx_buffer, &self.caps.checksum);
-
-            let payload = &mut tx_buffer[repr.header_len()..];
-            packet.emit_payload(repr, payload, &caps)
-        };
-
         let total_ip_len = ip_repr.buffer_len();
 
         match &mut ip_repr {
             #[cfg(feature = "proto-ipv4")]
             IpRepr::Ipv4(repr) => {
                 // If we have an IPv4 packet, then we need to check if we need to fragment it.
-                if total_ip_len > self.ip_mtu() {
+                if total_ip_len > mtu {
                     #[cfg(feature = "proto-ipv4-fragmentation")]
                     {
                         net_debug!("start fragmentation");
@@ -1326,13 +1409,9 @@ impl InterfaceInner {
                         // Calculate how much we will send now (including the Ethernet header).
 
                         let ip_header_len = repr.buffer_len();
-                        let first_frag_data_len = self.max_ipv4_fragment_size(repr.buffer_len());
+                        let first_frag_data_len = self.max_ipv4_fragment_size(repr.buffer_len(), mtu);
                         let first_frag_ip_len = first_frag_data_len + ip_header_len;
-                        let mut tx_len = first_frag_ip_len;
-                        #[cfg(feature = "medium-ethernet")]
-                        if matches!(self.medium, Medium::Ethernet) {
-                            tx_len += EthernetFrame::<&[u8]>::header_len();
-                        }
+                        let tx_len = first_frag_ip_len + eth_len;
 
                         if frag.buffer.len() < total_ip_len {
                             net_debug!(
@@ -1361,9 +1440,16 @@ impl InterfaceInner {
                         frag.sent_bytes = first_frag_ip_len;
 
                         // Emit the IP header to the buffer.
-                        emit_ip(&ip_repr, &mut frag.buffer);
+                        Self::emit_ip_into(
+                            &ip_repr,
+                            Buf::new(&mut frag.buffer),
+                            &packet,
+                            &caps,
+                            &self.caps.checksum,
+                        );
 
-                        let mut ipv4_packet = Ipv4Packet::new_unchecked(&mut frag.buffer[..]);
+                        let mut ipv4_packet =
+                            Ipv4Packet::new_unchecked(Buf::new(&mut frag.buffer));
                         frag.ipv4.ident = ipv4_id;
                         ipv4_packet.set_ident(ipv4_id);
                         ipv4_packet.set_more_frags(true);
@@ -1371,23 +1457,30 @@ impl InterfaceInner {
                         ipv4_packet.set_frag_offset(0);
 
                         if caps.checksum.ipv4.tx() {
-                            ipv4_packet.fill_checksum();
+                            // The header was just emitted with a length of 20; use the variant
+                            // that takes it rather than reading the IHL nibble back out.
+                            ipv4_packet.fill_checksum_with_header_len(20);
                         }
 
                         // Transmit the first packet.
-                        tx_token.consume(tx_len, |mut tx_buffer| {
+                        tx_token.consume(tx_len, |tx_buffer| {
                             #[cfg(feature = "medium-ethernet")]
-                            if matches!(self.medium, Medium::Ethernet) {
-                                emit_ethernet(&ip_repr, tx_buffer);
-                                tx_buffer = &mut tx_buffer[EthernetFrame::<&[u8]>::header_len()..];
+                            if eth_len > 0 {
+                                Self::emit_ethernet_into(
+                                    &ip_repr,
+                                    tx_buffer,
+                                    self.hardware_addr.ethernet_or_panic(),
+                                    dst_hardware_addr,
+                                );
                             }
 
                             // Change the offset for the next packet.
                             frag.ipv4.frag_offset = (first_frag_ip_len - ip_header_len) as u16;
 
-                            // Copy the IP header and the payload.
-                            tx_buffer[..first_frag_ip_len]
-                                .copy_from_slice(&frag.buffer[..first_frag_ip_len]);
+                            // Copy the IP header and the payload. Routed through `Buf` so the
+                            // destination keeps its length: a `&mut` sub-slice would not.
+                            let mut ip_buf = Buf::with_offset(tx_buffer, eth_len);
+                            ip_buf.copy_at(0, crate::wire::prefix(&frag.buffer, first_frag_ip_len));
                         });
 
                         Ok(())
@@ -1404,14 +1497,24 @@ impl InterfaceInner {
                     tx_token.set_meta(meta);
 
                     // No fragmentation is required.
-                    tx_token.consume(total_len, |mut tx_buffer| {
+                    tx_token.consume(total_len, |tx_buffer| {
                         #[cfg(feature = "medium-ethernet")]
-                        if matches!(self.medium, Medium::Ethernet) {
-                            emit_ethernet(&ip_repr, tx_buffer);
-                            tx_buffer = &mut tx_buffer[EthernetFrame::<&[u8]>::header_len()..];
+                        if eth_len > 0 {
+                            Self::emit_ethernet_into(
+                                &ip_repr,
+                                tx_buffer,
+                                self.hardware_addr.ethernet_or_panic(),
+                                dst_hardware_addr,
+                            );
                         }
 
-                        emit_ip(&ip_repr, tx_buffer);
+                        Self::emit_ip_into(
+                            &ip_repr,
+                            Buf::with_offset(tx_buffer, eth_len),
+                            &packet,
+                            &caps,
+                            &self.caps.checksum,
+                        );
                     });
 
                     Ok(())
@@ -1421,18 +1524,28 @@ impl InterfaceInner {
             #[cfg(feature = "proto-ipv6")]
             IpRepr::Ipv6(_) => {
                 // Check if we need to fragment it.
-                if total_ip_len > self.ip_mtu() {
+                if total_ip_len > mtu {
                     net_debug!("IPv6 fragmentation support is unimplemented. Dropping.");
                     Ok(())
                 } else {
-                    tx_token.consume(total_len, |mut tx_buffer| {
+                    tx_token.consume(total_len, |tx_buffer| {
                         #[cfg(feature = "medium-ethernet")]
-                        if matches!(self.medium, Medium::Ethernet) {
-                            emit_ethernet(&ip_repr, tx_buffer);
-                            tx_buffer = &mut tx_buffer[EthernetFrame::<&[u8]>::header_len()..];
+                        if eth_len > 0 {
+                            Self::emit_ethernet_into(
+                                &ip_repr,
+                                tx_buffer,
+                                self.hardware_addr.ethernet_or_panic(),
+                                dst_hardware_addr,
+                            );
                         }
 
-                        emit_ip(&ip_repr, tx_buffer);
+                        Self::emit_ip_into(
+                            &ip_repr,
+                            Buf::with_offset(tx_buffer, eth_len),
+                            &packet,
+                            &caps,
+                            &self.caps.checksum,
+                        );
                     });
                     Ok(())
                 }
