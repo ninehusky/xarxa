@@ -116,6 +116,7 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
 impl<'a, T: 'a> RingBuffer<'a, T> {
     /// Call `f` with a single buffer element, and enqueue the element if `f`
     /// returns successfully, or return `Err(Full)` if the buffer is full.
+    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     pub fn enqueue_one_with<'b, R, E, F>(&'b mut self, f: F) -> Result<Result<R, E>, Full>
     where
         F: FnOnce(&'b mut T) -> Result<R, E>,
@@ -142,6 +143,7 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
 
     /// Call `f` with a single buffer element, and dequeue the element if `f`
     /// returns successfully, or return `Err(Empty)` if the buffer is empty.
+    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     pub fn dequeue_one_with<'b, R, E, F>(&'b mut self, f: F) -> Result<Result<R, E>, Empty>
     where
         F: FnOnce(&'b mut T) -> Result<R, E>,
@@ -178,6 +180,7 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     /// # Panics
     /// This function panics if the amount of elements returned by `f` is larger
     /// than the size of the slice passed into it.
+    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     pub fn enqueue_many_with<'b, R, F>(&'b mut self, f: F) -> (usize, R)
     where
         F: FnOnce(&'b mut [T]) -> (usize, R),
@@ -236,6 +239,7 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     /// # Panics
     /// This function panics if the amount of elements returned by `f` is larger
     /// than the size of the slice passed into it.
+    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     pub fn dequeue_many_with<'b, R, F>(&'b mut self, f: F) -> (usize, R)
     where
         F: FnOnce(&'b mut [T]) -> (usize, R),

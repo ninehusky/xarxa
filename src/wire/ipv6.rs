@@ -668,6 +668,7 @@ use crate::wire::pretty_print::{PrettyIndent, PrettyPrint};
 // TODO: This is very similar to the implementation for IPv4. Make
 // a way to have less copy and pasted code here.
 impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
+    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     fn pretty_print(
         buffer: &dyn AsRef<[u8]>,
         f: &mut fmt::Formatter,

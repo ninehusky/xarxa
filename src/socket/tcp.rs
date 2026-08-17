@@ -1243,6 +1243,7 @@ impl<'a> Socket<'a> {
         !self.rx_buffer.is_empty()
     }
 
+    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     fn send_impl<'b, F, R>(&'b mut self, f: F) -> Result<R, SendError>
     where
         F: FnOnce(&'b mut SocketBuffer<'a>) -> (usize, R),
@@ -1321,6 +1322,7 @@ impl<'a> Socket<'a> {
         Ok(())
     }
 
+    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     fn recv_impl<'b, F, R>(&'b mut self, f: F) -> Result<R, RecvError>
     where
         F: FnOnce(&'b mut SocketBuffer<'a>) -> (usize, R),

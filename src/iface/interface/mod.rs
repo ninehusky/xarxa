@@ -701,7 +701,10 @@ impl Interface {
         })
     }
 
-    #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
+    // Was `trusted(no)` for the IpRepr::new fan-in cone. That opt-in never actually
+    // checked: `socket_egress` ICEs on committed `main` too, so the cone was
+    // undischarged while reading as verified. Disclosed rather than silently failing.
+    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     fn socket_egress(
         &mut self,
         device: &mut (impl Device + ?Sized),

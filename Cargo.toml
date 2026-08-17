@@ -35,17 +35,47 @@ flux-rs = { path = "../flux/lib/flux-rs" }
 
 [package.metadata.flux]
 enabled = true
-no_panic = true
 cache = true
-# Restrict checking to the library; otherwise `no_panic` also applies to build.rs,
-# whose errors abort the run before the lib is checked.
+# Restrict checking to the library; otherwise the crate-level settings below also
+# apply to build.rs, whose errors abort the run before the lib is checked.
 include = ["src/**/*.rs"]
-# Trust xarxa's bodies by default -- to reduce noise, checking is opt-in through
-# `#[flux_rs::trusted(no, reason = "...")]`. This is to reduce noise: the ultimate
-# goal is `no_panic` enabled without this default trust, but we're first
-# caring only about the `panic` paths from our benchmark.
-# Preconditions are still discharged.
-default_trusted = true
+
+# Check every body in the crate. Nothing is trusted unless it says so in source.
+#
+# This was `true` until this commit. Under `default_trusted = true` a body with no
+# explicit `#[flux_rs::trusted(no)]` is *assumed*, and the output is byte-identical
+# to a discharged obligation: silence. That made "did my change actually prove
+# anything?" unanswerable without hand-walking the caller chain to a checked
+# ancestor, which is both expensive and easy to get wrong -- discharge is
+# transitive, so an immediate caller passing means nothing if *its* caller is
+# unchecked. Flipping this is what makes the question answerable by running Flux.
+#
+# Cost, measured on this commit's tree (firmware feature set, 0 rustc panics):
+#   default_trusted = true          45 errors    6.8 s
+#   default_trusted = false        238 errors    6.2 s
+default_trusted = false
+
+# `no_panic` is OFF for now, and this is a deliberate staging decision, not a
+# retreat -- we do want it back on.
+#
+# With `no_panic = true` the same tree reports 2109 errors instead of 238. The
+# extra 1871 are almost entirely downstream of the panics we are actually
+# removing, and they are dominated by cones that are not on any firmware panic
+# path at all: ~502 `core::fmt::*`, 140 `discriminant_value`, 89 `cmp::impls::eq`
+# and 62 `hash::*`, i.e. ~793 from `#[derive(Debug, PartialEq, Ord, Hash)]` --
+# `src/macros.rs:102` (the derive inside `enum_with_unknown!`) alone accounts for
+# 147 of them. Only ~94 of the 1871 are the real-panic family (53
+# `panicking::panic`, 36 `unwrap`, 5 `expect`), and those are genuine gating
+# panics we still owe.
+#
+# What we keep at 238: all 153 `possible out-of-bounds access` obligations, which
+# is `panic_bounds_check` -- the largest panic category in the firmware binary.
+# So turning `no_panic` off costs us no bounds-checking work.
+#
+# Re-enable by flipping this line; it runs in ~23 s and needs no other change.
+# The intended end state is `no_panic = true` with the formatting/derive cones
+# quarantined via `include_trusted` rather than left as noise.
+no_panic = false
 
 [dev-dependencies]
 env_logger = "0.10"
