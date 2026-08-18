@@ -443,15 +443,27 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> AddressRecord<T> {
     /// # Panics
     /// This function panics if the given address is not a multicast address.
     //
-    // DISCLOSURE: `trusted(yes)`, so the body is not checked and the
-    // `assert!(addr.is_multicast())` obligation is *deleted*, not passed up. It cannot be
-    // stated: `Ipv6Address` is `core::net::Ipv6Addr`, which carries no refinement, and
-    // `Ipv6Addr::is_multicast` has no MIR, so Flux havocs the flag. Refining `Ipv6Addr` by
-    // `is_multicast` needs an extern spec in `src/flux_specs/`, outside this file.
-    // The `requires` still holds the caller to the *buffer* bound, which is the panic site
-    // this slice is about; only the multicast assert is unowned.
-    #[flux_rs::trusted(yes, reason = "assert!(addr.is_multicast()): core::net::Ipv6Addr has no \
-                                      refinement and is_multicast has no MIR")]
+    // No `#[no_panic]`, unlike its three siblings above: the body's
+    // `assert!(addr.is_multicast())` is a live panic site that Flux does not owe under the
+    // stated `requires`, so callers see this as `may panic` rather than as a discharged
+    // call. That is deliberate -- see below.
+    //
+    // PARKED: `flux_specs::net` now refines `Ipv6Addr` by `is_multicast`, so
+    // `requires ... && addr.is_multicast` (plus `#[no_panic]`) is expressible and the body
+    // then verifies. It is not stated because no caller discharges it:
+    //   * `AddressRecordRepr::emit` passes `self.mcast_addr`, a field of an unrefined
+    //     `&Self`; measured, that call reports `a precondition cannot be proved`.
+    //   * above it, every record is built by `MldAddressRecordRepr::new` in
+    //     `iface::interface::multicast` from a key of `multicast.groups` or from
+    //     `MldReportState::ToSpecificQuery{group}`. Both really are multicast --
+    //     `join_multicast_group` rejects non-multicast, and `group` is gated on
+    //     `has_multicast_group` -- but that is an invariant of a `heapless` map whose keys
+    //     carry no refinement, so it cannot be handed down.
+    // Stating the `requires` anyway would move a live `assert!` onto callers that do not
+    // meet it, and onto out-of-crate callers as an assumed precondition. Refining
+    // `AddressRecordRepr` by its `mcast_addr` flag is the first half of the fix; the
+    // `groups` map is the second and is the same missing piece as elsewhere.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the record at a fixed offset")]
     #[flux_rs::sig(
         fn(&mut AddressRecord<T>[@r], _)
         requires 20 <= <T as AsMut<[u8]>>::as_mut_reft(r.buffer)
