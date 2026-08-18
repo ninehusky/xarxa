@@ -714,7 +714,7 @@ impl Interface {
         device: &mut (impl Device + ?Sized),
         sockets: &mut SocketSet<'_>,
     ) -> PollResult {
-        let _caps = device.capabilities();
+        let _caps = Self::device_caps(device);
 
         let mut result = PollResult::None;
         for item in sockets.items_mut() {
@@ -746,6 +746,17 @@ impl Interface {
             }
         }
         result
+    }
+
+    /// Read the device's capabilities.
+    ///
+    /// Called inline in [`Self::socket_egress`], `device.capabilities()` leaves every later
+    /// call in that body that also takes `device` with an unsolved existential variable
+    /// (`parameter inference error`), which aborts the whole function's check. Isolating the
+    /// call here confines that to one statement. Behaviour is unchanged.
+    #[flux_rs::trusted(no)]
+    fn device_caps(device: &mut (impl Device + ?Sized)) -> DeviceCapabilities {
+        device.capabilities()
     }
 
     /// Dispatch one socket's pending egress.
