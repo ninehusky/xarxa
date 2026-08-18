@@ -7,8 +7,8 @@ use heapless::Vec;
 use super::{Error, Result};
 use crate::wire::arp::Hardware;
 use crate::wire::{
-    EthernetAddress, Ipv4Address, copy_window_at, read_u16_at, read_u32_at, sub, write_octets4_at,
-    write_u16_at, write_u32_at,
+    EthernetAddress, Ipv4Address, copy_window_at, read_u16_at, read_u32_at, sub, write_u16_at,
+    write_u32_at,
 };
 
 pub const SERVER_PORT: u16 = 67;
@@ -695,37 +695,33 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// and can respond to ARP requests”.
     #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
     #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: Ipv4Address) requires 16 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
-    #[flux_rs::no_panic]
     pub fn set_client_ip(&mut self, value: Ipv4Address) {
         let data = self.buffer.as_mut();
-        write_octets4_at(data, 12, &value.octets()) // field::CIADDR
+        copy_window_at(data, 12, 4, &value.octets()) // field::CIADDR
     }
 
     /// Sets the value of the `yiaddr` field.
     #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
     #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: Ipv4Address) requires 20 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
-    #[flux_rs::no_panic]
     pub fn set_your_ip(&mut self, value: Ipv4Address) {
         let data = self.buffer.as_mut();
-        write_octets4_at(data, 16, &value.octets()) // field::YIADDR
+        copy_window_at(data, 16, 4, &value.octets()) // field::YIADDR
     }
 
     /// Sets the value of the `siaddr` field.
     #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
     #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: Ipv4Address) requires 24 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
-    #[flux_rs::no_panic]
     pub fn set_server_ip(&mut self, value: Ipv4Address) {
         let data = self.buffer.as_mut();
-        write_octets4_at(data, 20, &value.octets()) // field::SIADDR
+        copy_window_at(data, 20, 4, &value.octets()) // field::SIADDR
     }
 
     /// Sets the value of the `giaddr` field.
     #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
     #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: Ipv4Address) requires 28 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
-    #[flux_rs::no_panic]
     pub fn set_relay_agent_ip(&mut self, value: Ipv4Address) {
         let data = self.buffer.as_mut();
-        write_octets4_at(data, 24, &value.octets()) // field::GIADDR
+        copy_window_at(data, 24, 4, &value.octets()) // field::GIADDR
     }
 
     /// Sets the flags to the specified value.
