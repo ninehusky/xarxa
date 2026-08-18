@@ -608,8 +608,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
     ///
     /// The data spans `2..data_len() * 8`, so the bound is a property of the length octet. The
     /// `len` ghost names that octet, which is what makes `1 <= p.len` (the range is non-empty)
-    /// and `p.len * 8 <= n` (it fits) statable at all.
-    #[flux_rs::trusted(yes, reason = "needs a data_len mirror field to state data_len()*8 <= n")]
+    /// and `p.len * 8 <= n` (it fits) statable at all. The obligation is now passed up rather
+    /// than erased; the only caller, `emit_unknown`, is where it stops.
+    #[flux_rs::trusted(no, reason = "panic site: slices the buffer at a content-dependent end")]
     #[flux_rs::sig(
         fn(self: &mut NdiscOption<T>[@p]) -> &mut [u8]
         requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
@@ -890,15 +891,31 @@ where
 
 /// Emit an option of an unrecognised type.
 ///
-/// Lifted out of [`Repr::emit`] for the same reason as the others. `copy_from_slice` requires
-/// `data_mut().len() == data.len()`; `data_mut()` spans `2..data_len() * 8`, so the equality is
-/// a property of the length octet just written, and `NdiscOption` carries no mirror of it (see
-/// the note on `data_mut`). This is the one arm where the residual obligation is a *real*
-/// reachable panic rather than a Flux limitation: `Repr::Unknown { length, data, .. }` with
-/// `data.len() != length as usize * 8 - 2` panics here today, and nothing in the type rules it
-/// out. Recorded, not fixed -- fixing it is a behaviour change, which is out of scope.
-#[flux_rs::trusted(yes, reason = "copy_from_slice length equality needs a data_len mirror; \
-the mismatch is moreover reachable -- see the doc comment")]
+/// OBLIGATION STOPS HERE, and for two separate reasons.
+///
+/// The first is a *real* reachable panic, not a Flux limitation. `copy_from_slice` requires
+/// `data_mut().len() == data.len()`, i.e. `data.len() == length as usize * 8 - 2`, and nothing
+/// in the type rules that out: `Repr::Unknown { type_: 0x42, length: 2, data: &[1, 2, 3] }`
+/// emitted into a 64-octet buffer panics here today with "source slice length (3) does not
+/// match destination slice length (14)". Recorded, not fixed -- fixing it is a behaviour
+/// change, which is out of scope.
+///
+/// The second is that the equality is not even statable at this call. [`NdiscOption::data_mut`]
+/// hands back a bare `&mut [u8]`, and a *returned* `&mut` loses its length index
+/// (flux-rs/flux#1714), so the destination side of the equality has no name here. Giving it one
+/// means routing the data through [`crate::wire::Buf`], the way `redirected_packet_buf` does.
+///
+/// The buffer-space half of the obligation *is* statable now that `len` is a ghost --
+/// `1 <= length && length * 8 <= as_mut_reft(opt.buffer)`, which is what `data_mut` requires.
+/// Nothing discharges it: [`Repr::emit`] holds only the fixed 48, and a Redirected-Header-sized
+/// bound says nothing about an `Unknown` arm whose `length` octet can reach 255. Measured, not
+/// inferred: stating all of it here and dropping to `trusted(no)` takes the crate from 343
+/// errors to 348 -- three unprovable conjuncts at the call in `Repr::emit`, and two left in
+/// this body for the `&mut`-index reason above. Closing it needs [`Repr`] refined by its
+/// `buffer_len()`, the way `icmpv6::Repr` is refined by `blen`.
+#[flux_rs::trusted(yes, reason = "copy_from_slice's length equality is unstatable: data_mut \
+returns a bare &mut [u8], whose index is lost (flux-rs/flux#1714). The mismatch is moreover \
+reachable -- see the doc comment")]
 // Stated at `emit`'s 48 for the invariance reason noted on `emit_link_layer_addr`.
 #[flux_rs::sig(
     fn(opt: &strg NdiscOption<T>[@p], u8, length: u8, &[u8])
