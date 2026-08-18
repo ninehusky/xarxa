@@ -1329,6 +1329,13 @@ impl InterfaceInner {
         packet.emit_payload(repr, payload, caps)
     }
 
+    // `strict` locally, because `lazy` models `a + b` as wrapping and so cannot prove
+    // `b <= a + b`. `total_len = ip_repr.buffer_len() + eth_len` therefore told flux nothing
+    // about either summand, which is what left `Buf::with_offset`'s `offset <= n` and
+    // `emit_ethernet_into`'s `14 <= n` undischarged here -- not closures, which a probe
+    // confirms do see `tx_buffer.len() == total_len`. Crate-wide `strict` is not an option:
+    // it ICEs in `fixpoint_encoding.rs:1623` at `parsers.rs:163` and checks nothing.
+    #[flux_rs::opts(check_overflow = "strict")]
     #[flux_rs::trusted(no, reason = "entry point: must discharge Ipv4Repr::emit's buffer bound")]
     fn dispatch_ip<Tx: TxToken>(
         &mut self,
