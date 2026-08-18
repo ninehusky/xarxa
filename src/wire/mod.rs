@@ -79,7 +79,7 @@ pub mod pretty_print;
 
 mod buf;
 pub(crate) use buf::{
-    Buf, copy_window_at, prefix, read_i32_at, read_u16_at, read_u32_at, sub, write_i32_at,
+    Buf, copy_window_at, prefix, read_i32_at, read_u16_at, read_u32_at, sub, tail, write_i32_at,
     write_octets4_at, write_octets16_at, write_u16_at, write_u24_at, write_u32_at,
 };
 
