@@ -701,24 +701,13 @@ impl Interface {
         })
     }
 
-    // Was `trusted(no)` before this PR. Restored as an explicit `trusted(yes)` rather than left
-    // as a commented-out attribute, so the coverage loss is visible: checking this body aborts
-    // flux with `internal flux error: crates/flux-infer/src/infer.rs:896` at the `respond`
-    // closure below (`incompatible types: †impl Device + ?Sized`). That is a checker crash, not
-    // an undischarged obligation -- the `IpRepr::new` fan-in proof is not refuted, it is
-    // unreachable until the ICE is fixed. Flip this back to `trusted(no)` to re-test.
-    #[flux_rs::trusted(yes, reason = "flux ICE at infer.rs:896 on the `respond` closure")]
+    #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
     fn socket_egress(
         &mut self,
         device: &mut (impl Device + ?Sized),
         sockets: &mut SocketSet<'_>,
     ) -> PollResult {
-        let _caps = device.capabilities();
-
-        enum EgressError {
-            Exhausted,
-            Dispatch,
-        }
+        let _caps = Self::device_caps(device);
 
         let mut result = PollResult::None;
         for item in sockets.items_mut() {
@@ -729,86 +718,12 @@ impl Interface {
                 continue;
             }
 
-            let mut neighbor_addr = None;
-            let mut respond = |inner: &mut InterfaceInner, meta: PacketMeta, response: Packet| {
-                neighbor_addr = Some(response.ip_repr().dst_addr());
-                let t = device.transmit().ok_or_else(|| {
-                    net_debug!("failed to transmit IP: device exhausted");
-                    EgressError::Exhausted
-                })?;
-
-                inner
-                    .dispatch_ip(t, meta, response, &mut self.fragmenter)
-                    .map_err(|_| EgressError::Dispatch)?;
-
+            let (status, neighbor_addr, changed) = self.socket_egress_one(device, &mut item.socket);
+            if changed {
                 result = PollResult::SocketStateChanged;
+            }
 
-                Ok(())
-            };
-
-            let result = match &mut item.socket {
-                #[cfg(feature = "socket-raw")]
-                Socket::Raw(socket) => socket.dispatch(&mut self.inner, |inner, (ip, raw)| {
-                    respond(
-                        inner,
-                        PacketMeta::default(),
-                        Packet::new(ip, IpPayload::Raw(raw)),
-                    )
-                }),
-                #[cfg(feature = "socket-icmp")]
-                Socket::Icmp(socket) => {
-                    socket.dispatch(&mut self.inner, |inner, response| match response {
-                        #[cfg(feature = "proto-ipv4")]
-                        (IpRepr::Ipv4(ipv4_repr), IcmpRepr::Ipv4(icmpv4_repr)) => respond(
-                            inner,
-                            PacketMeta::default(),
-                            Packet::new_ipv4(ipv4_repr, IpPayload::Icmpv4(icmpv4_repr)),
-                        ),
-                        #[cfg(feature = "proto-ipv6")]
-                        (IpRepr::Ipv6(ipv6_repr), IcmpRepr::Ipv6(icmpv6_repr)) => respond(
-                            inner,
-                            PacketMeta::default(),
-                            Packet::new_ipv6(ipv6_repr, IpPayload::Icmpv6(icmpv6_repr)),
-                        ),
-                        #[allow(unreachable_patterns)]
-                        _ => unreachable!(),
-                    })
-                }
-                #[cfg(feature = "socket-udp")]
-                Socket::Udp(socket) => {
-                    socket.dispatch(&mut self.inner, |inner, meta, (ip, udp, payload)| {
-                        respond(inner, meta, Packet::new(ip, IpPayload::Udp(udp, payload)))
-                    })
-                }
-                #[cfg(feature = "socket-tcp")]
-                Socket::Tcp(socket) => socket.dispatch(&mut self.inner, |inner, (ip, tcp)| {
-                    respond(
-                        inner,
-                        PacketMeta::default(),
-                        Packet::new(ip, IpPayload::Tcp(tcp)),
-                    )
-                }),
-                #[cfg(feature = "socket-dhcpv4")]
-                Socket::Dhcpv4(socket) => {
-                    socket.dispatch(&mut self.inner, |inner, (ip, udp, dhcp)| {
-                        respond(
-                            inner,
-                            PacketMeta::default(),
-                            Packet::new_ipv4(ip, IpPayload::Dhcpv4(udp, dhcp)),
-                        )
-                    })
-                }
-                #[cfg(feature = "socket-dns")]
-                Socket::Dns(socket) => socket.dispatch(&mut self.inner, |inner, (ip, udp, dns)| {
-                    respond(
-                        inner,
-                        PacketMeta::default(),
-                        Packet::new(ip, IpPayload::Udp(udp, dns)),
-                    )
-                }),
-            };
-
-            match result {
+            match status {
                 Err(EgressError::Exhausted) => break, // Driver buffer full.
                 Err(EgressError::Dispatch) => {
                     // `NeighborCache` already takes care of rate limiting the neighbor discovery
@@ -825,6 +740,120 @@ impl Interface {
         }
         result
     }
+
+    /// Read the device's capabilities.
+    ///
+    /// Called inline in [`Self::socket_egress`], `device.capabilities()` leaves every later
+    /// call in that body that also takes `device` with an unsolved existential variable
+    /// (`parameter inference error`), which aborts the whole function's check. Isolating the
+    /// call here confines that to one statement. Behaviour is unchanged.
+    #[flux_rs::trusted(no)]
+    fn device_caps(device: &mut (impl Device + ?Sized)) -> DeviceCapabilities {
+        device.capabilities()
+    }
+
+    /// Dispatch one socket's pending egress.
+    ///
+    /// Split out of [`Self::socket_egress`] so that the `respond` closure -- which captures
+    /// `device` by mutable reference -- is not created inside a loop. Flux blocks the place
+    /// `*device` when the closure captures it and does not unblock it across the loop's back
+    /// edge, so the second visit to the body compares two blocked types, a case `flux-infer`
+    /// has no arm for (`internal flux error` at `infer.rs:896`). Created once per call the
+    /// place is unblocked on entry and the body checks normally.
+    ///
+    /// The two values the closure used to write into `socket_egress`'s locals -- the neighbor
+    /// address and whether a packet went out -- come back as return values instead.
+    #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
+    fn socket_egress_one(
+        &mut self,
+        device: &mut (impl Device + ?Sized),
+        socket: &mut Socket<'_>,
+    ) -> (Result<(), EgressError>, Option<IpAddress>, bool) {
+        let mut neighbor_addr = None;
+        let mut changed = false;
+        let mut respond = |inner: &mut InterfaceInner, meta: PacketMeta, response: Packet| {
+            neighbor_addr = Some(response.ip_repr().dst_addr());
+            let t = device.transmit().ok_or_else(|| {
+                net_debug!("failed to transmit IP: device exhausted");
+                EgressError::Exhausted
+            })?;
+
+            inner
+                .dispatch_ip(t, meta, response, &mut self.fragmenter)
+                .map_err(|_| EgressError::Dispatch)?;
+
+            changed = true;
+
+            Ok(())
+        };
+
+        let status = match socket {
+            #[cfg(feature = "socket-raw")]
+            Socket::Raw(socket) => socket.dispatch(&mut self.inner, |inner, (ip, raw)| {
+                respond(
+                    inner,
+                    PacketMeta::default(),
+                    Packet::new(ip, IpPayload::Raw(raw)),
+                )
+            }),
+            #[cfg(feature = "socket-icmp")]
+            Socket::Icmp(socket) => {
+                socket.dispatch(&mut self.inner, |inner, response| match response {
+                    #[cfg(feature = "proto-ipv4")]
+                    (IpRepr::Ipv4(ipv4_repr), IcmpRepr::Ipv4(icmpv4_repr)) => respond(
+                        inner,
+                        PacketMeta::default(),
+                        Packet::new_ipv4(ipv4_repr, IpPayload::Icmpv4(icmpv4_repr)),
+                    ),
+                    #[cfg(feature = "proto-ipv6")]
+                    (IpRepr::Ipv6(ipv6_repr), IcmpRepr::Ipv6(icmpv6_repr)) => respond(
+                        inner,
+                        PacketMeta::default(),
+                        Packet::new_ipv6(ipv6_repr, IpPayload::Icmpv6(icmpv6_repr)),
+                    ),
+                    #[allow(unreachable_patterns)]
+                    _ => unreachable!(),
+                })
+            }
+            #[cfg(feature = "socket-udp")]
+            Socket::Udp(socket) => {
+                socket.dispatch(&mut self.inner, |inner, meta, (ip, udp, payload)| {
+                    respond(inner, meta, Packet::new(ip, IpPayload::Udp(udp, payload)))
+                })
+            }
+            #[cfg(feature = "socket-tcp")]
+            Socket::Tcp(socket) => socket.dispatch(&mut self.inner, |inner, (ip, tcp)| {
+                respond(
+                    inner,
+                    PacketMeta::default(),
+                    Packet::new(ip, IpPayload::Tcp(tcp)),
+                )
+            }),
+            #[cfg(feature = "socket-dhcpv4")]
+            Socket::Dhcpv4(socket) => socket.dispatch(&mut self.inner, |inner, (ip, udp, dhcp)| {
+                respond(
+                    inner,
+                    PacketMeta::default(),
+                    Packet::new_ipv4(ip, IpPayload::Dhcpv4(udp, dhcp)),
+                )
+            }),
+            #[cfg(feature = "socket-dns")]
+            Socket::Dns(socket) => socket.dispatch(&mut self.inner, |inner, (ip, udp, dns)| {
+                respond(
+                    inner,
+                    PacketMeta::default(),
+                    Packet::new(ip, IpPayload::Udp(udp, dns)),
+                )
+            }),
+        };
+
+        (status, neighbor_addr, changed)
+    }
+}
+
+enum EgressError {
+    Exhausted,
+    Dispatch,
 }
 
 impl InterfaceInner {
@@ -1329,6 +1358,13 @@ impl InterfaceInner {
         packet.emit_payload(repr, payload, caps)
     }
 
+    // `strict` locally, because `lazy` models `a + b` as wrapping and so cannot prove
+    // `b <= a + b`. `total_len = ip_repr.buffer_len() + eth_len` therefore told flux nothing
+    // about either summand, which is what left `Buf::with_offset`'s `offset <= n` and
+    // `emit_ethernet_into`'s `14 <= n` undischarged here -- not closures, which a probe
+    // confirms do see `tx_buffer.len() == total_len`. Crate-wide `strict` is not an option:
+    // it ICEs in `fixpoint_encoding.rs:1623` at `parsers.rs:163` and checks nothing.
+    #[flux_rs::opts(check_overflow = "strict")]
     #[flux_rs::trusted(no, reason = "entry point: must discharge Ipv4Repr::emit's buffer bound")]
     fn dispatch_ip<Tx: TxToken>(
         &mut self,
