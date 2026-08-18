@@ -920,12 +920,20 @@ pub mod checksum {
     }
 
     /// Compute an RFC 1071 compliant checksum (without the final complement).
-    // Trusted, with a length bound rather than an unconditional `no_panic`. Two things could
-    // panic and neither can here: the `try_into().unwrap()`s convert fixed-size sub-slices of a
-    // `[u8; 4]` chunk and cannot fail; and `accum` cannot overflow, since the sum of at most
-    // `n / 2` `u16`s is at most 65535 * 65535 / 2 < 2^32 for `n <= 65535`. Larger inputs are not
-    // ruled out by the type, hence the precondition -- 65535 is the IPv4 total-length maximum.
-    #[flux_rs::trusted(yes, reason = "infallible unwraps; accum bounded by the length precondition")]
+    // Trusted, with a length bound rather than an unconditional `no_panic`. At `trusted(no)`
+    // the body leaves eight sites, none of them a buffer index:
+    //   - `as_chunks::<4>` has no extern spec, so its panic is synthesized rather than analysed;
+    //   - the chunk iterator's `next` and `u16::to_be` are transitive on unspecced callees;
+    //   - three `try_into().unwrap()`s, infallible on fixed-size sub-slices;
+    //   - two `[u8; 4]` array indexes, both constant ranges inside a compile-time length 4.
+    // The array indexes are only opaque because `<[T; N] as Index<Range>>` has no spec; the
+    // obvious fix, destructuring the chunk, ICEs flux at `fold_unfold.rs:262`.
+    //
+    // `accum` cannot overflow either, since the sum of at most `n / 2` `u16`s is at most
+    // 65535 * 65535 / 2 < 2^32 for `n <= 65535`. Under the crate's `lazy` overflow mode flux
+    // does not ask, so the precondition currently buys nothing; it is kept because it is the
+    // true bound, and 65535 is the IPv4 total-length maximum.
+    #[flux_rs::trusted(yes, reason = "unspecced `as_chunks`/array-index/`to_be`; infallible unwraps; no index assumed")]
     #[flux_rs::sig(fn(&[u8][@n]) -> u16 requires n <= 65535)]
     #[flux_rs::no_panic]
     pub fn data(data: &[u8]) -> u16 {
