@@ -44,15 +44,68 @@ bitflags! {
     }
 }
 
+/// A ghost field: carries an integer in the refinement and nothing at runtime.
+///
+/// The option's data field spans `2..data_len() * 8`, and `data_len()` lives in the buffer's
+/// *contents* -- contents are not in the refinement, so no accessor's bound can mention them.
+/// This is the way to name it anyway. `NdiscOption` holds one of these, and because the struct
+/// is a ZST the layout of `NdiscOption<T>` is unchanged.
+///
+/// The value is anchored by [`NdiscOption::data_len`], the trusted getter that asserts the
+/// octet at offset 1 equals the ghost. Everything else is proved.
+#[flux_rs::opaque]
+#[flux_rs::refined_by(val: int)]
+#[flux_rs::invariant(0 <= val && val <= 255)]
+#[derive(PartialEq, Eq, Clone, Copy)]
+struct Ghost;
+
+impl Ghost {
+    /// A ghost whose value is unconstrained.
+    #[flux_rs::trusted(yes, reason = "opaque: the ghost carries no runtime value")]
+    #[flux_rs::sig(fn() -> Ghost{v: 0 <= v && v <= 255})]
+    #[flux_rs::no_panic]
+    const fn unknown() -> Ghost {
+        Ghost
+    }
+
+    /// A ghost pinned to `val`.
+    #[flux_rs::trusted(yes, reason = "opaque: establishes the ghost value")]
+    #[flux_rs::sig(fn(val: u8) -> Ghost[val])]
+    #[flux_rs::no_panic]
+    const fn new(_val: u8) -> Ghost {
+        Ghost
+    }
+}
+
 /// A read/write wrapper around an [NDISC Option].
 ///
 /// [NDISC Option]: https://tools.ietf.org/html/rfc4861#section-4.6
-#[derive(Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[flux_rs::refined_by(buffer: T)]
+#[derive(PartialEq, Eq)]
+#[flux_rs::refined_by(buffer: T, len: int)]
+#[flux_rs::invariant(0 <= len && len <= 255)]
 pub struct NdiscOption<T: AsRef<[u8]>> {
     #[flux_rs::field(T[buffer])]
     buffer: T,
+    #[flux_rs::field(Ghost[len])]
+    len: Ghost,
+}
+
+// Written out rather than derived so the ghost stays out of the output: a derive would print
+// `NdiscOption { buffer: .., len: Ghost }`, and the ghost is not supposed to be observable.
+// These reproduce the derived form for the one field that existed before.
+impl<T: AsRef<[u8]> + fmt::Debug> fmt::Debug for NdiscOption<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("NdiscOption")
+            .field("buffer", &self.buffer)
+            .finish()
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl<T: AsRef<[u8]> + defmt::Format> defmt::Format for NdiscOption<T> {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "NdiscOption {{ buffer: {} }}", self.buffer)
+    }
 }
 
 // Format of an NDISC Option
@@ -151,11 +204,17 @@ mod field {
 /// Core getter methods relevant to any type of NDISC option.
 impl<T: AsRef<[u8]>> NdiscOption<T> {
     /// Create a raw octet buffer with an NDISC Option structure.
+    ///
+    /// The ghost starts unconstrained: this reads nothing, so it learns nothing. It is pinned to
+    /// the length octet the first time [`data_len`](Self::data_len) is called.
     #[flux_rs::trusted(no, reason = "carries the buffer index into the wrapper")]
     #[flux_rs::sig(fn(T[@b]) -> NdiscOption<T>{v: v.buffer == b})]
     #[flux_rs::no_panic]
     pub const fn new_unchecked(buffer: T) -> NdiscOption<T> {
-        NdiscOption { buffer }
+        NdiscOption {
+            buffer,
+            len: Ghost::unknown(),
+        }
     }
 
     /// Shorthand for a combination of [new_unchecked] and [check_len].
@@ -219,7 +278,7 @@ impl<T: AsRef<[u8]>> NdiscOption<T> {
         Type::from(data[field::TYPE])
     }
 
-    /// Return the length of the data.
+    /// Read the length octet, with no claim about the ghost.
     #[flux_rs::trusted(no, reason = "panic site: reads the option header at a fixed offset")]
     #[flux_rs::sig(
         fn(&NdiscOption<T>[@p]) -> u8
@@ -227,9 +286,30 @@ impl<T: AsRef<[u8]>> NdiscOption<T> {
     )]
     #[flux_rs::no_panic]
     #[inline]
-    pub fn data_len(&self) -> u8 {
+    fn data_len_octet(&self) -> u8 {
         let data = self.buffer.as_ref();
         data[field::LENGTH]
+    }
+
+    /// Return the length of the data.
+    ///
+    /// The anchor for the ghost field: the return type *claims* the octet at offset 1 is `len`.
+    /// Nothing proves that -- the buffer's contents are not in the refinement -- so it is the
+    /// assumption [`data_mut`](Self::data_mut)'s bound rests on, and it is kept true by
+    /// [`set_data_len`](Self::set_data_len), the only thing that writes this octet, which
+    /// updates the ghost in the same step.
+    ///
+    /// The read itself stays checked: the trusted body is a call and an index expression it does
+    /// not contain. All this assumes is the equality, which is the part Flux cannot see.
+    #[flux_rs::trusted(yes, reason = "anchors the `len` ghost to the octet at offset 1")]
+    #[flux_rs::sig(
+        fn(&NdiscOption<T>[@p]) -> u8[p.len]
+        requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
+    #[inline]
+    pub fn data_len(&self) -> u8 {
+        self.data_len_octet()
     }
 }
 
@@ -353,16 +433,23 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
     }
 
     /// Set the option data length.
+    ///
+    /// Writes the ghost as well as the octet. This is the whole of what keeps
+    /// [`data_len`](Self::data_len)'s claim true, so the two must not drift apart: `&strg`
+    /// rather than `&mut` because a `&mut T{v: ..}` weakening does not compose through a call
+    /// chain, and [`data_mut`](Self::data_mut) needs the new value to survive into it.
     #[flux_rs::trusted(no, reason = "panic site: writes the option header at a fixed offset")]
     #[flux_rs::sig(
-        fn(&mut NdiscOption<T>[@p], u8)
+        fn(self: &strg NdiscOption<T>[@p], value: u8)
         requires 2 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        ensures self: NdiscOption<T>[p.buffer, value]
     )]
     #[flux_rs::no_panic]
     #[inline]
     pub fn set_data_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         data[field::LENGTH] = value;
+        self.len = Ghost::new(value);
     }
 }
 
@@ -518,19 +605,25 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
 
 impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
     /// Return a mutable pointer to the option data.
-    //
-    // OBLIGATION STOPS HERE. The bound this needs is `data_len() * 8 <= n`, a property of the
-    // buffer's *contents*. `NdiscOption` carries no mirror of the length octet -- the way
-    // `icmpv6::Packet` mirrors its type octet in `ty` -- so the bound is not expressible, and
-    // this `trusted(yes)` therefore *erases* the obligation rather than passing it up. Adding a
-    // `#[flux_rs::field(u8[len])] len: u8` mirror (set by `new_unchecked`/`set_data_len`) is
-    // what would make it statable; that changes `new_unchecked`, which is `pub const fn`.
+    ///
+    /// The data spans `2..data_len() * 8`, so the bound is a property of the length octet. The
+    /// `len` ghost names that octet, which is what makes `1 <= p.len` (the range is non-empty)
+    /// and `p.len * 8 <= n` (it fits) statable at all.
     #[flux_rs::trusted(yes, reason = "needs a data_len mirror field to state data_len()*8 <= n")]
+    #[flux_rs::sig(
+        fn(self: &mut NdiscOption<T>[@p]) -> &mut [u8]
+        requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+              && 1 <= p.len
+              && p.len * 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
     #[inline]
     pub fn data_mut(&mut self) -> &mut [u8] {
         let len = self.data_len();
         let data = self.buffer.as_mut();
-        &mut data[field::DATA(len)]
+        // field::DATA(len) (2..len * 8) spelled as arithmetic: a `const fn` returning a
+        // `Range<usize>` is opaque to Flux, so `r.start <= r.end` is unprovable however well the
+        // length is known.
+        &mut data[2..len as usize * 8]
     }
 
     /// Return the Redirected Header option's contained IP packet as a length-carrying buffer.
@@ -713,7 +806,9 @@ impl<'a> Repr<'a> {
     /// `emit_redirected_header`, `emit_unknown` and `data_mut` for what is still owed.
     #[flux_rs::trusted(no, reason = "carries the option buffer bound to the setters")]
     #[flux_rs::sig(
-        fn(&Repr, opt: &mut NdiscOption<T>{v: 48 <= <T as AsMut<[u8]>>::as_mut_reft(v.buffer)})
+        fn(&Repr, opt: &strg NdiscOption<T>[@p])
+        requires 48 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        ensures opt: NdiscOption<T>{v: v.buffer == p.buffer}
     )]
     pub fn emit<T>(&self, opt: &mut NdiscOption<T>)
     where
@@ -779,8 +874,9 @@ addr.len() <= MAX_HARDWARE_ADDRESS_LEN is unstatable and div_ceil's overflow che
 // The bound is `emit`'s 48 rather than the 10 this body needs: `&mut` is invariant in Flux,
 // so a weaker bound here would leave `emit` unable to re-establish its own on return.
 #[flux_rs::sig(
-    fn(opt: &mut NdiscOption<T>{v: 48 <= <T as AsMut<[u8]>>::as_mut_reft(v.buffer)},
-       Type, RawHardwareAddress)
+    fn(opt: &strg NdiscOption<T>[@p], Type, RawHardwareAddress)
+    requires 48 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    ensures opt: NdiscOption<T>{v: v.buffer == p.buffer}
 )]
 fn emit_link_layer_addr<T>(opt: &mut NdiscOption<T>, ty: Type, addr: RawHardwareAddress)
 where
@@ -805,8 +901,9 @@ where
 the mismatch is moreover reachable -- see the doc comment")]
 // Stated at `emit`'s 48 for the invariance reason noted on `emit_link_layer_addr`.
 #[flux_rs::sig(
-    fn(opt: &mut NdiscOption<T>{v: 48 <= <T as AsMut<[u8]>>::as_mut_reft(v.buffer)},
-       u8, u8, &[u8])
+    fn(opt: &strg NdiscOption<T>[@p], u8, length: u8, &[u8])
+    requires 48 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    ensures opt: NdiscOption<T>[p.buffer, length]
 )]
 fn emit_unknown<T>(opt: &mut NdiscOption<T>, id: u8, length: u8, data: &[u8])
 where
@@ -833,8 +930,9 @@ where
 /// [`Repr`] refined by its `buffer_len()` in the way `icmpv6::Repr` is refined by `blen`.
 #[flux_rs::trusted(no, reason = "panic site: the contained IPv6 packet")]
 #[flux_rs::sig(
-    fn(opt: &mut NdiscOption<T>{v: 48 <= <T as AsMut<[u8]>>::as_mut_reft(v.buffer)},
-       Ipv6Repr, &[u8])
+    fn(opt: &strg NdiscOption<T>[@p], Ipv6Repr, &[u8])
+    requires 48 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    ensures opt: NdiscOption<T>{v: v.buffer == p.buffer}
 )]
 fn emit_redirected_header<T>(opt: &mut NdiscOption<T>, header: Ipv6Repr, data: &[u8])
 where
@@ -921,6 +1019,15 @@ mod test {
         0x00, 0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x01,
     ];
+
+    #[test]
+    fn ghost_field_is_not_observable() {
+        let bytes = [0u8; 8];
+        let opt = NdiscOption::new_unchecked(&bytes[..]);
+        let s = format!("{opt:?}");
+        assert!(!s.contains("Ghost"), "ghost leaked into Debug: {s}");
+        assert!(s.starts_with("NdiscOption { buffer: "), "Debug shape changed: {s}");
+    }
 
     #[test]
     fn test_deconstruct() {
