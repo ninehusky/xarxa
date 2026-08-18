@@ -1,5 +1,7 @@
 #![allow(unused)]
 
+use core::fmt;
+
 use super::IpProtocol;
 use super::{Error, Result};
 
@@ -22,20 +24,98 @@ mod field {
     }
 }
 
+/// A ghost field: carries an integer in the refinement and nothing at runtime.
+///
+/// The payload window is `2..(length * 8 + 8)`, where `length` is the octet at offset 1 --
+/// buffer *contents*, which are not in the refinement, so no accessor's bound can mention it.
+/// This is the way to name it anyway. `Header` holds one of these, and because the struct is a
+/// ZST it costs no space and `Header<T>`'s layout is unchanged.
+///
+/// The value is anchored by [`Header::header_len`], the trusted getter that claims the octet
+/// equals the ghost. Everything else is proved.
+#[flux_rs::opaque]
+#[flux_rs::refined_by(val: int)]
+#[flux_rs::invariant(0 <= val && val <= 255)]
+#[derive(PartialEq, Eq, Clone, Copy)]
+struct Ghost;
+
+impl Ghost {
+    /// A ghost whose value is unconstrained.
+    ///
+    /// The bound is the `u8` range and nothing more, which is all a buffer nobody has written
+    /// or checked supports.
+    #[flux_rs::trusted(yes, reason = "opaque: the ghost carries no runtime value")]
+    #[flux_rs::sig(fn() -> Ghost{v: 0 <= v && v <= 255})]
+    #[flux_rs::no_panic]
+    const fn unknown() -> Ghost {
+        Ghost
+    }
+
+    /// A ghost pinned to `val`.
+    #[flux_rs::trusted(yes, reason = "opaque: establishes the ghost value")]
+    #[flux_rs::sig(fn(val: u8) -> Ghost[val])]
+    #[flux_rs::no_panic]
+    const fn new(_val: u8) -> Ghost {
+        Ghost
+    }
+}
+
 /// A read/write wrapper around an IPv6 Extension Header buffer.
-#[derive(Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[flux_rs::refined_by(buffer: T)]
+///
+/// # Why the ghost is sound
+///
+/// [`header_len`](Header::header_len) claims the octet at offset 1 equals `hlen`. That claim
+/// survives because every way the octet or the ghost can change keeps the two together, by
+/// enumeration over this file:
+///
+/// * `new_unchecked` is the only `Header { .. }` literal, and it leaves the ghost unconstrained,
+///   so it claims nothing about a buffer it has not read.
+/// * `set_header_len` is the only writer of offset 1, and it assigns the ghost in the same body.
+/// * `set_next_header` writes offset 0 only; `payload`/`payload_mut` hand out a window starting
+///   at offset 2, so neither can reach offset 1 through the returned slice.
+/// * `into_inner` consumes the header, and there is no `AsMut for Header<T>`, so the buffer is
+///   not otherwise reachable.
+#[derive(PartialEq, Eq)]
+#[flux_rs::refined_by(buffer: T, hlen: int)]
+#[flux_rs::invariant(0 <= hlen && hlen <= 255)]
 pub struct Header<T: AsRef<[u8]>> {
     #[flux_rs::field(T[buffer])]
     buffer: T,
+    #[flux_rs::field(Ghost[hlen])]
+    ghlen: Ghost,
+}
+
+// Written out rather than derived so the ghost stays out of the output: a derive would print
+// `Header { buffer: .., ghlen: Ghost }`, and the ghost is not supposed to be observable. Both
+// impls reproduce the derived form for the one field that existed before.
+impl<T: AsRef<[u8]> + fmt::Debug> fmt::Debug for Header<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Header")
+            .field("buffer", &self.buffer)
+            .finish()
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl<T: AsRef<[u8]> + defmt::Format> defmt::Format for Header<T> {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "Header {{ buffer: {} }}", self.buffer)
+    }
 }
 
 /// Core getter methods relevant to any IPv6 extension header.
 impl<T: AsRef<[u8]>> Header<T> {
     /// Create a raw octet buffer with an IPv6 Extension Header structure.
+    ///
+    /// The ghost starts unconstrained: this reads nothing, so it learns nothing. It is pinned to
+    /// the length octet the first time [`header_len`](Self::header_len) is called.
+    #[flux_rs::sig(fn(T[@b]) -> Header<T>{h: h.buffer == b})]
+    #[flux_rs::no_panic]
     pub const fn new_unchecked(buffer: T) -> Self {
-        Header { buffer }
+        Header {
+            buffer,
+            ghlen: Ghost::unknown(),
+        }
     }
 
     /// Shorthand for a combination of [new_unchecked] and [check_len].
@@ -71,12 +151,9 @@ impl<T: AsRef<[u8]>> Header<T> {
     /// for it. Returning the length lets the `Ok` arm say what the four fixed-offset accessors
     /// below want: what the buffer's length is, and that it reaches the end of the fixed header.
     ///
-    /// Only the *first* of the two tests is stated. The second, `len >= PAYLOAD(data[1]).end`,
-    /// compares the length against a window whose extent comes from the buffer's *contents* --
-    /// the length octet -- which are not in the refinement, so it is unstatable here. It would
-    /// take a ghost field as in `arp`, `udp` and `tcp`; the two accessors that would consume it,
-    /// `payload` and `payload_mut`, are at reference self types and could not name it either
-    /// way, so there is nothing yet for a ghost to prove.
+    /// Both of its tests are stated. The second compares the length against the payload window,
+    /// whose extent comes from the buffer's *contents*; it is nameable only because the ghost
+    /// carries the length octet, and it is exactly `payload_mut`'s second precondition.
     ///
     /// Nothing consumes the returned length yet: `new_checked`'s caller
     /// (`iface/interface/ipv6.rs`) instantiates `T` at a reference type, which flux gives the
@@ -85,19 +162,22 @@ impl<T: AsRef<[u8]>> Header<T> {
     #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
     #[flux_rs::sig(
         fn(self: &Header<T>[@h])
-            -> Result<usize{v: v == <T as AsRef<[u8]>>::as_ref_reft(h.buffer) && 8 <= v}>
+            -> Result<usize{v: v == <T as AsRef<[u8]>>::as_ref_reft(h.buffer)
+                            && 8 <= v
+                            && h.hlen * 8 + 8 <= v}>
     )]
     #[flux_rs::no_panic]
     fn checked_len(&self) -> Result<usize> {
-        let data = self.buffer.as_ref();
-
-        let len = data.len();
+        let len = self.buffer.as_ref().len();
         if len < field::MIN_HEADER_SIZE {
             return Err(Error);
         }
 
-        let of = field::PAYLOAD(data[field::LENGTH]);
-        if len < of.end {
+        // `field::PAYLOAD(self.header_len()).end`, written out: flux cannot see through the
+        // `Field` (`Range`) const. Same value, and reading the octet through `header_len` is
+        // what ties the test to the ghost.
+        let end = self.header_len() as usize * 8 + 8;
+        if len < end {
             return Err(Error);
         }
 
@@ -110,8 +190,6 @@ impl<T: AsRef<[u8]>> Header<T> {
     }
 
     /// Return the next header field.
-    // Literal offsets rather than `field::NXT_HDR`/`field::LENGTH`: flux cannot see through the
-    // consts, so the bound has to be written out. Same throughout this file.
     //
     // Body stays bounds-checked. The `requires` states the bound, but it cannot be discharged
     // unchecked yet: the only in-crate caller is `Repr::parse` below, which is over
@@ -131,13 +209,29 @@ impl<T: AsRef<[u8]>> Header<T> {
     }
 
     /// Return the header length field.
+    ///
+    /// The ghost's anchor. `trusted(yes)` claims exactly one thing -- that the octet at offset 1
+    /// *is* the ghost value -- which flux cannot see, because it does not track buffer contents.
+    /// It assumes no index: the body is a bare call to [`header_len_field`](Self::header_len_field),
+    /// which is checked and discharges the read's bound itself.
+    #[flux_rs::trusted(yes, reason = "anchors the ghost: the length octet is the ghost value")]
+    #[flux_rs::sig(
+        fn(&Header<T>[@h]) -> u8[h.hlen]
+        requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
+    pub fn header_len(&self) -> u8 {
+        self.header_len_field()
+    }
+
+    /// The raw length octet, with its read bounds-checked and proved.
     #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
     #[flux_rs::sig(
         fn(&Header<T>[@h]) -> u8
         requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(h.buffer)
     )]
     #[flux_rs::no_panic]
-    pub fn header_len(&self) -> u8 {
+    fn header_len_field(&self) -> u8 {
         let data = self.buffer.as_ref();
         data[field::LENGTH]
     }
@@ -149,9 +243,10 @@ impl<'h, T: AsRef<[u8]> + ?Sized> Header<&'h T> {
     // Left bounds-checked, and doubly blocked. The buffer here is `&'h T`, so the length index
     // would have to come from core's blanket `impl<T, U> AsRef<U> for &T`, which carries no
     // associated refinement (`as_ref_reft` is missing) -- the bound is unstatable at this self
-    // type. Even at a refinable self type the window is `2..(data[1] * 8 + 8)`, whose extent is
-    // a property of the buffer's *contents*; that part would need a ghost field as in `arp`,
-    // `udp` and `tcp`. Convertible once a reference self type can be refined; see `wire::Buf`.
+    // type -- and the ghost cannot stand in for it, because the ghost bounds the window's
+    // extent while it is `as_ref_reft` that bounds the buffer. `payload_mut` below is the same
+    // window at a refinable self type. Convertible once a reference self type can be refined;
+    // see `wire::Buf`.
     pub fn payload(&self) -> &'h [u8] {
         let data = self.buffer.as_ref();
         &data[field::PAYLOAD(data[field::LENGTH])]
@@ -180,30 +275,51 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     /// in 8-octet units, not including the first 8 octets.
     ///
     /// The `requires` is an exposed obligation; see [`set_next_header`](Self::set_next_header).
+    ///
+    /// Writes the ghost as well as the octet. This is the whole of what keeps
+    /// [`header_len`](Self::header_len)'s claim true, so the two must not drift apart. `&strg`
+    /// rather than `&mut` because a `&mut T{v: ..}` weakening does not compose through a call
+    /// chain, and a caller needs the new value to survive into `payload_mut` after it.
     #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
     #[flux_rs::sig(
-        fn(self: &mut Header<T>[@h], value: u8)
+        fn(self: &strg Header<T>[@h], value: u8)
         requires 2 <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+        ensures self: Header<T>[h.buffer, value]
     )]
     #[flux_rs::no_panic]
     #[inline]
     pub fn set_header_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         data[field::LENGTH] = value;
+        self.ghlen = Ghost::new(value);
     }
-}
 
-impl<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> Header<&mut T> {
     /// Return a mutable pointer to the payload data.
-    //
-    // Left bounds-checked, blocked the same two ways as `payload` above: `&mut T` gets the unit
-    // sort so `as_mut_reft` is unnameable, and the window's extent is a property of the buffer's
-    // contents. See `wire::Buf`.
+    ///
+    /// Moved here from an `impl Header<&mut T>`: at a reference self type the length index would
+    /// have to come from core's blanket `AsMut for &mut T`, which carries no associated
+    /// refinement, so the bound could not be stated at all. `Header<&mut U>` still reaches this
+    /// method, since `&mut U: AsRef<[u8]> + AsMut<[u8]>`, and the returned borrow is tied to
+    /// `&mut self` exactly as before.
+    ///
+    /// `2 <= as_ref_reft` is what [`header_len`](Self::header_len) needs; the second conjunct is
+    /// the window. Both are *exposed* obligations: this is `pub`, so a consumer outside the
+    /// crate owes them and is assumed to have been checked for them. The body keeps its bounds
+    /// check, so an unchecked consumer still gets the panic.
+    #[flux_rs::trusted(no, reason = "panic site: opens the payload window at the header length")]
+    #[flux_rs::sig(
+        fn(self: &mut Header<T>[@h]) -> &mut [u8]
+        requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(h.buffer)
+              && h.hlen * 8 + 8 <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn payload_mut(&mut self) -> &mut [u8] {
+        // Literal bounds rather than `field::PAYLOAD(len)`: flux cannot see through the `Field`
+        // (`Range`) const, so the window has to be written out. Same value.
+        let len = self.header_len() as usize;
         let data = self.buffer.as_mut();
-        let len = data[field::LENGTH];
-        &mut data[field::PAYLOAD(len)]
+        &mut data[2..(len * 8 + 8)] // field::PAYLOAD(len)
     }
 }
 
@@ -281,6 +397,25 @@ mod test {
         // length field value greater than number of bytes
         let header: [u8; 8] = [0x06, 0x2, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0];
         assert_eq!(Err(Error), Header::new_unchecked(&header).check_len());
+    }
+
+    #[test]
+    fn ghost_field_is_not_observable() {
+        let header = Header::new_unchecked(&REPR_PACKET_PAD4[..]);
+        let s = format!("{header:?}");
+        assert!(!s.contains("Ghost"), "ghost leaked into Debug: {s}");
+        assert!(s.starts_with("Header { buffer: "), "Debug shape changed: {s}");
+    }
+
+    /// Pins the one writer the ghost's soundness argument rests on: `set_header_len` is the only
+    /// path that changes the octet at offset 1, and `set_next_header` must leave it alone.
+    #[test]
+    fn set_next_header_preserves_header_len() {
+        let mut bytes = REPR_PACKET_PAD12;
+        let mut header = Header::new_unchecked(&mut bytes[..]);
+        header.set_header_len(1);
+        header.set_next_header(IpProtocol::Udp);
+        assert_eq!(header.header_len(), 1);
     }
 
     #[test]
