@@ -1,13 +1,15 @@
 // See https://tools.ietf.org/html/rfc2131 for the DHCP specification.
 
 use bitflags::bitflags;
-use byteorder::{ByteOrder, NetworkEndian};
 use core::iter;
 use heapless::Vec;
 
 use super::{Error, Result};
 use crate::wire::arp::Hardware;
-use crate::wire::{EthernetAddress, Ipv4Address};
+use crate::wire::{
+    EthernetAddress, Ipv4Address, copy_window_at, read_u16_at, read_u32_at, sub, write_octets4_at,
+    write_u16_at, write_u32_at,
+};
 
 pub const SERVER_PORT: u16 = 67;
 pub const CLIENT_PORT: u16 = 68;
@@ -113,8 +115,64 @@ pub struct DhcpOption<'a> {
 /// A read/write wrapper around a Dynamic Host Configuration Protocol packet buffer.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(buffer: T)]
 pub struct Packet<T: AsRef<[u8]>> {
+    #[flux_rs::field(T[buffer])]
     buffer: T,
+}
+
+/// Read the four-octet IPv4 address at `at`.
+///
+/// The equal-length `copy_from_slice` stands in for `try_into().unwrap()`, which flux cannot
+/// prove -- it does not model `TryInto<[u8; 4]> for &[u8]`. Both panic on a length mismatch and
+/// `at + 4 <= n` rules both out, so the check is gated rather than removed.
+#[flux_rs::trusted(no, reason = "panic site: copy_from_slice equal-length")]
+#[flux_rs::sig(fn(&[u8][@n], at: usize) -> Ipv4Address requires at + 4 <= n)]
+#[flux_rs::no_panic]
+fn read_ipv4_at(data: &[u8], at: usize) -> Ipv4Address {
+    let mut octets = [0; 4];
+    octets.copy_from_slice(sub(data, at, 4));
+    Ipv4Address::from_octets(octets)
+}
+
+/// The seven octets of an `OPT_CLIENT_ID` option: hardware type, then the address.
+///
+/// Lifted out of [`Repr::emit`] so that it is checked. `Repr::emit` takes a `Packet<&mut T>`,
+/// whose `&mut T` flux gives the unit sort, so its whole body aborts with
+/// `associated refinement 'as_mut_reft' is missing` and every obligation inside it stops being
+/// reported. This one has nothing to do with the packet buffer -- it is a seven-octet local --
+/// so moving it here puts it back in front of the checker.
+///
+/// No `no_panic`: `data[0] = ..` goes through core's `IndexMut for [T; N]`, which carries no
+/// panic-freedom spec, so the claim would fail on an annotation gap rather than on this body.
+#[flux_rs::trusted(no, reason = "panic site: copy_from_slice equal-length")]
+#[flux_rs::sig(fn(&EthernetAddress) -> [u8; 7])]
+fn client_id_octets(addr: &EthernetAddress) -> [u8; 7] {
+    let mut data = [0; 7];
+    data[0] = u16::from(Hardware::Ethernet) as u8;
+    data[1..].copy_from_slice(addr.as_bytes());
+    data
+}
+
+/// The DNS-server option's octets, and how many of them are filled.
+///
+/// Lifted out of [`Repr::emit`] for the reason given on [`client_id_octets`]. Unlike that one
+/// this does not verify: `i` comes from `enumerate` over a `heapless::Vec`, and flux relates it
+/// neither to the vector's length nor to its capacity, so `(i + 1) * 4 <= 12` is not provable.
+/// It is left here erroring rather than left inside `Repr::emit` erroring silently.
+#[flux_rs::trusted(no, reason = "panic site: writes a window per element")]
+fn dns_server_octets(servers: &Vec<Ipv4Address, MAX_DNS_SERVER_COUNT>) -> ([u8; 12], usize) {
+    const IP_SIZE: usize = core::mem::size_of::<u32>();
+    let mut octets = [0; MAX_DNS_SERVER_COUNT * IP_SIZE];
+    let len = servers
+        .iter()
+        .enumerate()
+        .inspect(|(i, ip)| {
+            octets[(i * IP_SIZE)..((i + 1) * IP_SIZE)].copy_from_slice(&ip.octets());
+        })
+        .count()
+        * IP_SIZE;
+    (octets, len)
 }
 
 pub(crate) mod field {
@@ -249,14 +307,44 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Ensure that no accessor method will panic if called.
     /// Returns `Err(Error)` if the buffer is too short.
-    ///
-    /// [set_header_len]: #method.set_header_len
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(fn(self: &Packet<T>[@p]) -> Result<()>)]
+    #[flux_rs::no_panic]
     pub fn check_len(&self) -> Result<()> {
+        match self.checked_len() {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// [`check_len`](Self::check_len), returning the buffer length it validated.
+    ///
+    /// The whole of `check_len`; the public method just discards the length. `Result<()>`'s `Ok`
+    /// payload carries no refinement, so a successful check leaves a caller with nothing to show
+    /// for it. Returning the length lets the `Ok` arm say the two things the accessors below
+    /// want: what the buffer's length is, and that it reaches the end of the fixed header.
+    ///
+    /// Nothing consumes that yet. `new_checked`'s callers -- `Repr::parse` below and
+    /// `socket/dhcpv4.rs` -- instantiate `T` at a reference type, which flux gives the unit
+    /// sort, so none of them can name `as_ref_reft` at all. Worth wiring through the moment a
+    /// reference self type can be refined; see `wire::Buf`.
+    ///
+    /// Every field in this packet is at a fixed offset and `OPTIONS` is open-ended (`240..`), so
+    /// this single test is the whole precondition of the file -- there is no window whose extent
+    /// depends on buffer *contents*, and hence no ghost field as in `arp`, `udp` and `tcp`.
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(
+        fn(self: &Packet<T>[@p])
+            -> Result<usize{v: v == <T as AsRef<[u8]>>::as_ref_reft(p.buffer) && 240 <= v}>
+    )]
+    #[flux_rs::no_panic]
+    fn checked_len(&self) -> Result<usize> {
         let len = self.buffer.as_ref().len();
-        if len < field::MAGIC_NUMBER.end {
+        if len < 240 {
+            // field::MAGIC_NUMBER.end
             Err(Error)
         } else {
-            Ok(())
+            Ok(len)
         }
     }
 
@@ -266,20 +354,31 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Returns the operation code of this packet.
+    // Literal offsets rather than `field::OP`: flux cannot see through the `Field` (`Range`)
+    // const, so the bound has to be written out. Same throughout this impl.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> OpCode requires 1 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn opcode(&self) -> OpCode {
         let data = self.buffer.as_ref();
-        OpCode::from(data[field::OP])
+        OpCode::from(data[0]) // field::OP
     }
 
     /// Returns the hardware protocol type (e.g. ethernet).
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> Hardware requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn hardware_type(&self) -> Hardware {
         let data = self.buffer.as_ref();
-        Hardware::from(u16::from(data[field::HTYPE]))
+        Hardware::from(u16::from(data[1])) // field::HTYPE
     }
 
     /// Returns the length of a hardware address in bytes (e.g. 6 for ethernet).
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u8 requires 3 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn hardware_len(&self) -> u8 {
-        self.buffer.as_ref()[field::HLEN]
+        self.buffer.as_ref()[2] // field::HLEN
     }
 
     /// Returns the transaction ID.
@@ -287,42 +386,57 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// The transaction ID (called `xid` in the specification) is a random number used to
     /// associate messages and responses between client and server. The number is chosen by
     /// the client.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u32 requires 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn transaction_id(&self) -> u32 {
-        let field = &self.buffer.as_ref()[field::XID];
-        NetworkEndian::read_u32(field)
+        let data = self.buffer.as_ref();
+        read_u32_at(data, 4) // field::XID
     }
 
     /// Returns the hardware address of the client (called `chaddr` in the specification).
     ///
     /// Only ethernet is supported by `xarxa`, so this functions returns
     /// an `EthernetAddress`.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> EthernetAddress requires 34 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn client_hardware_address(&self) -> EthernetAddress {
-        let field = &self.buffer.as_ref()[field::CHADDR];
-        EthernetAddress::from_bytes(field)
+        let data = self.buffer.as_ref();
+        EthernetAddress::from_bytes(sub(data, 28, 6)) // field::CHADDR
     }
 
     /// Returns the value of the `hops` field.
     ///
     /// The `hops` field is set to zero by clients and optionally used by relay agents.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u8 requires 4 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn hops(&self) -> u8 {
-        self.buffer.as_ref()[field::HOPS]
+        self.buffer.as_ref()[3] // field::HOPS
     }
 
     /// Returns the value of the `secs` field.
     ///
     /// The secs field is filled by clients and describes the number of seconds elapsed
     /// since client began process.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u16 requires 10 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn secs(&self) -> u16 {
-        let field = &self.buffer.as_ref()[field::SECS];
-        NetworkEndian::read_u16(field)
+        let data = self.buffer.as_ref();
+        read_u16_at(data, 8) // field::SECS
     }
 
     /// Returns the value of the `magic cookie` field in the DHCP options.
     ///
     /// This field should be always be `0x63825363`.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u32 requires 240 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn magic_number(&self) -> u32 {
-        let field = &self.buffer.as_ref()[field::MAGIC_NUMBER];
-        NetworkEndian::read_u32(field)
+        let data = self.buffer.as_ref();
+        read_u32_at(data, 236) // field::MAGIC_NUMBER
     }
 
     /// Returns the Ipv4 address of the client, zero if not set.
@@ -330,38 +444,67 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// This corresponds to the `ciaddr` field in the DHCP specification. According to it,
     /// this field is “only filled in if client is in `BOUND`, `RENEW` or `REBINDING` state
     /// and can respond to ARP requests”.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> Ipv4Address requires 16 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn client_ip(&self) -> Ipv4Address {
-        let field = &self.buffer.as_ref()[field::CIADDR];
-        Ipv4Address::from_octets(field.try_into().unwrap())
+        let data = self.buffer.as_ref();
+        read_ipv4_at(data, 12) // field::CIADDR
     }
 
     /// Returns the value of the `yiaddr` field, zero if not set.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> Ipv4Address requires 20 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn your_ip(&self) -> Ipv4Address {
-        let field = &self.buffer.as_ref()[field::YIADDR];
-        Ipv4Address::from_octets(field.try_into().unwrap())
+        let data = self.buffer.as_ref();
+        read_ipv4_at(data, 16) // field::YIADDR
     }
 
     /// Returns the value of the `siaddr` field, zero if not set.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> Ipv4Address requires 24 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn server_ip(&self) -> Ipv4Address {
-        let field = &self.buffer.as_ref()[field::SIADDR];
-        Ipv4Address::from_octets(field.try_into().unwrap())
+        let data = self.buffer.as_ref();
+        read_ipv4_at(data, 20) // field::SIADDR
     }
 
     /// Returns the value of the `giaddr` field, zero if not set.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> Ipv4Address requires 28 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn relay_agent_ip(&self) -> Ipv4Address {
-        let field = &self.buffer.as_ref()[field::GIADDR];
-        Ipv4Address::from_octets(field.try_into().unwrap())
+        let data = self.buffer.as_ref();
+        read_ipv4_at(data, 24) // field::GIADDR
     }
 
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> Flags requires 12 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn flags(&self) -> Flags {
-        let field = &self.buffer.as_ref()[field::FLAGS];
-        Flags::from_bits_truncate(NetworkEndian::read_u16(field))
+        let data = self.buffer.as_ref();
+        Flags::from_bits_truncate(read_u16_at(data, 10)) // field::FLAGS
     }
 
     /// Return an iterator over the options.
+    ///
+    /// The `240 <= len` bound proves the window this opens on. The walk *inside* the closure is
+    /// not proved: `buf` is reassigned to `&buf[..]` sub-slices, and a returned `&` loses its
+    /// length index (flux-rs/flux#1714), so after the first step `buf`'s length is unknown and
+    /// its own `buf.len() < 2 + len` guards cannot be connected to the slicing. Refining the
+    /// walk belongs with `DhcpOptionWriter`, which has the same shape on the write side.
+    ///
+    /// The signature's return type drops both lifetimes. Writing them, as
+    /// `impl Iterator<Item = DhcpOption<'_>> + '_`, is a `syntax error` -- flux's sig grammar
+    /// has no production for a lifetime there -- and the `_` placeholder ICEs the checker
+    /// (`struct_compat.rs:536`, index `usize::MAX`). The elided form parses and checks.
+    #[flux_rs::trusted(no, reason = "panic site: opens the options window at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> impl Iterator<Item = DhcpOption>
+                   requires 240 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
     #[inline]
     pub fn options(&self) -> impl Iterator<Item = DhcpOption<'_>> + '_ {
-        let mut buf = &self.buffer.as_ref()[field::OPTIONS];
+        let mut buf = &self.buffer.as_ref()[240..]; // field::OPTIONS
         iter::from_fn(move || {
             loop {
                 match buf.first().copied() {
@@ -395,8 +538,15 @@ impl<T: AsRef<[u8]>> Packet<T> {
         })
     }
 
+    /// The `108 <= len` bound proves the window. `&data[..len]` is not proved: flux-core specs
+    /// `<slice::Iter as Iterator>::position` as returning an index below the slice's length, but
+    /// that refinement does not reach the call site here -- binding the iterator and matching the
+    /// `Option` instead of `ok_or(..)?` was tried and changes nothing -- so the truncation to the
+    /// first NUL keeps its bounds check.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> Result<&str> requires 108 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
     pub fn get_sname(&self) -> Result<&str> {
-        let data = &self.buffer.as_ref()[field::SNAME];
+        let data = sub(self.buffer.as_ref(), 34, 74); // field::SNAME
         let len = data.iter().position(|&x| x == 0).ok_or(Error)?;
         if len == 0 {
             return Err(Error);
@@ -406,8 +556,12 @@ impl<T: AsRef<[u8]>> Packet<T> {
         Ok(data)
     }
 
+    /// The `236 <= len` bound proves the window; `&data[..len]` is not, for the reason given on
+    /// [`get_sname`](Self::get_sname).
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> Result<&str> requires 236 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
     pub fn get_boot_file(&self) -> Result<&str> {
-        let data = &self.buffer.as_ref()[field::FILE];
+        let data = sub(self.buffer.as_ref(), 108, 128); // field::FILE
         let len = data.iter().position(|&x| x == 0).ok_or(Error)?;
         if len == 0 {
             return Err(Error);
@@ -423,35 +577,56 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// The fields are not commonly used, so we set their value always to zero. **This method
     /// must be called when creating a packet, otherwise the emitted values for these fields
     /// are undefined!**
+    // Literal offsets rather than the `field::X` (`Range`) consts: flux cannot see through
+    // them, so the bounds have to be written out. Same throughout this impl.
+    //
+    // No `no_panic`: the two indices are proved, but flux-core specs `slice::Iter` and not
+    // `slice::IterMut`, so `<IterMut as Iterator>::next` counts as might-panic. That is a
+    // missing core spec, not a reachable panic.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p]) requires 236 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
     pub fn set_sname_and_boot_file_to_zero(&mut self) {
         let data = self.buffer.as_mut();
-        for byte in &mut data[field::SNAME] {
+        // field::SNAME
+        for byte in &mut data[34..108] {
             *byte = 0;
         }
-        for byte in &mut data[field::FILE] {
+        // field::FILE
+        for byte in &mut data[108..236] {
             *byte = 0;
         }
     }
 
     /// Sets the `OpCode` for the packet.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: OpCode) requires 1 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn set_opcode(&mut self, value: OpCode) {
         let data = self.buffer.as_mut();
-        data[field::OP] = value.into();
+        data[0] = value.into(); // field::OP
     }
 
     /// Sets the hardware address type (only ethernet is supported).
+    ///
+    /// The `number <= u8::MAX` assert stays: it guards a *value*, not an index, and nothing
+    /// in the caller's bound rules it out.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: Hardware) requires 2 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
     pub fn set_hardware_type(&mut self, value: Hardware) {
         let data = self.buffer.as_mut();
         let number: u16 = value.into();
         assert!(number <= u16::from(u8::MAX)); // TODO: Replace with TryFrom when it's stable
-        data[field::HTYPE] = number as u8;
+        data[1] = number as u8; // field::HTYPE
     }
 
     /// Sets the hardware address length.
     ///
     /// Only ethernet is supported, so this field should be set to the value `6`.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: u8) requires 3 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn set_hardware_len(&mut self, value: u8) {
-        self.buffer.as_mut()[field::HLEN] = value;
+        self.buffer.as_mut()[2] = value; // field::HLEN
     }
 
     /// Sets the transaction ID.
@@ -459,41 +634,58 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// The transaction ID (called `xid` in the specification) is a random number used to
     /// associate messages and responses between client and server. The number is chosen by
     /// the client.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: u32) requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn set_transaction_id(&mut self, value: u32) {
-        let field = &mut self.buffer.as_mut()[field::XID];
-        NetworkEndian::write_u32(field, value)
+        let data = self.buffer.as_mut();
+        write_u32_at(data, 4, value) // field::XID
     }
 
     /// Sets the ethernet address of the client.
     ///
     /// Sets the `chaddr` field.
+    ///
+    /// No `no_panic`: `copy_window_at` deliberately keeps `copy_from_slice`'s equal-length
+    /// assert, so it is not panic-free and neither is this.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: EthernetAddress) requires 34 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
     pub fn set_client_hardware_address(&mut self, value: EthernetAddress) {
-        let field = &mut self.buffer.as_mut()[field::CHADDR];
-        field.copy_from_slice(value.as_bytes());
+        let data = self.buffer.as_mut();
+        copy_window_at(data, 28, 6, value.as_bytes()) // field::CHADDR
     }
 
     /// Sets the hops field.
     ///
     /// The `hops` field is set to zero by clients and optionally used by relay agents.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: u8) requires 4 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn set_hops(&mut self, value: u8) {
-        self.buffer.as_mut()[field::HOPS] = value;
+        self.buffer.as_mut()[3] = value; // field::HOPS
     }
 
     /// Sets the `secs` field.
     ///
     /// The secs field is filled by clients and describes the number of seconds elapsed
     /// since client began process.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: u16) requires 10 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn set_secs(&mut self, value: u16) {
-        let field = &mut self.buffer.as_mut()[field::SECS];
-        NetworkEndian::write_u16(field, value);
+        let data = self.buffer.as_mut();
+        write_u16_at(data, 8, value) // field::SECS
     }
 
     /// Sets the value of the `magic cookie` field in the DHCP options.
     ///
     /// This field should be always be `0x63825363`.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: u32) requires 240 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn set_magic_number(&mut self, value: u32) {
-        let field = &mut self.buffer.as_mut()[field::MAGIC_NUMBER];
-        NetworkEndian::write_u32(field, value);
+        let data = self.buffer.as_mut();
+        write_u32_at(data, 236, value) // field::MAGIC_NUMBER
     }
 
     /// Sets the Ipv4 address of the client.
@@ -501,33 +693,48 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// This corresponds to the `ciaddr` field in the DHCP specification. According to it,
     /// this field is “only filled in if client is in `BOUND`, `RENEW` or `REBINDING` state
     /// and can respond to ARP requests”.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: Ipv4Address) requires 16 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn set_client_ip(&mut self, value: Ipv4Address) {
-        let field = &mut self.buffer.as_mut()[field::CIADDR];
-        field.copy_from_slice(&value.octets());
+        let data = self.buffer.as_mut();
+        write_octets4_at(data, 12, &value.octets()) // field::CIADDR
     }
 
     /// Sets the value of the `yiaddr` field.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: Ipv4Address) requires 20 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn set_your_ip(&mut self, value: Ipv4Address) {
-        let field = &mut self.buffer.as_mut()[field::YIADDR];
-        field.copy_from_slice(&value.octets());
+        let data = self.buffer.as_mut();
+        write_octets4_at(data, 16, &value.octets()) // field::YIADDR
     }
 
     /// Sets the value of the `siaddr` field.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: Ipv4Address) requires 24 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn set_server_ip(&mut self, value: Ipv4Address) {
-        let field = &mut self.buffer.as_mut()[field::SIADDR];
-        field.copy_from_slice(&value.octets());
+        let data = self.buffer.as_mut();
+        write_octets4_at(data, 20, &value.octets()) // field::SIADDR
     }
 
     /// Sets the value of the `giaddr` field.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: Ipv4Address) requires 28 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn set_relay_agent_ip(&mut self, value: Ipv4Address) {
-        let field = &mut self.buffer.as_mut()[field::GIADDR];
-        field.copy_from_slice(&value.octets());
+        let data = self.buffer.as_mut();
+        write_octets4_at(data, 24, &value.octets()) // field::GIADDR
     }
 
     /// Sets the flags to the specified value.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], val: Flags) requires 12 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn set_flags(&mut self, val: Flags) {
-        let field = &mut self.buffer.as_mut()[field::FLAGS];
-        NetworkEndian::write_u16(field, val.bits());
+        let data = self.buffer.as_mut();
+        write_u16_at(data, 10, val.bits()) // field::FLAGS
     }
 }
 
@@ -870,9 +1077,7 @@ impl<'a> Repr<'a> {
             })?;
 
             if let Some(val) = &self.client_identifier {
-                let mut data = [0; 7];
-                data[0] = u16::from(Hardware::Ethernet) as u8;
-                data[1..].copy_from_slice(val.as_bytes());
+                let data = client_id_octets(val);
 
                 options.emit(DhcpOption {
                     kind: field::OPT_CLIENT_ID,
@@ -925,17 +1130,7 @@ impl<'a> Repr<'a> {
             }
 
             if let Some(dns_servers) = &self.dns_servers {
-                const IP_SIZE: usize = core::mem::size_of::<u32>();
-                let mut servers = [0; MAX_DNS_SERVER_COUNT * IP_SIZE];
-
-                let data_len = dns_servers
-                    .iter()
-                    .enumerate()
-                    .inspect(|(i, ip)| {
-                        servers[(i * IP_SIZE)..((i + 1) * IP_SIZE)].copy_from_slice(&ip.octets());
-                    })
-                    .count()
-                    * IP_SIZE;
+                let (servers, data_len) = dns_server_octets(dns_servers);
                 options.emit(DhcpOption {
                     kind: field::OPT_DOMAIN_NAME_SERVER,
                     data: &servers[..data_len],
