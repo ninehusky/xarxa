@@ -1,10 +1,9 @@
-use byteorder::{ByteOrder, NetworkEndian};
 use core::{cmp, fmt};
 
 use super::{Error, Result};
 use crate::phy::ChecksumCapabilities;
 use crate::wire::ip::checksum;
-use crate::wire::{Ipv4Packet, Ipv4Repr};
+use crate::wire::{Ipv4Packet, Ipv4Repr, read_u16_at, write_u16_at};
 
 enum_with_unknown! {
     /// Internet protocol control message type.
@@ -170,6 +169,11 @@ pub struct Packet<T: AsRef<[u8]>> {
 }
 
 mod field {
+    // The offsets below are also written out as literals at the accessors, which need a value
+    // flux can see; these consts stay as the single reviewable statement of the layout, and
+    // several of them are now referenced only from those trailing comments.
+    #![allow(unused)]
+
     use crate::wire::field::*;
 
     pub const TYPE: usize = 0;
@@ -202,16 +206,44 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Ensure that no accessor method will panic if called.
     /// Returns `Err(Error)` if the buffer is too short.
-    ///
-    /// The result of this check is invalidated by calling [set_header_len].
-    ///
-    /// [set_header_len]: #method.set_header_len
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(fn(self: &Packet<T>[@p]) -> Result<()>)]
+    #[flux_rs::no_panic]
     pub fn check_len(&self) -> Result<()> {
+        match self.checked_len() {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// [`check_len`](Self::check_len), returning the buffer length it validated.
+    ///
+    /// The whole of `check_len`; the public method just discards the length. `Result<()>`'s `Ok`
+    /// payload carries no refinement, so a successful check leaves a caller with nothing to show
+    /// for it. Returning the length lets the `Ok` arm say both things the accessors below want:
+    /// what the buffer's length is, and that it reaches the end of the fixed header.
+    ///
+    /// `8 <= len` is the whole precondition of this file. Every field sits at a fixed offset
+    /// below 8, and [`header_len`](Self::header_len) is 8 for every message type -- the match on
+    /// `msg_type` has the same value on all four arms -- so no window's extent depends on buffer
+    /// *contents* and there is no ghost field as in `arp`, `udp` and `tcp`.
+    ///
+    /// Nothing consumes the returned length yet: `new_checked`'s callers instantiate `T` at a
+    /// reference type, which flux gives the unit sort, so none of them can name `as_ref_reft`.
+    /// Worth wiring through the moment a reference self type can be refined; see `wire::Buf`.
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(
+        fn(self: &Packet<T>[@p])
+            -> Result<usize{v: v == <T as AsRef<[u8]>>::as_ref_reft(p.buffer) && 8 <= v}>
+    )]
+    #[flux_rs::no_panic]
+    fn checked_len(&self) -> Result<usize> {
         let len = self.buffer.as_ref().len();
-        if len < field::HEADER_END {
+        if len < 8 {
+            // field::HEADER_END
             Err(Error)
         } else {
-            Ok(())
+            Ok(len)
         }
     }
 
@@ -221,54 +253,91 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the message type field.
+    // Literal offsets rather than `field::TYPE`: flux cannot see through a `const` of struct
+    // type, and `usize` consts are opaque to it too, so the bound has to be written out. The
+    // original spelling is kept in a trailing comment. Same throughout this impl.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> Message requires 1 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn msg_type(&self) -> Message {
         let data = self.buffer.as_ref();
-        Message::from(data[field::TYPE])
+        Message::from(data[0]) // field::TYPE
     }
 
     /// Return the message code field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u8 requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn msg_code(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[field::CODE]
+        data[1] // field::CODE
     }
 
     /// Return the checksum field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u16 requires 4 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn checksum(&self) -> u16 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::CHECKSUM])
+        read_u16_at(data, 2) // field::CHECKSUM
     }
 
     /// Return the identifier field (for echo request and reply packets).
     ///
     /// # Panics
     /// This function may panic if this packet is not an echo request or reply packet.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u16 requires 6 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn echo_ident(&self) -> u16 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::ECHO_IDENT])
+        read_u16_at(data, 4) // field::ECHO_IDENT
     }
 
     /// Return the sequence number field (for echo request and reply packets).
     ///
     /// # Panics
     /// This function may panic if this packet is not an echo request or reply packet.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u16 requires 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn echo_seq_no(&self) -> u16 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::ECHO_SEQNO])
+        read_u16_at(data, 6) // field::ECHO_SEQNO
     }
 
     /// Return the header length.
     /// The result depends on the value of the message type field.
+    ///
+    /// It does not, in fact, vary: `ECHO_SEQNO.end` and `UNUSED.end` are both 8, so every arm
+    /// returns 8 and the postcondition is a constant. That is what lets `data` and `data_mut`
+    /// state a fixed window without a ghost field carrying the message type, the way
+    /// `icmpv6::Packet::header_len` needs. The arms are kept as they are -- the dispatch is the
+    /// code, and a future message type could give it a second value.
+    ///
+    /// This carries no `requires`, and so keeps one error: `msg_type`'s `1 <= as_ref_reft` is
+    /// undischarged here. Stating it would silence `data` instead of proving anything --
+    /// `data`'s self type is `Packet<&'a T>`, and naming `as_ref_reft` in a callee's signature
+    /// at a reference `T` aborts the *caller's* body with `associated refinement is missing`,
+    /// hiding the real out-of-bounds obligation on `&data[self.header_len()..]`. One reported
+    /// error is worth more than one masked one.
+    ///
+    /// It carries no `no_panic` for the same reason: with that precondition open the body can
+    /// panic on an empty buffer, and flux would accept the attribute anyway -- it reports an
+    /// undischarged precondition as a refinement error, not as a panic.
+    #[flux_rs::trusted(no, reason = "carries the header length to data/data_mut")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> usize[8])]
     pub fn header_len(&self) -> usize {
         match self.msg_type() {
-            Message::EchoRequest => field::ECHO_SEQNO.end,
-            Message::EchoReply => field::ECHO_SEQNO.end,
-            Message::DstUnreachable => field::UNUSED.end,
-            _ => field::UNUSED.end, // make a conservative assumption
+            Message::EchoRequest => 8,    // field::ECHO_SEQNO.end
+            Message::EchoReply => 8,      // field::ECHO_SEQNO.end
+            Message::DstUnreachable => 8, // field::UNUSED.end
+            _ => 8,                       // field::UNUSED.end, a conservative assumption
         }
     }
 
@@ -276,6 +345,14 @@ impl<T: AsRef<[u8]>> Packet<T> {
     ///
     /// # Fuzzing
     /// This function always returns `true` when fuzzing.
+    ///
+    /// `as_ref_reft <= 65535` is `checksum::data`'s own bound -- its `u32` accumulator cannot
+    /// take more than 65535 octets without overflowing. It is a real, satisfiable property of
+    /// every ICMPv4 buffer, which are sized from `Repr::buffer_len()` under an IPv4 MTU, so it
+    /// is stated as a caller obligation rather than assumed here.
+    #[flux_rs::trusted(no, reason = "panic site: checksum::data's length bound")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> bool requires <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535)]
+    #[flux_rs::no_panic]
     pub fn verify_checksum(&self) -> bool {
         if cfg!(fuzzing) {
             return true;
@@ -288,6 +365,13 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
 impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
     /// Return a pointer to the type-specific data.
+    ///
+    /// Carries no buffer bound and keeps its one out-of-bounds site. The self type is
+    /// `Packet<&'a T>`; a reference self type gets the unit sort, so `p.buffer` cannot be fed to
+    /// `<&'a T as AsRef<[u8]>>::as_ref_reft` -- core's blanket `impl AsRef<U> for &T` has no
+    /// associated refinement and one cannot be written for it. Unlike `data_mut` below this
+    /// cannot be moved into the `T: Sized` impl: the return borrows `'a` from the buffer rather
+    /// than from `&self`, and `Repr::parse` depends on that.
     #[inline]
     pub fn data(&self) -> &'a [u8] {
         let data = self.buffer.as_ref();
@@ -297,47 +381,74 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
 
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the message type field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@p], Message) requires 1 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_msg_type(&mut self, value: Message) {
         let data = self.buffer.as_mut();
-        data[field::TYPE] = value.into()
+        data[0] = value.into() // field::TYPE
     }
 
     /// Set the message code field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@p], u8) requires 2 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_msg_code(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::CODE] = value
+        data[1] = value // field::CODE
     }
 
     /// Set the checksum field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@p], u16) requires 4 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_checksum(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::CHECKSUM], value)
+        write_u16_at(data, 2, value) // field::CHECKSUM
     }
 
     /// Set the identifier field (for echo request and reply packets).
     ///
     /// # Panics
     /// This function may panic if this packet is not an echo request or reply packet.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@p], u16) requires 6 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_echo_ident(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::ECHO_IDENT], value)
+        write_u16_at(data, 4, value) // field::ECHO_IDENT
     }
 
     /// Set the sequence number field (for echo request and reply packets).
     ///
     /// # Panics
     /// This function may panic if this packet is not an echo request or reply packet.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@p], u16) requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_echo_seq_no(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::ECHO_SEQNO], value)
+        write_u16_at(data, 6, value) // field::ECHO_SEQNO
     }
 
     /// Compute and fill in the header checksum.
+    ///
+    /// The `[@p]` on the receiver is the point of the signature: without it the caller's
+    /// `4 <= as_mut_reft(buffer)` is havoced across the two `set_checksum` calls. The
+    /// `<= 65535` conjunct is `checksum::data`'s bound; see
+    /// [`verify_checksum`](Self::verify_checksum).
+    #[flux_rs::trusted(no, reason = "panic site: the checksum write and checksum::data's bound")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p])
+        requires 4 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+             && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
+    )]
+    #[flux_rs::no_panic]
     pub fn fill_checksum(&mut self) {
         self.set_checksum(0);
         let checksum = {
@@ -346,10 +457,22 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         };
         self.set_checksum(checksum)
     }
-}
 
-impl<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> Packet<&mut T> {
     /// Return a mutable pointer to the type-specific data.
+    ///
+    /// Lives here, on `Packet<T>` with `T: Sized`, rather than on `Packet<&mut T>` with
+    /// `T: ?Sized`. That is what makes the bound statable at all: a reference self type gets the
+    /// unit sort, so on `Packet<&mut T>` there is no `as_mut_reft` to name. The move is strictly
+    /// widening -- `&mut T` is `Sized` and satisfies `AsRef<[u8]> + AsMut<[u8]>` through core's
+    /// blanket impls whenever `T` does, so every existing `Packet<&mut T>` caller still resolves,
+    /// and `Packet<Vec<u8>>` now resolves too. `data` above cannot follow, for the reason given
+    /// there.
+    ///
+    /// No `no_panic`, because `header_len` carries none: with `msg_type`'s `1 <= as_ref_reft`
+    /// left open there, that function really can panic on an empty buffer. The window this
+    /// opens is proved regardless -- the `requires` discharges the slice bound.
+    #[flux_rs::trusted(no, reason = "panic site: opens the payload window")]
+    #[flux_rs::sig(fn(&mut Packet<T>[@p]) -> &mut [u8] requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
     #[inline]
     pub fn data_mut(&mut self) -> &mut [u8] {
         let range = self.header_len()..;
