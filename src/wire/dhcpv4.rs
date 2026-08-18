@@ -135,6 +135,46 @@ fn read_ipv4_at(data: &[u8], at: usize) -> Ipv4Address {
     Ipv4Address::from_octets(octets)
 }
 
+/// The seven octets of an `OPT_CLIENT_ID` option: hardware type, then the address.
+///
+/// Lifted out of [`Repr::emit`] so that it is checked. `Repr::emit` takes a `Packet<&mut T>`,
+/// whose `&mut T` flux gives the unit sort, so its whole body aborts with
+/// `associated refinement 'as_mut_reft' is missing` and every obligation inside it stops being
+/// reported. This one has nothing to do with the packet buffer -- it is a seven-octet local --
+/// so moving it here puts it back in front of the checker.
+///
+/// No `no_panic`: `data[0] = ..` goes through core's `IndexMut for [T; N]`, which carries no
+/// panic-freedom spec, so the claim would fail on an annotation gap rather than on this body.
+#[flux_rs::trusted(no, reason = "panic site: copy_from_slice equal-length")]
+#[flux_rs::sig(fn(&EthernetAddress) -> [u8; 7])]
+fn client_id_octets(addr: &EthernetAddress) -> [u8; 7] {
+    let mut data = [0; 7];
+    data[0] = u16::from(Hardware::Ethernet) as u8;
+    data[1..].copy_from_slice(addr.as_bytes());
+    data
+}
+
+/// The DNS-server option's octets, and how many of them are filled.
+///
+/// Lifted out of [`Repr::emit`] for the reason given on [`client_id_octets`]. Unlike that one
+/// this does not verify: `i` comes from `enumerate` over a `heapless::Vec`, and flux relates it
+/// neither to the vector's length nor to its capacity, so `(i + 1) * 4 <= 12` is not provable.
+/// It is left here erroring rather than left inside `Repr::emit` erroring silently.
+#[flux_rs::trusted(no, reason = "panic site: writes a window per element")]
+fn dns_server_octets(servers: &Vec<Ipv4Address, MAX_DNS_SERVER_COUNT>) -> ([u8; 12], usize) {
+    const IP_SIZE: usize = core::mem::size_of::<u32>();
+    let mut octets = [0; MAX_DNS_SERVER_COUNT * IP_SIZE];
+    let len = servers
+        .iter()
+        .enumerate()
+        .inspect(|(i, ip)| {
+            octets[(i * IP_SIZE)..((i + 1) * IP_SIZE)].copy_from_slice(&ip.octets());
+        })
+        .count()
+        * IP_SIZE;
+    (octets, len)
+}
+
 pub(crate) mod field {
     #![allow(non_snake_case)]
     #![allow(unused)]
@@ -1037,9 +1077,7 @@ impl<'a> Repr<'a> {
             })?;
 
             if let Some(val) = &self.client_identifier {
-                let mut data = [0; 7];
-                data[0] = u16::from(Hardware::Ethernet) as u8;
-                data[1..].copy_from_slice(val.as_bytes());
+                let data = client_id_octets(val);
 
                 options.emit(DhcpOption {
                     kind: field::OPT_CLIENT_ID,
@@ -1092,17 +1130,7 @@ impl<'a> Repr<'a> {
             }
 
             if let Some(dns_servers) = &self.dns_servers {
-                const IP_SIZE: usize = core::mem::size_of::<u32>();
-                let mut servers = [0; MAX_DNS_SERVER_COUNT * IP_SIZE];
-
-                let data_len = dns_servers
-                    .iter()
-                    .enumerate()
-                    .inspect(|(i, ip)| {
-                        servers[(i * IP_SIZE)..((i + 1) * IP_SIZE)].copy_from_slice(&ip.octets());
-                    })
-                    .count()
-                    * IP_SIZE;
+                let (servers, data_len) = dns_server_octets(dns_servers);
                 options.emit(DhcpOption {
                     kind: field::OPT_DOMAIN_NAME_SERVER,
                     data: &servers[..data_len],
