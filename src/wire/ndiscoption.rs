@@ -238,7 +238,10 @@ impl<T: AsRef<[u8]>> NdiscOption<T> {
     /// Return the Source/Target Link-layer Address.
     #[inline]
     pub fn link_layer_addr(&self) -> RawHardwareAddress {
-        let len = MAX_HARDWARE_ADDRESS_LEN.min(self.data_len() as usize * 8 - 2);
+        // `core::cmp::min` rather than `usize::min`: the free function is the one xarxa
+        // refines (see `flux_specs::cmp`), so the `len <= MAX_HARDWARE_ADDRESS_LEN` that
+        // `RawHardwareAddress::from_bytes` requires stays visible. Same value.
+        let len = core::cmp::min(MAX_HARDWARE_ADDRESS_LEN, self.data_len() as usize * 8 - 2);
         let data = self.buffer.as_ref();
         RawHardwareAddress::from_bytes(&data[2..len + 2])
     }
