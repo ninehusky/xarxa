@@ -217,6 +217,22 @@ pub fn write_i32_at(data: &mut [u8], at: usize, value: i32) {
     NetworkEndian::write_i32(&mut data[at..at + 4], value)
 }
 
+/// Read a big-endian `u32` at `at`. See [`read_u16_at`] for why this is trusted.
+#[flux_rs::trusted(yes, reason = "sub-slice length is not recoverable; see flux-rs/flux#1714")]
+#[flux_rs::sig(fn(&[u8][@n], at: usize) -> u32 requires at + 4 <= n)]
+#[flux_rs::no_panic]
+pub fn read_u32_at(data: &[u8], at: usize) -> u32 {
+    NetworkEndian::read_u32(&data[at..at + 4])
+}
+
+/// Write a big-endian `u32` at `at`. See [`read_u16_at`] for why this is trusted.
+#[flux_rs::trusted(yes, reason = "sub-slice length is not recoverable; see flux-rs/flux#1714")]
+#[flux_rs::sig(fn(&mut [u8][@n], at: usize, value: u32) requires at + 4 <= n)]
+#[flux_rs::no_panic]
+pub fn write_u32_at(data: &mut [u8], at: usize, value: u32) {
+    NetworkEndian::write_u32(&mut data[at..at + 4], value)
+}
+
 /// Write a big-endian `u24` at `at`. See [`read_u16_at`] for why this is trusted.
 #[flux_rs::trusted(yes, reason = "sub-slice length is not recoverable; see flux-rs/flux#1714")]
 #[flux_rs::sig(fn(&mut [u8][@n], at: usize, value: u32) requires at + 3 <= n)]
