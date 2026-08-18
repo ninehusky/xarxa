@@ -532,6 +532,28 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
         let data = self.buffer.as_mut();
         &mut data[field::DATA(len)]
     }
+
+    /// Return the Redirected Header option's contained IP packet as a length-carrying buffer.
+    ///
+    /// The option's contained packet starts at `field::REDIRECTED_RESERVED.end` (8): two octets
+    /// of type/length, then six reserved. Routed through [`crate::wire::Buf`] rather than
+    /// [`Self::data_mut`] for the reason `icmpv6::Packet::payload_buf` exists: a returned
+    /// `&mut [u8]` loses its length index (flux-rs/flux#1714), and `&mut [u8]` as the `T` of a
+    /// refined wrapper instantiates core's blanket `AsMut for &mut T`, which has no associated
+    /// refinement. `Buf`'s `AsRef`/`AsMut` impls are local and refined, so an `Ipv6Packet` built
+    /// over one keeps its length.
+    #[flux_rs::trusted(no, reason = "carries the buffer index into a length-carrying Buf")]
+    #[flux_rs::sig(
+        fn(self: &mut NdiscOption<T>[@p]) -> crate::wire::Buf
+            [<T as AsMut<[u8]>>::as_mut_reft(p.buffer) - 8]
+        requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
+    pub fn redirected_packet_buf(&mut self) -> crate::wire::Buf<'_> {
+        // `field::REDIRECTED_RESERVED.end` spelled as a literal: a `const` of struct type is
+        // opaque to Flux.
+        crate::wire::Buf::with_offset(self.buffer.as_mut(), 8)
+    }
 }
 
 impl<T: AsRef<[u8]> + ?Sized> fmt::Display for NdiscOption<&T> {
@@ -797,21 +819,19 @@ where
 
 /// Emit a Redirected Header option.
 ///
-/// Lifted out of [`Repr::emit`] so that the rest of that function can be checked. This arm
-/// cannot be: it nests an `Ipv6Packet` over `&mut &mut [u8]`, which instantiates core's blanket
-/// `impl<T, U> AsMut<U> for &mut T`. That impl has no associated refinement, and one cannot be
-/// written -- Flux gives a reference self type the *unit* sort, so an extern spec fails with
-/// `mismatched sorts: expected 'T::sort', found '()'`. Confirmed by running: with `trusted(no)`
-/// the body reports `associated refinement 'as_mut_reft' is missing from implementation` at the
-/// `header.emit(&mut ip_packet)` call.
+/// Lifted out of [`Repr::emit`] so that each arm's bound can be stated separately.
 ///
-/// The stated `requires` is `field::REDIR_MIN_SZ` (48), the *minimum* a Redirected Header
-/// option occupies. It is not the full bound: the true requirement is
-/// `(8 + header.buffer_len() + data.len()).div_ceil(8) * 8 <= n`, which is content-dependent
-/// and needs `Repr` refined by its `buffer_len()`. This helper therefore assumes more than it
-/// states, and the residual obligation is recorded rather than discharged.
-#[flux_rs::trusted(yes, reason = "flux limitation: Ipv6Packet over `&mut &mut [u8]` hits core's \
-blanket AsMut impl, which has no associated refinement and cannot be given one (unit sort)")]
+/// The stated `requires` is `field::REDIR_MIN_SZ` (48): eight octets of type, length and
+/// reserved, then the 40-byte IPv6 header. It is what discharges `Ipv6Repr::emit`'s
+/// `40 <= as_mut_reft(buf.buffer)` on the contained packet, which starts eight octets in.
+///
+/// STILL OWED (1 obligation): `ip_packet.payload_mut().copy_from_slice(data)` needs
+/// `header.payload_len == data.len()`. `Ipv6Repr` is not refined, so that equality is not
+/// statable here; refining it by `payload_len` is what closes this. The same gap makes the
+/// stated 48 a lower bound rather than the full contract -- a Redirected Header option really
+/// occupies `(8 + header.buffer_len() + data.len()).div_ceil(8) * 8` octets, which needs
+/// [`Repr`] refined by its `buffer_len()` in the way `icmpv6::Repr` is refined by `blen`.
+#[flux_rs::trusted(no, reason = "panic site: the contained IPv6 packet")]
 #[flux_rs::sig(
     fn(opt: &mut NdiscOption<T>{v: 48 <= <T as AsMut<[u8]>>::as_mut_reft(v.buffer)},
        Ipv6Repr, &[u8])
@@ -825,8 +845,10 @@ where
     opt.clear_redirected_reserved();
     opt.set_option_type(Type::RedirectedHeader);
     opt.set_data_len((8 + header.buffer_len() + data.len()).div_ceil(8) as u8);
-    let mut packet = &mut opt.data_mut()[field::REDIRECTED_RESERVED.end - 2..];
-    let mut ip_packet = Ipv6Packet::new_unchecked(&mut packet);
+    // Routed through `Buf` so the contained packet keeps its length: an `Ipv6Packet` over
+    // `&mut &mut [u8]` instantiates core's blanket `AsMut for &mut T`, which has no associated
+    // refinement, and a returned `&mut` loses its index besides (flux-rs/flux#1714).
+    let mut ip_packet = Ipv6Packet::new_unchecked(opt.redirected_packet_buf());
     header.emit(&mut ip_packet);
     ip_packet.payload_mut().copy_from_slice(data);
 }
