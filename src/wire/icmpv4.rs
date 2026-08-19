@@ -3,7 +3,8 @@ use core::{cmp, fmt};
 use super::{Error, Result};
 use crate::phy::ChecksumCapabilities;
 use crate::wire::ip::checksum;
-use crate::wire::{Ipv4Packet, Ipv4Repr, read_u16_at, write_u16_at};
+use crate::flux_util::byte_len;
+use crate::wire::{Buf, Ipv4Packet, Ipv4Repr, read_u16_at, write_u16_at};
 
 enum_with_unknown! {
     /// Internet protocol control message type.
@@ -190,6 +191,9 @@ mod field {
 
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Imbue a raw octet buffer with ICMPv4 packet structure.
+    #[flux_rs::trusted(no, reason = "carries the buffer length into the Packet index")]
+    #[flux_rs::sig(fn(T[@buflen]) -> Packet<T>{v: v.buffer == buflen})]
+    #[flux_rs::no_panic]
     pub const fn new_unchecked(buffer: T) -> Packet<T> {
         Packet { buffer }
     }
@@ -472,7 +476,10 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// left open there, that function really can panic on an empty buffer. The window this
     /// opens is proved regardless -- the `requires` discharges the slice bound.
     #[flux_rs::trusted(no, reason = "panic site: opens the payload window")]
-    #[flux_rs::sig(fn(&mut Packet<T>[@p]) -> &mut [u8] requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p]) -> &mut [u8][<T as AsMut<[u8]>>::as_mut_reft(p.buffer) - 8]
+        requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
     #[inline]
     pub fn data_mut(&mut self) -> &mut [u8] {
         let range = self.header_len()..;
@@ -498,22 +505,38 @@ impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
+// Indexed by `buffer_len()`, which is what every caller of `emit` allocates. `data.len()` lives
+// inside the `Repr`, so this is the only place the payload copy's length obligation can be
+// stated. Same shape as `icmpv6::Repr`, and every variant here is exact -- there is no
+// unrefined sub-repr to index `0`.
+//
+// The literals restate `field::ECHO_SEQNO.end` (8), `field::UNUSED.end` (8) and
+// `Ipv4Repr::buffer_len()` (20); flux cannot see through a `Range` const.
+#[flux_rs::refined_by(blen: int)]
+// Every variant is `8 + m` or `28 + m` for a slice length `m`, so the header always fits.
+// Without this the setters' `1 <= as_mut_reft` / `2 <= as_mut_reft` cannot be discharged from
+// `emit`'s `as_mut_reft == blen` alone.
+#[flux_rs::invariant(8 <= blen)]
 pub enum Repr<'a> {
+    #[flux_rs::variant({u16, u16, &[u8][@m]} -> Repr[8 + m])]
     EchoRequest {
         ident: u16,
         seq_no: u16,
         data: &'a [u8],
     },
+    #[flux_rs::variant({u16, u16, &[u8][@m]} -> Repr[8 + m])]
     EchoReply {
         ident: u16,
         seq_no: u16,
         data: &'a [u8],
     },
+    #[flux_rs::variant({DstUnreachable, Ipv4Repr, &[u8][@m]} -> Repr[28 + m])]
     DstUnreachable {
         reason: DstUnreachable,
         header: Ipv4Repr,
         data: &'a [u8],
     },
+    #[flux_rs::variant({TimeExceeded, Ipv4Repr, &[u8][@m]} -> Repr[28 + m])]
     TimeExceeded {
         reason: TimeExceeded,
         header: Ipv4Repr,
@@ -602,23 +625,49 @@ impl<'a> Repr<'a> {
     }
 
     /// Return the length of a packet that will be emitted from this high-level representation.
+    // `strict` locally, and `byte_len` rather than `len`: under the crate's `lazy` mode flux
+    // models `8 + m` as wrapping and the postcondition is unprovable, and under `strict` a bare
+    // `data.len()` has no upper bound so the same sum reads as a possible overflow. Both are
+    // closed by `byte_len`'s `isize::MAX` fact; see `flux_util::byte_len`.
+    #[flux_rs::opts(check_overflow = "strict")]
+    #[flux_rs::sig(fn(self: &Self[@r]) -> usize[r.blen])]
+    #[flux_rs::no_panic]
     pub const fn buffer_len(&self) -> usize {
-        match self {
-            &Repr::EchoRequest { data, .. } | &Repr::EchoReply { data, .. } => {
-                field::ECHO_SEQNO.end + data.len()
-            }
-            &Repr::DstUnreachable { header, data, .. }
-            | &Repr::TimeExceeded { header, data, .. } => {
-                field::UNUSED.end + header.buffer_len() + data.len()
-            }
+        // One arm per variant rather than two or-patterns: an or-pattern joins the arms
+        // before the index is read, so flux sees only the join and the postcondition is lost.
+        match *self {
+            // 8 is `field::ECHO_SEQNO.end`, restated as a literal because flux cannot see
+            // through the `Range` const.
+            Repr::EchoRequest { data, .. } => 8 + byte_len(data),
+            Repr::EchoReply { data, .. } => 8 + byte_len(data),
+            // 8 is `field::UNUSED.end`; `header.buffer_len()` is 20.
+            Repr::DstUnreachable { header, data, .. } => 8 + header.buffer_len() + byte_len(data),
+            Repr::TimeExceeded { header, data, .. } => 8 + header.buffer_len() + byte_len(data),
         }
     }
 
     /// Emit a high-level representation into an Internet Control Message Protocol version 4
     /// packet.
-    pub fn emit<T>(&self, packet: &mut Packet<&mut T>, checksum_caps: &ChecksumCapabilities)
+    // The buffer parameter is `Packet<T>` with `T: Sized`, not `Packet<&mut T>` with
+    // `T: ?Sized`. The old shape instantiated core's blanket `impl<T, U> AsMut<U> for &mut T`,
+    // which carries no associated refinement, so `associated refinement 'as_mut_reft' is
+    // missing` aborted refinement checking of this entire body -- every obligation below was
+    // silently unchecked. `&mut [u8]` still satisfies the bounds, so this is strictly more
+    // permissive; the same move was made for `icmpv6::Repr::emit` and `Packet::data_mut`.
+    //
+    // The precondition is an *equality*, not `r.blen <= len`. The two error arms end in
+    // `payload.copy_from_slice(data)`, which panics unless the window is exactly `data.len()`
+    // wide; that is a real property of this code, not one added here, and it is what every
+    // caller already provides by allocating `buffer_len()` bytes.
+    #[flux_rs::trusted(no, reason = "panic site: the header setters and the payload copy")]
+    #[flux_rs::sig(
+        fn(self: &Self[@r], packet: &mut Packet<T>[@p], &ChecksumCapabilities)
+        requires <T as AsMut<[u8]>>::as_mut_reft(p.buffer) == r.blen
+              && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
+    )]
+    pub fn emit<T>(&self, packet: &mut Packet<T>, checksum_caps: &ChecksumCapabilities)
     where
-        T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,
+        T: AsRef<[u8]> + AsMut<[u8]>,
     {
         packet.set_msg_code(0);
         match *self {
@@ -631,8 +680,9 @@ impl<'a> Repr<'a> {
                 packet.set_msg_code(0);
                 packet.set_echo_ident(ident);
                 packet.set_echo_seq_no(seq_no);
-                let data_len = cmp::min(packet.data_mut().len(), data.len());
-                packet.data_mut()[..data_len].copy_from_slice(&data[..data_len])
+                let window = packet.data_mut();
+                let data_len = cmp::min(window.len(), data.len());
+                window[..data_len].copy_from_slice(&data[..data_len])
             }
 
             Repr::EchoReply {
@@ -644,8 +694,9 @@ impl<'a> Repr<'a> {
                 packet.set_msg_code(0);
                 packet.set_echo_ident(ident);
                 packet.set_echo_seq_no(seq_no);
-                let data_len = cmp::min(packet.data_mut().len(), data.len());
-                packet.data_mut()[..data_len].copy_from_slice(&data[..data_len])
+                let window = packet.data_mut();
+                let data_len = cmp::min(window.len(), data.len());
+                window[..data_len].copy_from_slice(&data[..data_len])
             }
 
             Repr::DstUnreachable {
@@ -656,9 +707,13 @@ impl<'a> Repr<'a> {
                 packet.set_msg_type(Message::DstUnreachable);
                 packet.set_msg_code(reason.into());
 
-                let mut ip_packet = Ipv4Packet::new_unchecked(packet.data_mut());
+                // Routed through `Buf` so the window keeps its length: a bare `&mut [u8]`
+                // instantiates core's blanket `AsMut for &mut T`, which carries no associated
+                // refinement, and this body would go unchecked again.
+                let mut window = Buf::new(packet.data_mut());
+                let mut ip_packet = Ipv4Packet::new_unchecked(window.reborrow());
                 header.emit(&mut ip_packet, checksum_caps);
-                let payload = &mut ip_packet.into_inner()[header.buffer_len()..];
+                let payload = &mut window.as_mut()[header.buffer_len()..];
                 payload.copy_from_slice(data)
             }
 
@@ -670,9 +725,13 @@ impl<'a> Repr<'a> {
                 packet.set_msg_type(Message::TimeExceeded);
                 packet.set_msg_code(reason.into());
 
-                let mut ip_packet = Ipv4Packet::new_unchecked(packet.data_mut());
+                // Routed through `Buf` so the window keeps its length: a bare `&mut [u8]`
+                // instantiates core's blanket `AsMut for &mut T`, which carries no associated
+                // refinement, and this body would go unchecked again.
+                let mut window = Buf::new(packet.data_mut());
+                let mut ip_packet = Ipv4Packet::new_unchecked(window.reborrow());
                 header.emit(&mut ip_packet, checksum_caps);
-                let payload = &mut ip_packet.into_inner()[header.buffer_len()..];
+                let payload = &mut window.as_mut()[header.buffer_len()..];
                 payload.copy_from_slice(data)
             }
         }
