@@ -620,8 +620,8 @@ impl Repr {
             _,
             &ChecksumCapabilities,
         )
-        requires 8 + payload_len == <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
-              && 8 + payload_len == <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+        requires 8 + payload_len <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+              && 8 + payload_len <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
               && 8 + payload_len <= 65535
         ensures packet: Packet<T>[p.buffer, 8 + payload_len]
     )]
@@ -652,8 +652,8 @@ impl Repr {
     #[flux_rs::trusted(no, reason = "panic site: the header setters and the payload copy")]
     #[flux_rs::sig(
         fn(&Self, packet: &strg Packet<T>[@p], &IpAddress, &IpAddress, payload: &[u8][@m], &ChecksumCapabilities)
-        requires 8 + m == <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
-              && 8 + m == <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+        requires 8 + m <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+              && 8 + m <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
               && 8 + m <= 65535
         ensures packet: Packet<T>[p.buffer, 8 + m]
     )]
