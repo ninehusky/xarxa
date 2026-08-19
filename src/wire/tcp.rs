@@ -1344,14 +1344,33 @@ impl<'a> Repr<'a> {
     }
 
     /// Emit a high-level representation into a Transmission Control Protocol packet.
+    //
+    // `Packet<T>` with `T: Sized`, not `Packet<&mut T>` with `T: ?Sized`. The old shape
+    // instantiated core's blanket `impl<T, U> AsMut<U> for &mut T`, which carries no associated
+    // refinement, so `associated refinement 'as_mut_reft' is missing` aborted refinement
+    // checking of this whole body: 22 obligations below were silently unchecked, and this
+    // file's reported site count was a floor, not a count. `&mut T` still satisfies the bounds,
+    // so every existing caller resolves. Same move as `icmpv4::Repr::emit`.
+    //
+    // 20 is `field::URGENT.end`, the fixed part of the header, restated as a literal because
+    // flux cannot see through a `Range` const. It discharges every fixed-offset setter below.
+    // The window obligations -- `options_mut`, `payload_mut` and the payload copy -- are *not*
+    // discharged: they need `self.header_len()` and `self.payload.len()`, and `TcpRepr` carries
+    // no refinement, so neither is statable at this type. They are left owing, not hidden.
+    #[flux_rs::trusted(no, reason = "panic site: the header setters and the payload copy")]
+    #[flux_rs::sig(
+        fn(&Self, packet: &mut Packet<T>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities)
+        requires 20 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+              && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
+    )]
     pub fn emit<T>(
         &self,
-        packet: &mut Packet<&mut T>,
+        packet: &mut Packet<T>,
         src_addr: &IpAddress,
         dst_addr: &IpAddress,
         checksum_caps: &ChecksumCapabilities,
     ) where
-        T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,
+        T: AsRef<[u8]> + AsMut<[u8]>,
     {
         packet.set_src_port(self.src_port);
         packet.set_dst_port(self.dst_port);

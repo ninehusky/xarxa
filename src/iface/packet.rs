@@ -226,8 +226,12 @@ impl<'p> Packet<'p> {
                     }
                 }
 
+                // Routed through `Buf` for the same reason as the Icmpv4 arm above. The bound
+                // is *stated* here and not discharged: `TcpRepr` carries no refinement, so
+                // `tcp_repr.buffer_len()` is not statable at this type and this variant is
+                // still indexed `-1`. See the note on `IpPayload`.
                 tcp_repr.emit(
-                    &mut TcpPacket::new_unchecked(payload),
+                    &mut TcpPacket::new_unchecked(Buf::new(payload)),
                     &_ip_repr.src_addr(),
                     &_ip_repr.dst_addr(),
                     &caps.checksum,
@@ -290,12 +294,17 @@ pub(crate) struct PacketV6<'p> {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 // `blen` is the buffer this payload will fill exactly, or `-1` where it is not tracked.
 //
-// Only the `Icmpv4` variant is exact. Every other repr here is unrefined -- its `buffer_len()`
-// is not statable at this type -- so they are indexed `-1`, and `emit_payload`'s precondition
-// guards on `blen != -1`. That leaves those arms owing exactly what they owed before (nothing),
-// rather than claiming a length the code does not carry. Refining `UdpRepr`, `TcpRepr`,
-// `DhcpRepr`, `Icmpv6Repr`'s callers and `IgmpRepr` by their own `buffer_len()` is what turns
-// each `-1` into a real index.
+// `Icmpv4` and `Udp` are exact. `Udp` needs no refinement on `UdpRepr` at all: the datagram is
+// the fixed 8-octet header plus the payload slice, and the slice's length is already in the
+// refinement, so the variant states it directly.
+//
+// Every other repr here is unrefined -- its `buffer_len()` is not statable at this type -- so
+// they are indexed `-1`, and `emit_payload`'s precondition guards on `blen != -1`. That leaves
+// those arms owing exactly what they owed before, rather than claiming a length the code does
+// not carry. `Tcp` and `Dhcpv4` now *state* their emitter's buffer bound without discharging
+// it; refining `TcpRepr`, `DhcpRepr` and `IgmpRepr` by their own `buffer_len()`, and tying
+// `Icmpv6Repr`'s existing `blen` index to its `buffer_len()`, is what turns each `-1` into a
+// real index.
 #[flux_rs::refined_by(blen: int)]
 #[flux_rs::invariant(blen == -1 || 8 <= blen)]
 pub(crate) enum IpPayload<'p> {
