@@ -1301,7 +1301,7 @@ impl InterfaceInner {
     #[flux_rs::trusted(no, reason = "will carry the length once ethernet setters have sigs")]
     #[flux_rs::sig(
         fn(
-            repr: &IpRepr[@ip_ty],
+            repr: &IpRepr[@ipr],
             tx_buffer: &mut [u8][@n],
             src_addr: EthernetAddress[@src],
             dst_addr: EthernetAddress[@dst],
@@ -1334,15 +1334,16 @@ impl InterfaceInner {
     #[flux_rs::trusted(no, reason = "carries the tx buffer length into IpRepr::emit")]
     #[flux_rs::sig(
         fn(
-            repr: &IpRepr[@ip_ty],
+            repr: &IpRepr[@ipr],
             buf: Buf[@n],
-            packet: &Packet,
+            packet: &Packet[@p],
             caps: &DeviceCapabilities,
             checksum_caps: &ChecksumCapabilities,
         )
         requires
-            (ip_ty == 0 => 20 <= n) &&
-            (ip_ty == 1 => 40 <= n)
+            (ipr.ip_ty == 0 => 20 <= n) &&
+            (ipr.ip_ty == 1 => 40 <= n) &&
+            (p.blen != -1 => (ipr.ip_ty == 0 && 20 + p.blen == n && p.blen <= 65535))
     )]
     fn emit_ip_into(
         repr: &IpRepr,

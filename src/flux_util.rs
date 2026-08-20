@@ -80,3 +80,20 @@ pub fn suffix_mut<T>(data: &mut [T], at: usize) -> &mut [T] {
     // SAFETY: `at <= len` is a precondition, discharged by the caller.
     unsafe { data.get_unchecked_mut(at..) }
 }
+
+/// `data.len()`, carrying Rust's guarantee that a `[u8]` is at most `isize::MAX` bytes long.
+///
+/// Needed wherever a length is *added* under `check_overflow = "strict"`. Flux gives a slice
+/// length index no upper bound, so `8 + data.len()` reads as a possible overflow; under the
+/// crate's default `lazy` the same expression is modelled as wrapping and cannot be equated
+/// with the refinement-level `8 + m` either. This is the one fact that closes both, and it is a
+/// language guarantee flux cannot see, not an index: no single allocation may exceed
+/// `isize::MAX` bytes, and for `[u8]` the length *is* the size.
+///
+/// Restricted to `[u8]` on purpose -- the bound is false for a slice of zero-sized elements.
+#[flux_rs::trusted(yes, reason = "core guarantees an allocation is at most isize::MAX bytes")]
+#[flux_rs::sig(fn(&[u8][@n]) -> usize{v: v == n && n <= 9223372036854775807})]
+#[flux_rs::no_panic]
+pub const fn byte_len(data: &[u8]) -> usize {
+    data.len()
+}
