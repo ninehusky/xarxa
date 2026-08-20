@@ -87,10 +87,23 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
 struct Ghost;
 
 impl Ghost {
+    /// A ghost pinned to `val`.
     #[flux_rs::trusted(yes, reason = "opaque: establishes the ghost value")]
     #[flux_rs::sig(fn(val: usize) -> Ghost[val])]
     #[flux_rs::no_panic]
     const fn new(_val: usize) -> Ghost {
+        Ghost
+    }
+
+    /// A ghost whose value is unconstrained.
+    ///
+    /// For the paths where the emitted length is not a compile-time constant. The ghost holds
+    /// no runtime value, so there is nothing to compute: the index comes from the signature of
+    /// whoever produces the `Repr`, not from this call.
+    #[flux_rs::trusted(yes, reason = "opaque: the ghost carries no runtime value")]
+    #[flux_rs::sig(fn() -> Ghost{v: 0 <= v})]
+    #[flux_rs::no_panic]
+    const fn unknown() -> Ghost {
         Ghost
     }
 }
@@ -121,22 +134,21 @@ impl<'a> Repr<'a> {
 
         let iter = Ipv6OptionsIterator::new(header.options());
 
-        let mut blen = 0usize;
-
         for option in iter {
             let option = option?;
-            let option_len = option.buffer_len();
 
             if let Err(e) = options.push(option) {
                 net_trace!("error when parsing hop-by-hop options: {}", e);
                 break;
             }
-            blen += option_len;
         }
 
+        // A parsed header's emitted length is not statically known, and no caller needs it to
+        // be -- `buffer_len()` still reports it at runtime. Unconstrained rather than computed:
+        // the ghost holds no runtime value, so an accumulator here would be dead arithmetic.
         Ok(Self {
             options,
-            ghost: Ghost::new(blen),
+            ghost: Ghost::unknown(),
         })
     }
 
@@ -196,24 +208,18 @@ impl<'a> Repr<'a> {
     /// Append a PadN option to the vector of hop-by-hop options
     ///
     /// `&strg` so the caller keeps the updated length; an existential `&mut` would havoc it.
-    #[flux_rs::trusted(yes, reason = "ghost update: the strong update does not survive the push")]
+    /// Trusted, and this is the one unproved step in the ghost's argument. `Ipv6OptionRepr::PadN(n)`
+    /// is indexed `2 + n`, so the `ensures` is what the push actually does; but a strong update
+    /// cannot establish it here, because the mutable borrow of `options` invalidates the place's
+    /// index before the ghost is reassigned. The assignment below is a no-op -- `Ghost` is a ZST --
+    /// so the index comes from this signature, and its correctness rests on the sentence above.
+    #[flux_rs::trusted(yes, reason = "ghost update: no strong update survives the borrow of `options`")]
     #[flux_rs::sig(
         fn(self: &strg Repr[@r], n: u8) ensures self: Repr[r.blen + 2 + n]
     )]
     pub fn push_padn_option(&mut self, n: u8) {
-        // Read before the push: `ghost_val` is indexed off `self`, and the push borrows a field
-        // mutably, after which the place's index is no longer the one the postcondition names.
-        let blen = self.ghost_val() + 2 + n as usize;
         self.options.push(Ipv6OptionRepr::PadN(n)).unwrap();
-        self.ghost = Ghost::new(blen);
-    }
-
-    /// The accumulated emitted length, read back for `push_padn_option`'s update.
-    #[flux_rs::trusted(yes, reason = "opaque ghost: reads the value back")]
-    #[flux_rs::sig(fn(self: &Self[@r]) -> usize[r.blen])]
-    #[flux_rs::no_panic]
-    fn ghost_val(&self) -> usize {
-        self.options.iter().map(|o| o.buffer_len()).sum()
+        self.ghost = Ghost::unknown();
     }
 }
 
