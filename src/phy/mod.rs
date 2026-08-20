@@ -128,3 +128,50 @@ pub use self::tuntap_interface::TunTapInterface;
 /// The IPV4 payload fragment size must be an increment of this value.
 #[cfg(feature = "proto-ipv4-fragmentation")]
 pub const IPV4_FRAGMENT_PAYLOAD_ALIGNMENT: usize = 8;
+
+/// Calls `f` on a transmit buffer, discharging `f`'s buffer-length precondition.
+///
+/// A verification shim, not an abstraction. [`TxToken::consume`]'s signature states that
+/// `f` is only ever called with a buffer of exactly the requested length, and Flux checks
+/// that precondition at a call in a *function* body -- but not at one inside a *closure*
+/// body. Every forwarding implementor (`Tracer`, `PcapWriter`, `FuzzInjector`,
+/// `FaultInjector`) calls `f` from inside the closure it hands to the token it wraps, so
+/// the call has to be hoisted into a named function to be checked at all. Call `f` through
+/// this and the obligation is discharged; call it directly from a closure and the
+/// implementor verifies vacuously. See `xarxa-driver`'s `spec_is_live` tripwires.
+#[flux_rs::trusted(no, reason = "checks TxToken::consume's buffer-length contract, #23")]
+#[flux_rs::sig(
+    fn(&mut [u8][@m], F) -> R
+    where
+        F: FnOnce(&mut [u8]{v : v == m}) -> R
+)]
+pub(crate) fn call_with_buf<R, F>(buffer: &mut [u8], f: F) -> R
+where
+    F: FnOnce(&mut [u8]) -> R,
+{
+    f(buffer)
+}
+
+#[cfg(feature = "alloc")]
+/// Allocates a zeroed buffer of exactly `len` bytes and calls `f` on it, returning the
+/// buffer alongside `f`'s result.
+///
+/// Trusted, and deliberately narrow: the one thing taken on faith is the `std` guarantee
+/// that `vec![0; len]` has length `len`. Written out in the implementor instead, the
+/// `&mut Vec<u8>` -> `&mut [u8]` deref coercion loses the length anyway (flux-rs/flux#1714,
+/// a returned `&mut` drops its refinement index), so the whole body would have to be
+/// trusted rather than this one fact.
+#[flux_rs::trusted(yes, reason = "vec![0; n] has length n; the deref is flux#1714")]
+#[flux_rs::sig(
+    fn(usize[@n], F) -> (R, alloc::vec::Vec<u8>)
+    where
+        F: FnOnce(&mut [u8]{v : v == n}) -> R
+)]
+pub(crate) fn with_zeroed_buf<R, F>(len: usize, f: F) -> (R, alloc::vec::Vec<u8>)
+where
+    F: FnOnce(&mut [u8]) -> R,
+{
+    let mut buffer = alloc::vec![0; len];
+    let result = f(&mut buffer);
+    (result, buffer)
+}

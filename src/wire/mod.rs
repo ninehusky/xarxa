@@ -78,7 +78,10 @@ mod field {
 pub mod pretty_print;
 
 mod buf;
-pub(crate) use buf::{Buf, prefix, read_u16_at, write_octets4_at, write_u16_at};
+pub(crate) use buf::{
+    Buf, copy_window_at, prefix, read_i32_at, read_u16_at, read_u32_at, sub, tail, write_i32_at,
+    write_octets4_at, write_octets16_at, write_u16_at, write_u24_at, write_u32_at,
+};
 
 #[cfg(all(feature = "proto-ipv4", feature = "medium-ethernet"))]
 mod arp;
@@ -501,7 +504,6 @@ impl core::fmt::Display for HardwareAddress {
 // `.into()` dispatches through core's blanket `Into` impl, which forwards to
 // `from_val` (see `crate::flux_specs`).
 #[cfg(feature = "medium-ethernet")]
-#[flux_rs::assoc(fn from_val(s: EthernetAddress, into: HardwareAddress) -> bool { into == (s % 2 == 0) })]
 impl From<EthernetAddress> for HardwareAddress {
     #[flux_rs::sig(fn(EthernetAddress[@o0]) -> HardwareAddress[o0 % 2 == 0])]
     fn from(addr: EthernetAddress) -> Self {

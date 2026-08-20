@@ -1544,7 +1544,7 @@ fn test_ipv4_fragment_size() {
         assert!(
             iface
                 .inner
-                .max_ipv4_fragment_size(HEADER_LEN + i)
+                .max_ipv4_fragment_size(HEADER_LEN + i, iface.inner.ip_mtu())
                 .is_multiple_of(IPV4_FRAGMENT_PAYLOAD_ALIGNMENT)
         );
     }

@@ -1,12 +1,14 @@
 use super::{Error, Result};
 use core::fmt;
 
-use byteorder::{ByteOrder, NetworkEndian};
+use crate::wire::{read_u16_at, read_u32_at, write_u16_at, write_u32_at};
 
 /// A read/write wrapper around an IPv6 Fragment Header.
 #[derive(Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(buffer: T)]
 pub struct Header<T: AsRef<[u8]>> {
+    #[flux_rs::field(T[buffer])]
     buffer: T,
 }
 
@@ -50,14 +52,44 @@ impl<T: AsRef<[u8]>> Header<T> {
 
     /// Ensure that no accessor method will panic if called.
     /// Returns `Err(Error)` if the buffer is too short.
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(fn(self: &Header<T>[@h]) -> Result<()>)]
+    #[flux_rs::no_panic]
     pub fn check_len(&self) -> Result<()> {
+        match self.checked_len() {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// [`check_len`](Self::check_len), returning the buffer length it validated.
+    ///
+    /// The whole of `check_len`; the public method just discards the length. `Result<()>`'s `Ok`
+    /// payload carries no refinement, so a successful check leaves a caller with nothing to show
+    /// for it. Returning the length lets the `Ok` arm say the two things the accessors below
+    /// want: what the buffer's length is, and that it reaches the end of the header.
+    ///
+    /// Every field of this header is at a fixed offset and the header is fixed-size, so this
+    /// single test is the whole precondition of the file -- there is no window whose extent
+    /// depends on buffer *contents*, and hence no ghost field as in `arp`, `udp` and `tcp`.
+    ///
+    /// Nothing consumes the length yet: `Repr::parse` below instantiates `T` at a reference
+    /// type, which flux gives the unit sort, so it cannot name `as_ref_reft` at all.
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(
+        fn(self: &Header<T>[@h])
+            -> Result<usize{v: v == <T as AsRef<[u8]>>::as_ref_reft(h.buffer) && 6 <= v}>
+    )]
+    #[flux_rs::no_panic]
+    fn checked_len(&self) -> Result<usize> {
         let data = self.buffer.as_ref();
         let len = data.len();
 
-        if len < field::IDENT.end {
+        if len < 6 {
+            // field::IDENT.end
             Err(Error)
         } else {
-            Ok(())
+            Ok(len)
         }
     }
 
@@ -67,24 +99,44 @@ impl<T: AsRef<[u8]>> Header<T> {
     }
 
     /// Return the fragment offset field.
+    // Literal offsets rather than `field::FR_OF_M`: flux cannot see through the `Field` (`Range`)
+    // const, so the bound has to be written out. Same throughout this file.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Header<T>[@h]) -> u16
+        requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn frag_offset(&self) -> u16 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::FR_OF_M]) >> 3
+        read_u16_at(data, 0) >> 3 // field::FR_OF_M
     }
 
     /// Return more fragment flag field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Header<T>[@h]) -> bool
+        requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn more_frags(&self) -> bool {
         let data = self.buffer.as_ref();
-        (data[field::M] & 0x1) == 1
+        (data[1] & 0x1) == 1 // field::M
     }
 
     /// Return the fragment identification value field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Header<T>[@h]) -> u32
+        requires 6 <= <T as AsRef<[u8]>>::as_ref_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn ident(&self) -> u32 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u32(&data[field::IDENT])
+        read_u32_at(data, 2) // field::IDENT
     }
 }
 
@@ -93,36 +145,60 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     ///
     /// Set 8-bit reserved field after the next header field.
     /// Set 2-bit reserved field between fragment offset and more fragments.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Header<T>[@h])
+        requires 2 <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn clear_reserved(&mut self) {
         let data = self.buffer.as_mut();
         // Retain the higher order 5 bits and lower order 1 bit
-        data[field::M] &= 0xf9;
+        data[1] &= 0xf9; // field::M
     }
 
     /// Set the fragment offset field.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Header<T>[@h], value: u16)
+        requires 2 <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_frag_offset(&mut self, value: u16) {
         let data = self.buffer.as_mut();
         // Retain the lower order 3 bits
-        let raw = ((value & 0x1fff) << 3) | ((data[field::M] & 0x7) as u16);
-        NetworkEndian::write_u16(&mut data[field::FR_OF_M], raw);
+        let raw = ((value & 0x1fff) << 3) | ((data[1] & 0x7) as u16); // field::M
+        write_u16_at(data, 0, raw); // field::FR_OF_M
     }
 
     /// Set the more fragments flag field.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Header<T>[@h], value: bool)
+        requires 2 <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_more_frags(&mut self, value: bool) {
         let data = self.buffer.as_mut();
         // Retain the high order 7 bits
-        let raw = (data[field::M] & 0xfe) | (value as u8 & 0x1);
-        data[field::M] = raw;
+        let raw = (data[1] & 0xfe) | (value as u8 & 0x1); // field::M
+        data[1] = raw;
     }
 
     /// Set the fragmentation identification field.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Header<T>[@h], value: u32)
+        requires 6 <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_ident(&mut self, value: u32) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u32(&mut data[field::IDENT], value);
+        write_u32_at(data, 2, value); // field::IDENT
     }
 }
 

@@ -320,7 +320,9 @@ impl defmt::Format for Cidr {
 /// A read/write wrapper around an Internet Protocol version 6 packet buffer.
 #[derive(Debug, PartialEq, Eq, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(buffer: T)]
 pub struct Packet<T: AsRef<[u8]>> {
+    #[flux_rs::field(T[buffer])]
     buffer: T,
 }
 
@@ -375,6 +377,8 @@ pub const HEADER_LEN: usize = field::DST_ADDR.end;
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Create a raw octet buffer with an IPv6 packet structure.
     #[inline]
+    #[flux_rs::trusted(no, reason = "carries the buffer index into the Packet wrapper")]
+    #[flux_rs::sig(fn (T[@buflen]) -> Packet<T>{v : v.buffer == buflen})]
     pub const fn new_unchecked(buffer: T) -> Packet<T> {
         Packet { buffer }
     }
@@ -496,6 +500,13 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the version field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            0 < <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_version(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         // Make sure to retain the lower order bits which contain
@@ -505,6 +516,13 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the traffic class field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            1 < <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_traffic_class(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         // Put the higher order 4-bits of value in the lower order
@@ -517,22 +535,43 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the flow label field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            4 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_flow_label(&mut self, value: u32) {
         let data = self.buffer.as_mut();
         // Retain the lower order 4-bits of the traffic class
         let raw = (((data[1] & 0xf0) as u32) << 16) | (value & 0x0fffff);
-        NetworkEndian::write_u24(&mut data[1..4], raw);
+        crate::wire::write_u24_at(data, 1, raw);
     }
 
     /// Set the payload length field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            6 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_payload_len(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::LENGTH], value);
+        crate::wire::write_u16_at(data, 4, value);
     }
 
     /// Set the next header field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            6 < <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_next_header(&mut self, value: Protocol) {
         let data = self.buffer.as_mut();
         data[field::NXT_HDR] = value.into();
@@ -540,6 +579,13 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the hop limit field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], value: u8)
+        requires
+            7 < <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_hop_limit(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         data[field::HOP_LIMIT] = value;
@@ -547,16 +593,30 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the source address field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            24 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_src_addr(&mut self, value: Address) {
         let data = self.buffer.as_mut();
-        data[field::SRC_ADDR].copy_from_slice(&value.octets());
+        crate::wire::write_octets16_at(data, 8, &value.octets());
     }
 
     /// Set the destination address field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            40 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_dst_addr(&mut self, value: Address) {
         let data = self.buffer.as_mut();
-        data[field::DST_ADDR].copy_from_slice(&value.octets());
+        crate::wire::write_octets16_at(data, 24, &value.octets());
     }
 
     /// Return a mutable pointer to the payload.
@@ -580,7 +640,14 @@ impl<T: AsRef<[u8]> + ?Sized> fmt::Display for Packet<&T> {
     }
 }
 
+#[flux_rs::assoc(
+    fn as_ref_reft(source: Self) -> int {
+        <T as AsRef<[u8]>>::as_ref_reft(source.buffer)
+    }
+)]
 impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(self: &Self[@source]) -> &[u8][Self::as_ref_reft(source)])]
     fn as_ref(&self) -> &[u8] {
         self.buffer.as_ref()
     }
@@ -619,12 +686,25 @@ impl Repr {
     }
 
     /// Return the length of a header that will be emitted from this high-level representation.
+    // Literal rather than `field::DST_ADDR.end` for the same reason as `ipv4::Repr::buffer_len`:
+    // flux cannot see through the `Range` const. This is only the constant -- it is not part of
+    // the (out of scope) v6 panic-freedom proof.
+    #[flux_rs::trusted(no, reason = "40 is the constant `ip::Repr::header_len` needs")]
+    #[flux_rs::sig(fn(self: &Self) -> usize[40])]
+    #[flux_rs::no_panic]
     pub const fn buffer_len(&self) -> usize {
         // This function is not strictly necessary, but it can make client code more readable.
-        field::DST_ADDR.end
+        40
     }
 
     /// Emit a high-level representation into an Internet Protocol version 6 packet.
+    #[flux_rs::trusted(no, reason = "calls the eight header setters")]
+    #[flux_rs::sig(
+        fn(self: &Self, packet: &mut Packet<T>[@buf])
+        requires
+            40 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, packet: &mut Packet<T>) {
         // Make no assumptions about the original state of the packet buffer.
         // Make sure to set every byte.
@@ -668,6 +748,7 @@ use crate::wire::pretty_print::{PrettyIndent, PrettyPrint};
 // TODO: This is very similar to the implementation for IPv4. Make
 // a way to have less copy and pasted code here.
 impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
+    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     fn pretty_print(
         buffer: &dyn AsRef<[u8]>,
         f: &mut fmt::Formatter,
