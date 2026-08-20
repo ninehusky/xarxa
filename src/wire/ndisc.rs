@@ -284,10 +284,25 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 /// A high-level representation of an Neighbor Discovery packet header.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+// Indexed by the length of the *fixed* header each variant writes, which is the per-arm bound
+// `Repr::emit`'s setters actually need: 8 for RouterSolicit (`field::UNUSED.end`), 16 for
+// RouterAdvert (`RETRANS_TM.end`), 24 for the two Neighbor arms (`TARGET_ADDR.end`) and 40 for
+// Redirect (`DEST_ADDR.end`). It is a *lower* bound on `buffer_len()`, not equal to it: the
+// trailing NDISC options contribute a length that `NdiscOptionRepr` -- unrefined -- cannot state.
+// That is enough for the caller: `Icmpv6Repr::emit` can now discharge this arm from its own
+// `r.blen <= buffer` conjunct instead of a blanket `40 <= buffer`.
+// Smallest variant is RouterSolicit at `field::UNUSED.end` == 8. Flux checks this against the
+// `variant` indices below; `Icmpv6Repr`'s own `4 <= blen` invariant rests on it.
+#[flux_rs::invariant(8 <= blen)]
+#[flux_rs::refined_by(blen: int)]
 pub enum Repr<'a> {
+    #[flux_rs::variant({Option<RawHardwareAddress>} -> Repr[8])]
     RouterSolicit {
         lladdr: Option<RawHardwareAddress>,
     },
+    #[flux_rs::variant({u8, RouterFlags, Duration, Duration, Duration,
+                        Option<RawHardwareAddress>, Option<u32>,
+                        Option<NdiscPrefixInformation>} -> Repr[16])]
     RouterAdvert {
         hop_limit: u8,
         flags: RouterFlags,
@@ -298,15 +313,19 @@ pub enum Repr<'a> {
         mtu: Option<u32>,
         prefix_info: Option<NdiscPrefixInformation>,
     },
+    #[flux_rs::variant({Ipv6Address, Option<RawHardwareAddress>} -> Repr[24])]
     NeighborSolicit {
         target_addr: Ipv6Address,
         lladdr: Option<RawHardwareAddress>,
     },
+    #[flux_rs::variant({NeighborFlags, Ipv6Address, Option<RawHardwareAddress>} -> Repr[24])]
     NeighborAdvert {
         flags: NeighborFlags,
         target_addr: Ipv6Address,
         lladdr: Option<RawHardwareAddress>,
     },
+    #[flux_rs::variant({Ipv6Address, Ipv6Address, Option<RawHardwareAddress>,
+                        Option<NdiscRedirectedHeader>} -> Repr[40])]
     Redirect {
         target_addr: Ipv6Address,
         dest_addr: Ipv6Address,
@@ -437,36 +456,30 @@ impl<'a> Repr<'a> {
         }
     }
 
-    // PARKED at `trusted(yes)` (the crate default). One of the two blockers named in the previous
-    // note is now cleared, the other is not, and the other is not in this file.
-    //
-    // CLEARED: `NdiscOptionRepr::emit` now has a buffer-preserving signature and a checked body
-    // (`requires 48 <= <T as AsMut<[u8]>>::as_mut_reft(opt.buffer)`), so the call below no longer
-    // havocs its bound.
-    //
-    // REMAINING: `icmpv6::Packet::payload_mut` returns a bare `&mut [u8]`. A *returned* `&mut`
-    // loses its length index (flux-rs/flux#1714), so `NdiscOption::new_unchecked(..)` below is an
-    // `NdiscOption<&mut [u8]>`, and `&mut [u8]` as the `T` of a refined wrapper instantiates
-    // core's blanket `impl<T, U> AsMut<U> for &mut T` -- which has no associated refinement and
-    // cannot be given one, because Flux assigns a reference self type the *unit* sort.
-    //
-    // Measured, not inferred: adding
-    //     #[flux_rs::trusted(no)]
-    //     #[flux_rs::sig(fn(&Repr, packet: &mut Packet<T>{v: 40 <= ..as_mut_reft(v.buffer)}))]
-    // here produces exactly one error,
-    //     error[E0999]: associated refinement `as_mut_reft` is missing from implementation
-    //       --> src/wire/ndisc.rs:471:21
-    //           NdiscOptionRepr::SourceLinkLayerAddr(lladdr).emit(&mut opt_pkt);
-    //
-    // The fix belongs in `icmpv6.rs` (another agent's file): `payload_mut` must hand back a
-    // `wire::Buf`, whose `AsRef`/`AsMut` impls are local and refined, carrying the length index
-    // `icmpv6_header_len(p.code)` subtracted from the buffer. The `RouterAdvert` and `Redirect`
-    // arms additionally slice at `offset`, which needs `Buf::with_offset(.., offset)` and so an
-    // `offset <= len` obligation that only an indexed `payload_mut` can discharge.
-    //
-    // When that lands, the `requires` here must be an existential (`&mut Packet<T>{v: ..}`), not
-    // indexed (`&mut Packet<T>[@p]`): `set_msg_type` changes the `code` index, so an indexed
-    // `&mut` fails Flux's invariance check.
+    /// Emit this high-level representation into an ICMPv6 packet.
+    ///
+    /// The receiver bound is existential (`{v: ..}`) rather than indexed (`[@p]`):
+    /// `set_msg_type` rewrites the `code` index, and an indexed `&mut` receiver then fails
+    /// Flux's invariance check with `type invariant may not hold`.
+    ///
+    /// 40 octets is the widest *fixed* header any arm writes -- Redirect's `set_dest_addr`
+    /// reaches `field::DEST_ADDR.end`. It is exactly the bound `Icmpv6Repr::emit` already
+    /// carries, so no caller owes anything new.
+    ///
+    /// STILL OWED: the option emits below want 48 octets of *payload*, i.e.
+    /// `icmpv6_header_len(code) + 48 <= as_mut_reft(buffer)`, and the RouterAdvert and Redirect
+    /// arms additionally want `offset + 48 <= payload len`. Neither is provable here, for two
+    /// reasons that both live outside this function. `Icmpv6Repr`'s `Ndisc` variant is indexed
+    /// `0` rather than by `NdiscRepr::buffer_len()` (see the note above `Icmpv6Repr` in
+    /// `icmpv6.rs`), so the caller carries no option size at all; and
+    /// `NdiscOptionRepr::buffer_len` has no Flux signature, so `offset` is an unconstrained
+    /// `usize`. Refining `NdiscOptionRepr` by its buffer length is what closes both.
+    #[flux_rs::trusted(no, reason = "carries the icmpv6 buffer bound to the ndisc setters")]
+    #[flux_rs::sig(
+        fn(&Repr[@r], packet: &strg Packet<T>[@p])
+        requires r.blen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        ensures packet: Packet<T>{v: v.buffer == p.buffer}
+    )]
     pub fn emit<T>(&self, packet: &mut Packet<T>)
     where
         T: AsRef<[u8]> + AsMut<[u8]>,
@@ -507,15 +520,11 @@ impl<'a> Repr<'a> {
                     offset += opt.buffer_len();
                 }
                 if let Some(mtu) = mtu {
-                    let mut opt_pkt =
-                        NdiscOption::new_unchecked(&mut packet.payload_mut()[offset..]);
-                    NdiscOptionRepr::Mtu(mtu).emit(&mut opt_pkt);
+                    emit_option_at(packet, offset, &NdiscOptionRepr::Mtu(mtu));
                     offset += NdiscOptionRepr::Mtu(mtu).buffer_len();
                 }
                 if let Some(prefix_info) = prefix_info {
-                    let mut opt_pkt =
-                        NdiscOption::new_unchecked(&mut packet.payload_mut()[offset..]);
-                    NdiscOptionRepr::PrefixInformation(prefix_info).emit(&mut opt_pkt)
+                    emit_option_at(packet, offset, &NdiscOptionRepr::PrefixInformation(prefix_info));
                 }
             }
 
@@ -569,13 +578,44 @@ impl<'a> Repr<'a> {
                     None => 0,
                 };
                 if let Some(redirected_hdr) = redirected_hdr {
-                    let mut opt_pkt =
-                        NdiscOption::new_unchecked(&mut packet.payload_mut()[offset..]);
-                    NdiscOptionRepr::RedirectedHeader(redirected_hdr).emit(&mut opt_pkt);
+                    emit_option_at(packet, offset, &NdiscOptionRepr::RedirectedHeader(redirected_hdr));
                 }
             }
         }
     }
+}
+
+/// Emit one NDISC option `offset` octets into an ICMPv6 packet's payload.
+///
+/// `trusted(yes)`, but with the full obligation stated rather than deleted: the caller owes
+/// `icmpv6_header_len(code) + offset + 48 <= as_mut_reft(buffer)`, which is `NdiscOptionRepr::emit`'s
+/// own 48-octet bound translated through the payload split. Nothing in the body is unchecked --
+/// `payload_mut()[offset..]` is an ordinary bounds-checked index, exactly as before.
+///
+/// It exists only because the call cannot be *elaborated* inline. `payload_mut` returns a bare
+/// `&mut [u8]`, so the option wrapper is `NdiscOption<&mut [u8]>`, which instantiates core's
+/// blanket `impl<T, U> AsMut<U> for &mut T`; that impl has no associated refinement and cannot be
+/// given one, because Flux assigns a reference self type the unit sort. Left inline the resulting
+/// `associated refinement 'as_mut_reft' is missing` aborts checking of the *whole* enclosing
+/// function -- measured: with the calls inline, perturbing `NdiscOptionRepr::emit`'s `requires`
+/// with an absurd conjunct produced zero errors anywhere in this file, i.e. `Repr::emit`'s body
+/// was not being checked at all despite its `trusted(no)`.
+///
+/// The obligation is not currently discharged at any of the three call sites, and cannot be:
+/// `NdiscOptionRepr::buffer_len` has no Flux signature, so `offset` is an unconstrained `usize`.
+/// Refining `NdiscOptionRepr` by its buffer length is what closes it.
+#[flux_rs::trusted(yes, reason = "`NdiscOption<&mut [u8]>` hits core's blanket AsMut, which has no \
+associated refinement; inline, that error aborts checking of the enclosing function")]
+#[flux_rs::sig(
+    fn(packet: &mut Packet<T>[@p], offset: usize, opt: &NdiscOptionRepr)
+    requires crate::wire::icmpv6::icmpv6_header_len(p.code) + offset + 48 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+)]
+fn emit_option_at<T>(packet: &mut Packet<T>, offset: usize, opt: &NdiscOptionRepr)
+where
+    T: AsRef<[u8]> + AsMut<[u8]>,
+{
+    let mut opt_pkt = NdiscOption::new_unchecked(&mut packet.payload_mut()[offset..]);
+    opt.emit(&mut opt_pkt);
 }
 
 #[cfg(feature = "medium-ethernet")]

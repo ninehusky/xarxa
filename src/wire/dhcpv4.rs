@@ -797,13 +797,29 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         let data = self.buffer.as_mut();
         write_u16_at(data, 10, val.bits()) // field::FLAGS
     }
-}
 
-impl<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> Packet<&mut T> {
     /// Return a pointer to the options.
+    ///
+    /// Lives here, on `Packet<T>` with `T: Sized`, rather than on `Packet<&mut T>` with
+    /// `T: ?Sized`. That is what makes the bound statable at all: a reference self type gets the
+    /// unit sort, so on `Packet<&mut T>` there is no `as_mut_reft` to name. The move is strictly
+    /// widening -- `&mut T` is `Sized` and satisfies `AsRef<[u8]> + AsMut<[u8]>` through core's
+    /// blanket impls whenever `T` does, so every existing `Packet<&mut T>` caller still resolves.
+    ///
+    /// The return type carries no index: a *returned* `&mut` loses its length
+    /// (flux-rs/flux#1714), so the writer's `len` cannot be tied to the buffer here.
+    //
+    // The window is written out rather than taken from `field::OPTIONS`, which is a `Range`
+    // const flux cannot see through. Same value.
+    #[flux_rs::trusted(no, reason = "panic site: opens the options window at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p]) -> DhcpOptionWriter
+        requires 240 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn options_mut(&mut self) -> DhcpOptionWriter<'_> {
-        DhcpOptionWriter::new(&mut self.buffer.as_mut()[field::OPTIONS])
+        DhcpOptionWriter::new(&mut self.buffer.as_mut()[240..]) // field::OPTIONS
     }
 }
 
