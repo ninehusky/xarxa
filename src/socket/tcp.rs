@@ -1243,6 +1243,7 @@ impl<'a> Socket<'a> {
         !self.rx_buffer.is_empty()
     }
 
+    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     fn send_impl<'b, F, R>(&'b mut self, f: F) -> Result<R, SendError>
     where
         F: FnOnce(&'b mut SocketBuffer<'a>) -> (usize, R),
@@ -1321,6 +1322,7 @@ impl<'a> Socket<'a> {
         Ok(())
     }
 
+    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     fn recv_impl<'b, F, R>(&'b mut self, f: F) -> Result<R, RecvError>
     where
         F: FnOnce(&'b mut SocketBuffer<'a>) -> (usize, R),
@@ -2453,7 +2455,7 @@ impl<'a> Socket<'a> {
     // built inside a trusted body would have its invariant assumed rather than proved.
     // Here it is proved -- both addresses come from the same `IpRepr`, whose accessors
     // are indexed by its version.
-    #[flux_rs::sig(fn(&IpRepr[@v], u16, u16) -> Tuple[v])]
+    #[flux_rs::sig(fn(&IpRepr[@r], u16, u16) -> Tuple[r.ip_ty])]
     #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
     fn tuple_from_repr(ip_repr: &IpRepr, local_port: u16, remote_port: u16) -> Tuple {
         Tuple {

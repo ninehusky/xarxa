@@ -14,6 +14,11 @@ impl<T> [T] {
     #[spec(fn(&Self[@n]) -> usize[n])]
     fn len(&self) -> usize;
 
+    /// Verbatim from flux-core `slice/mod.rs` @ 696b795f31. Review as a transcription.
+    #[no_panic]
+    #[spec(fn(&Self[@n]) -> bool[n == 0])]
+    fn is_empty(&self) -> bool;
+
     /// xarxa's own. Panics iff the lengths differ, which the signature rules out.
     /// <https://doc.rust-lang.org/1.89.0/src/core/slice/mod.rs.html#3805>
     #[no_panic]

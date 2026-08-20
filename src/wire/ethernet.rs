@@ -1,7 +1,7 @@
-use byteorder::{ByteOrder, NetworkEndian};
 use core::fmt;
 
 use super::{Error, Result};
+use crate::wire::{read_u16_at, write_u16_at};
 
 enum_with_unknown! {
     /// Ethernet protocol type.
@@ -49,6 +49,7 @@ impl Address {
     /// octet in the refinement, so an address built from literals here is the only
     /// kind that can be statically known to be unicast.
     #[flux_rs::sig(fn(u8[@a0], u8, u8, u8, u8, u8) -> Address[a0])]
+    #[flux_rs::no_panic]
     pub const fn new(a0: u8, a1: u8, a2: u8, a3: u8, a4: u8, a5: u8) -> Address {
         Address {
             o0: a0,
@@ -58,6 +59,7 @@ impl Address {
 
     /// Construct an Ethernet address from an array of octets, in big-endian.
     #[flux_rs::sig(fn([u8; 6]) -> Address)]
+    #[flux_rs::no_panic]
     pub const fn from_octets(octets: [u8; 6]) -> Address {
         Address::new(
             octets[0], octets[1], octets[2], octets[3], octets[4], octets[5],
@@ -69,8 +71,11 @@ impl Address {
     /// The refinement is left unconstrained: an address that came off the wire is not
     /// provably unicast, which is the correct conclusion.
     ///
-    /// # Panics
-    /// The function panics if `data` is not six octets long.
+    /// The six-octet length is a caller obligation rather than a runtime assert, so the
+    /// `copy_from_slice` length-mismatch panic is gated rather than defused.
+    #[flux_rs::trusted(no, reason = "panic site: copy_from_slice equal-length")]
+    #[flux_rs::sig(fn(&[u8][6]) -> Address)]
+    #[flux_rs::no_panic]
     pub fn from_bytes(data: &[u8]) -> Address {
         let mut bytes = [0; 6];
         bytes.copy_from_slice(data);
@@ -79,6 +84,7 @@ impl Address {
 
     /// Return an Ethernet address as an array of octets, in big-endian.
     #[flux_rs::sig(fn(&Address) -> [u8; 6])]
+    #[flux_rs::no_panic]
     pub const fn octets(&self) -> [u8; 6] {
         [
             self.o0,
@@ -101,6 +107,7 @@ impl Address {
     #[allow(unsafe_code)]
     #[flux_rs::trusted]
     #[flux_rs::sig(fn(&Address) -> &[u8][6])]
+    #[flux_rs::no_panic]
     pub const fn as_bytes(&self) -> &[u8] {
         // SAFETY: `Address` is `#[repr(C)]` and every field is `u8` or an array of
         // `u8`, so it has alignment 1, contains no padding, and is exactly six
@@ -142,6 +149,12 @@ impl Address {
     }
 
     /// Convert the address to an Extended Unique Identifier (EUI-64)
+    //
+    // Left indexing directly. Flux cannot see an array's length through the slice coercion, so
+    // it reports these two as unproven, but the indices are constant ranges into fixed-size
+    // arrays and rustc elides the checks. Routing them through `flux_util` would silence flux
+    // by swapping a check rustc already removed for `get_unchecked`, which is the trade those
+    // helpers exist to make and is not earned until every path here is verified.
     pub fn as_eui_64(&self) -> Option<[u8; 8]> {
         let octets = self.octets();
         let mut bytes = [0; 8];
@@ -248,30 +261,68 @@ impl<T: AsRef<[u8]>> Frame<T> {
     }
 
     /// Return the destination address field.
+    // Literal offsets rather than `field::DESTINATION`: flux cannot see through the `Field`
+    // (`Range`) const, so the bound has to be written out. Same throughout this impl.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &Frame<T>[@f]) -> Address
+        requires 6 <= <T as AsRef<[u8]>>::as_ref_reft(f.buffer)
+    )]
+    // Body stays bounds-checked. The `requires` above states the bound, but six in-crate call
+    // sites cannot yet discharge it: `dispatch_ethernet` hands its closure an
+    // `EthernetFrame<&mut [u8]>`, and at `T = &mut [u8]` the length index would have to come
+    // from core's blanket `impl AsMut for &mut T`, which carries no associated refinement.
+    // Until those route through `wire::Buf`, indexing unchecked here would trade a panic for an
+    // out-of-bounds write rather than prove the panic away (#16). Literal offsets rather than
+    // the `field::` consts only because flux cannot see through a `Range` const.
     #[inline]
     pub fn dst_addr(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_bytes(&data[field::DESTINATION])
+        Address::from_bytes(&data[0..6]) // field::DESTINATION
     }
 
     /// Return the source address field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &Frame<T>[@f]) -> Address
+        requires 12 <= <T as AsRef<[u8]>>::as_ref_reft(f.buffer)
+    )]
+    // Body stays bounds-checked. The `requires` above states the bound, but six in-crate call
+    // sites cannot yet discharge it: `dispatch_ethernet` hands its closure an
+    // `EthernetFrame<&mut [u8]>`, and at `T = &mut [u8]` the length index would have to come
+    // from core's blanket `impl AsMut for &mut T`, which carries no associated refinement.
+    // Until those route through `wire::Buf`, indexing unchecked here would trade a panic for an
+    // out-of-bounds write rather than prove the panic away (#16). Literal offsets rather than
+    // the `field::` consts only because flux cannot see through a `Range` const.
     #[inline]
     pub fn src_addr(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_bytes(&data[field::SOURCE])
+        Address::from_bytes(&data[6..12]) // field::SOURCE
     }
 
     /// Return the EtherType field, without checking for 802.1Q.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &Frame<T>[@f]) -> EtherType
+        requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(f.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn ethertype(&self) -> EtherType {
         let data = self.buffer.as_ref();
-        let raw = NetworkEndian::read_u16(&data[field::ETHERTYPE]);
+        let raw = read_u16_at(data, 12); // field::ETHERTYPE
         EtherType::from(raw)
     }
 }
 
 impl<'a, T: AsRef<[u8]> + ?Sized> Frame<&'a T> {
     /// Return a pointer to the payload, without checking for 802.1Q.
+    //
+    // Left bounds-checked. The buffer here is `&'a T`, so the length index has to come from
+    // core's blanket `impl<T, U> AsRef<U> for &T`, which carries no associated refinement
+    // (`as_ref_reft` is missing). The bound `14 <= len` is therefore unstatable at this self
+    // type, and routing through the unchecked `suffix` without stating it would trade a panic
+    // for UB. Convertible once a reference self type can be refined; see `wire::Buf`.
     #[inline]
     pub fn payload(&self) -> &'a [u8] {
         let data = self.buffer.as_ref();
@@ -281,31 +332,73 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Frame<&'a T> {
 
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
     /// Set the destination address field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Frame<T>[@f], _)
+        requires 6 <= <T as AsMut<[u8]>>::as_mut_reft(f.buffer)
+    )]
+    // Body stays bounds-checked. The `requires` above states the bound, but six in-crate call
+    // sites cannot yet discharge it: `dispatch_ethernet` hands its closure an
+    // `EthernetFrame<&mut [u8]>`, and at `T = &mut [u8]` the length index would have to come
+    // from core's blanket `impl AsMut for &mut T`, which carries no associated refinement.
+    // Until those route through `wire::Buf`, indexing unchecked here would trade a panic for an
+    // out-of-bounds write rather than prove the panic away (#16). Literal offsets rather than
+    // the `field::` consts only because flux cannot see through a `Range` const.
     #[inline]
     pub fn set_dst_addr(&mut self, value: Address) {
         let data = self.buffer.as_mut();
-        data[field::DESTINATION].copy_from_slice(value.as_bytes())
+        data[0..6].copy_from_slice(value.as_bytes()) // field::DESTINATION
     }
 
     /// Set the source address field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Frame<T>[@f], _)
+        requires 12 <= <T as AsMut<[u8]>>::as_mut_reft(f.buffer)
+    )]
+    // Body stays bounds-checked. The `requires` above states the bound, but six in-crate call
+    // sites cannot yet discharge it: `dispatch_ethernet` hands its closure an
+    // `EthernetFrame<&mut [u8]>`, and at `T = &mut [u8]` the length index would have to come
+    // from core's blanket `impl AsMut for &mut T`, which carries no associated refinement.
+    // Until those route through `wire::Buf`, indexing unchecked here would trade a panic for an
+    // out-of-bounds write rather than prove the panic away (#16). Literal offsets rather than
+    // the `field::` consts only because flux cannot see through a `Range` const.
     #[inline]
     pub fn set_src_addr(&mut self, value: Address) {
         let data = self.buffer.as_mut();
-        data[field::SOURCE].copy_from_slice(value.as_bytes())
+        data[6..12].copy_from_slice(value.as_bytes()) // field::SOURCE
     }
 
     /// Set the EtherType field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Frame<T>[@f], _)
+        requires 14 <= <T as AsMut<[u8]>>::as_mut_reft(f.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_ethertype(&mut self, value: EtherType) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::ETHERTYPE], value.into())
+        write_u16_at(data, 12, value.into()) // field::ETHERTYPE
     }
 
     /// Return a mutable pointer to the payload.
+    #[flux_rs::trusted(no, reason = "panic site: reslices past the fixed 14-octet header")]
+    #[flux_rs::sig(
+        fn(self: &mut Frame<T>[@f]) -> &mut [u8]
+        requires 14 <= <T as AsMut<[u8]>>::as_mut_reft(f.buffer)
+    )]
+    // Body stays bounds-checked. The `requires` above states the bound, but six in-crate call
+    // sites cannot yet discharge it: `dispatch_ethernet` hands its closure an
+    // `EthernetFrame<&mut [u8]>`, and at `T = &mut [u8]` the length index would have to come
+    // from core's blanket `impl AsMut for &mut T`, which carries no associated refinement.
+    // Until those route through `wire::Buf`, indexing unchecked here would trade a panic for an
+    // out-of-bounds write rather than prove the panic away (#16). Literal offsets rather than
+    // the `field::` consts only because flux cannot see through a `Range` const.
     #[inline]
     pub fn payload_mut(&mut self) -> &mut [u8] {
         let data = self.buffer.as_mut();
-        &mut data[field::PAYLOAD]
+        &mut data[14..] // field::PAYLOAD
     }
 }
 
@@ -337,6 +430,7 @@ impl<T: AsRef<[u8]>> fmt::Display for Frame<T> {
 use crate::wire::pretty_print::{PrettyIndent, PrettyPrint};
 
 impl<T: AsRef<[u8]>> PrettyPrint for Frame<T> {
+    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     fn pretty_print(
         buffer: &dyn AsRef<[u8]>,
         f: &mut fmt::Formatter,
@@ -390,13 +484,27 @@ impl Repr {
     }
 
     /// Return the length of a header that will be emitted from this high-level representation.
+    // Literal rather than `HEADER_LEN`: flux cannot see through the `Rest`/`Range` const.
+    #[flux_rs::trusted(no, reason = "callers reslice by this value")]
+    #[flux_rs::sig(fn(&Repr) -> usize[14])]
+    #[flux_rs::no_panic]
     pub const fn buffer_len(&self) -> usize {
         HEADER_LEN
     }
 
     /// Emit a high-level representation into an Ethernet II frame.
+    //
+    // The assert stays. It is the only thing that establishes `14 <= len` here: nothing proves a
+    // caller cannot hand over a shorter buffer, so deleting it in favour of a `requires` would
+    // remove a panic the callers do not discharge. Flux reads the passed assert as an assumption,
+    // so the three setters discharge their `requires` from it rather than from a caller, which is
+    // why `emit` needs no signature of its own.
+    //
+    // The length is read through `as_mut` rather than `as_ref` because the setters' bounds are
+    // stated over `as_mut_reft`, and flux relates the two associated refinements only if the
+    // fact arrives in that form. Same check, same condition, same value.
     pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, frame: &mut Frame<T>) {
-        assert!(frame.buffer.as_ref().len() >= self.buffer_len());
+        assert!(frame.buffer.as_mut().len() >= self.buffer_len());
         frame.set_src_addr(self.src_addr);
         frame.set_dst_addr(self.dst_addr);
         frame.set_ethertype(self.ethertype);

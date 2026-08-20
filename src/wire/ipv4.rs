@@ -718,10 +718,17 @@ impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
 /// A high-level representation of an Internet Protocol version 4 packet header.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+// Indexed by `payload_len`, which is what `ip::Repr::buffer_len()` adds the 20-byte header to
+// and therefore what a caller sizes a transmit buffer from.
+#[flux_rs::refined_by(plen: int)]
+// `payload_len` is a `usize`; stated because the index alone does not carry it, and
+// `ip::Repr::buffer_len`'s `20 <= n` conjunct needs it.
+#[flux_rs::invariant(0 <= plen)]
 pub struct Repr {
     pub src_addr: Address,
     pub dst_addr: Address,
     pub next_header: Protocol,
+    #[flux_rs::field(usize[plen])]
     pub payload_len: usize,
     pub hop_limit: u8,
 }
@@ -877,6 +884,7 @@ impl fmt::Display for Repr {
 use crate::wire::pretty_print::{PrettyIndent, PrettyPrint};
 
 impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
+    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     fn pretty_print(
         buffer: &dyn AsRef<[u8]>,
         f: &mut fmt::Formatter,

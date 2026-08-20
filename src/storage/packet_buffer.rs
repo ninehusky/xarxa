@@ -128,6 +128,7 @@ impl<'a, H> PacketBuffer<'a, H> {
 
     /// Call `f` with a packet from the buffer large enough to fit `max_size` bytes. The packet
     /// is shrunk to the size returned from `f` and enqueued into the buffer.
+    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     pub fn enqueue_with_infallible<'b, F>(
         &'b mut self,
         max_size: usize,
@@ -189,6 +190,7 @@ impl<'a, H> PacketBuffer<'a, H> {
 
     /// Call `f` with a single packet from the buffer, and dequeue the packet if `f`
     /// returns successfully, or return `Err(EmptyError)` if the buffer is empty.
+    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     pub fn dequeue_with<'c, R, E, F>(&'c mut self, f: F) -> Result<Result<R, E>, Empty>
     where
         F: FnOnce(&mut H, &'c mut [u8]) -> Result<R, E>,

@@ -13,14 +13,29 @@ pub(crate) enum EthernetPacket<'a> {
 
 #[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+// `plen` is the IP header's `payload_len` and `blen` the buffer the payload will fill; both use
+// `-1` for "not tracked", following `IpPayload` and `ip::Repr`.
+#[flux_rs::refined_by(ip_ty: int, plen: int, blen: int)]
+#[flux_rs::invariant(ip_ty == 0 || ip_ty == 1)]
+// A tracked payload length is a v4 one, and it equals the IP header's `payload_len`. Both halves
+// come from the variants: `PacketV4` carries the equality as its own invariant, and the v6 side
+// admits only an untracked payload.
+#[flux_rs::invariant(blen == -1 || (ip_ty == 0 && blen == plen))]
 pub(crate) enum Packet<'p> {
     #[cfg(feature = "proto-ipv4")]
+    #[flux_rs::variant((PacketV4[@p]) -> Packet[0, p.plen, p.blen])]
     Ipv4(PacketV4<'p>),
     #[cfg(feature = "proto-ipv6")]
+    #[flux_rs::variant((PacketV6[@p]) -> Packet[1, -1, p.blen])]
     Ipv6(PacketV6<'p>),
 }
 
 impl<'p> Packet<'p> {
+    #[flux_rs::sig(
+        fn(ip_repr: IpRepr[@ipr], payload: IpPayload[@b]) -> Packet[ipr.ip_ty, ipr.plen, b]
+        requires (ipr.ip_ty == 0 && b != -1 => b == ipr.plen) && (ipr.ip_ty == 1 => b == -1)
+    )]
+    #[flux_rs::no_panic]
     pub(crate) fn new(ip_repr: IpRepr, payload: IpPayload<'p>) -> Self {
         match ip_repr {
             #[cfg(feature = "proto-ipv4")]
@@ -31,6 +46,11 @@ impl<'p> Packet<'p> {
     }
 
     #[cfg(feature = "proto-ipv4")]
+    #[flux_rs::sig(
+        fn(ip_repr: Ipv4Repr[@r], payload: IpPayload[@b]) -> Packet[0, r.plen, b]
+        requires b != -1 => b == r.plen
+    )]
+    #[flux_rs::no_panic]
     pub(crate) fn new_ipv4(ip_repr: Ipv4Repr, payload: IpPayload<'p>) -> Self {
         Self::Ipv4(PacketV4 {
             header: ip_repr,
@@ -39,6 +59,11 @@ impl<'p> Packet<'p> {
     }
 
     #[cfg(feature = "proto-ipv6")]
+    #[flux_rs::sig(
+        fn(ip_repr: Ipv6Repr, payload: IpPayload[@b]) -> Packet[1, -1, -1]
+        requires b == -1
+    )]
+    #[flux_rs::no_panic]
     pub(crate) fn new_ipv6(ip_repr: Ipv6Repr, payload: IpPayload<'p>) -> Self {
         Self::Ipv6(PacketV6 {
             header: ip_repr,
@@ -52,6 +77,8 @@ impl<'p> Packet<'p> {
         })
     }
 
+    #[flux_rs::sig(fn(self: &Self[@p]) -> IpRepr[p.ip_ty, p.plen])]
+    #[flux_rs::no_panic]
     pub(crate) fn ip_repr(&self) -> IpRepr {
         match self {
             #[cfg(feature = "proto-ipv4")]
@@ -61,6 +88,8 @@ impl<'p> Packet<'p> {
         }
     }
 
+    #[flux_rs::sig(fn(self: &Self[@p]) -> &IpPayload[p.blen])]
+    #[flux_rs::no_panic]
     pub(crate) fn payload(&self) -> &IpPayload<'p> {
         match self {
             #[cfg(feature = "proto-ipv4")]
@@ -70,29 +99,23 @@ impl<'p> Packet<'p> {
         }
     }
 
-    /// Emit this packet's payload into `payload`.
+    /// The precondition is the whole point of this function's signature: `blen` is the exact
+    /// buffer the payload fills, so `blen == m` is what makes the ICMPv4 arm's `Repr::emit`
+    /// call dischargeable. Guarded by `blen != -1` because every other payload variant is
+    /// indexed `-1` (see `IpPayload`), which leaves those arms owing exactly what they owed
+    /// before this signature existed.
     ///
-    /// Checked, but with no `flux_rs::sig`: this function cannot be given a sound one yet, and
-    /// the obvious ones are false. `Icmpv6Repr::emit` wants `40 <= m` on the payload slice, but
-    /// `m` is `IpRepr::payload_len`, which *is* the payload repr's `buffer_len()` -- an ICMPv6
-    /// `EchoRequest` over four data octets makes that 12, so any constant floor is refuted by a
-    /// real packet. `Icmpv6Repr::emit` also wants `r.blen <= m`, where `r.blen` is that same
-    /// `buffer_len()`; that is the true contract, and it is the only one worth stating.
-    ///
-    /// Stating it means refining `IpPayload` by its payload's buffer length and `Packet` through
-    /// it, which needs `UdpRepr`, `TcpRepr` and `DhcpRepr` refined -- none of them is -- and then
-    /// an indexed `packet: &Packet[@blen]` on `Interface::emit_ip_into`, whose closure caller can
-    /// only relate `n` to `IpRepr::buffer_len()`. Until that chain exists, `trusted(no)` alone is
-    /// what this function can honestly carry: the body is checked, so the obligations its callees
-    /// state are *reported* here rather than erased, but nothing is propagated upwards.
-    ///
-    /// The unproved obligations left in the body are, per arm: the two `unreachable!()` arms
-    /// (`MightPanic`); the hop-by-hop header slices and `Buf::with_offset(payload, hbh_end)`,
-    /// where `hbh_end` is unconstrained because neither `Ipv6ExtHeaderRepr::header_len` nor
-    /// `Ipv6HopByHopRepr::buffer_len` has a Flux signature; the two `Icmpv6Repr::emit` calls, per
-    /// the paragraph above; the TCP window clamp's two `-=` underflows; and the `udp`/`dhcpv4`
-    /// closures, whose bodies Flux does not check.
-    #[flux_rs::trusted(no, reason = "checks the body; the true contract needs IpPayload refined")]
+    /// `m <= 65535` is `ip::checksum::data`'s accumulator bound, surfaced rather than assumed.
+    #[flux_rs::trusted(no, reason = "carries the payload buffer length into each repr's emit")]
+    #[flux_rs::sig(
+        fn(
+            self: &Self[@p],
+            _ip_repr: &IpRepr,
+            payload: &mut [u8][@m],
+            caps: &DeviceCapabilities,
+        )
+        requires p.blen != -1 => (p.blen == m && m <= 65535)
+    )]
     pub(crate) fn emit_payload(
         &self,
         _ip_repr: &IpRepr,
@@ -102,7 +125,13 @@ impl<'p> Packet<'p> {
         match self.payload() {
             #[cfg(feature = "proto-ipv4")]
             IpPayload::Icmpv4(icmpv4_repr) => {
-                icmpv4_repr.emit(&mut Icmpv4Packet::new_unchecked(payload), &caps.checksum)
+                // Routed through `Buf` for the same reason as the Icmpv6 arm below: a bare
+                // `&mut [u8]` instantiates core's blanket `AsMut for &mut T`, which carries no
+                // associated refinement, and naming `as_mut_reft` at it aborts this body.
+                icmpv4_repr.emit(
+                    &mut Icmpv4Packet::new_unchecked(Buf::new(payload)),
+                    &caps.checksum,
+                )
             }
             #[cfg(all(feature = "proto-ipv4", feature = "multicast"))]
             IpPayload::Igmp(igmp_repr) => igmp_repr.emit(&mut IgmpPacket::new_unchecked(payload)),
@@ -214,14 +243,24 @@ impl<'p> Packet<'p> {
 #[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[cfg(feature = "proto-ipv4")]
+#[flux_rs::refined_by(plen: int, blen: int)]
+// The IP header's `payload_len` *is* what the payload emits, wherever the payload's length is
+// tracked at all. Checked at every construction rather than assumed.
+#[flux_rs::invariant(blen == -1 || blen == plen)]
 pub(crate) struct PacketV4<'p> {
+    #[flux_rs::field(Ipv4Repr[plen])]
     header: Ipv4Repr,
+    #[flux_rs::field(IpPayload[blen])]
     payload: IpPayload<'p>,
 }
 
 #[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[cfg(feature = "proto-ipv6")]
+#[flux_rs::refined_by(blen: int)]
+// No payload length is tracked on the v6 side, so an `IpPayload` whose length *is* tracked
+// (today only `Icmpv4`) cannot be put in a `PacketV6`. Nothing in the crate does.
+#[flux_rs::invariant(blen == -1)]
 pub(crate) struct PacketV6<'p> {
     pub(crate) header: Ipv6Repr,
     #[cfg(feature = "proto-ipv6-hbh")]
@@ -230,27 +269,46 @@ pub(crate) struct PacketV6<'p> {
     pub(crate) fragment: Option<Ipv6FragmentRepr>,
     #[cfg(feature = "proto-ipv6-routing")]
     pub(crate) routing: Option<Ipv6RoutingRepr<'p>>,
+    #[flux_rs::field(IpPayload[blen])]
     pub(crate) payload: IpPayload<'p>,
 }
 
 #[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+// `blen` is the buffer this payload will fill exactly, or `-1` where it is not tracked.
+//
+// Only the `Icmpv4` variant is exact. Every other repr here is unrefined -- its `buffer_len()`
+// is not statable at this type -- so they are indexed `-1`, and `emit_payload`'s precondition
+// guards on `blen != -1`. That leaves those arms owing exactly what they owed before (nothing),
+// rather than claiming a length the code does not carry. Refining `UdpRepr`, `TcpRepr`,
+// `DhcpRepr`, `Icmpv6Repr`'s callers and `IgmpRepr` by their own `buffer_len()` is what turns
+// each `-1` into a real index.
+#[flux_rs::refined_by(blen: int)]
+#[flux_rs::invariant(blen == -1 || 8 <= blen)]
 pub(crate) enum IpPayload<'p> {
     #[cfg(feature = "proto-ipv4")]
+    #[flux_rs::variant((Icmpv4Repr[@r]) -> IpPayload[r.blen])]
     Icmpv4(Icmpv4Repr<'p>),
     #[cfg(all(feature = "proto-ipv4", feature = "multicast"))]
+    #[flux_rs::variant((IgmpRepr) -> IpPayload[-1])]
     Igmp(IgmpRepr),
     #[cfg(feature = "proto-ipv6")]
+    #[flux_rs::variant((Icmpv6Repr) -> IpPayload[-1])]
     Icmpv6(Icmpv6Repr<'p>),
     #[cfg(feature = "proto-ipv6")]
+    #[flux_rs::variant((Ipv6HopByHopRepr, Icmpv6Repr) -> IpPayload[-1])]
     HopByHopIcmpv6(Ipv6HopByHopRepr<'p>, Icmpv6Repr<'p>),
     #[cfg(feature = "socket-raw")]
+    #[flux_rs::variant((&[u8]) -> IpPayload[-1])]
     Raw(&'p [u8]),
     #[cfg(any(feature = "socket-udp", feature = "socket-dns"))]
+    #[flux_rs::variant((UdpRepr, &[u8]) -> IpPayload[-1])]
     Udp(UdpRepr, &'p [u8]),
     #[cfg(feature = "socket-tcp")]
+    #[flux_rs::variant((TcpRepr) -> IpPayload[-1])]
     Tcp(TcpRepr<'p>),
     #[cfg(feature = "socket-dhcpv4")]
+    #[flux_rs::variant((UdpRepr, DhcpRepr) -> IpPayload[-1])]
     Dhcpv4(UdpRepr, DhcpRepr<'p>),
 }
 

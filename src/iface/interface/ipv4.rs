@@ -418,13 +418,22 @@ impl InterfaceInner {
 
     /// Borrow `count` bytes of the fragmentation buffer starting at `at`.
     ///
-    /// ASSUMED, NOT PROVEN: that `at + count` is within `buf`. It holds because `at` is
-    /// `frag_offset + header_len`, `frag_offset` never passes `sent_bytes`, and `packet_len` is
-    /// bounded by the fragmentation buffer (checked in `dispatch_ip`). Stating it properly means
-    /// refining the nested `Ipv4Fragmenter` so `frag_offset` is tracked, which is not done yet.
+    /// The `count`-byte window must lie inside `buf`. The body is proven from that bound, but
+    /// the bound itself is **stated, not discharged**: the sole caller, `dispatch_ipv4_frag`,
+    /// is vacuous, because the `as_mut_reft is missing from implementation` error on its
+    /// `emit_ethernet` closure aborts its refinement check. Discharging this needs that spec
+    /// error fixed first, and then `frag_offset` refined into `Ipv4Fragmenter`.
+    ///
+    /// `strict` overflow is needed on this one function: under the crate's `lazy` default flux
+    /// models `at + count` as wrapping, so the index bound is not provable even with
+    /// `count <= blen - at` in hand.
     #[cfg(feature = "proto-ipv4-fragmentation")]
-    #[flux_rs::trusted(yes, reason = "needs `frag_offset` refined into `Ipv4Fragmenter`")]
-    #[flux_rs::sig(fn(&[u8], usize, count: usize[@n]) -> &[u8][n])]
+    #[flux_rs::opts(check_overflow = "strict")]
+    #[flux_rs::trusted(no, reason = "carries the window bound to `dispatch_ipv4_frag`")]
+    #[flux_rs::sig(
+        fn(buf: &[u8][@blen], at: usize, count: usize[@n]) -> &[u8][n]
+        requires at <= blen && n <= blen - at
+    )]
     #[flux_rs::no_panic]
     fn frag_payload(buf: &[u8], at: usize, count: usize) -> &[u8] {
         &buf[at..at + count]
