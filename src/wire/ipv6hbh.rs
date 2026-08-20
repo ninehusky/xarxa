@@ -69,11 +69,44 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     }
 }
 
+/// A ghost field: carries `buffer_len()` in the refinement and nothing at runtime.
+///
+/// The emitted length is the sum of the options' lengths. A sum over a `Vec` is not statable
+/// as a field index -- the element type's refinement is not reachable through the container --
+/// so the total is accumulated as each option is added and named here instead. Because the
+/// struct is a ZST it costs no space. Same device as `ipv6option::Ghost`.
+///
+/// The value is anchored by [`Repr::buffer_len`], the trusted getter that claims the runtime
+/// sum equals the ghost. That holds because `options` is private and every path that adds to
+/// it -- `parse`, `mldv2_router_alert`, `push_padn_option` -- adds the same amount here.
+#[flux_rs::opaque]
+#[flux_rs::refined_by(val: int)]
+#[flux_rs::invariant(0 <= val)]
+#[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+struct Ghost;
+
+impl Ghost {
+    #[flux_rs::trusted(yes, reason = "opaque: establishes the ghost value")]
+    #[flux_rs::sig(fn(val: usize) -> Ghost[val])]
+    #[flux_rs::no_panic]
+    const fn new(_val: usize) -> Ghost {
+        Ghost
+    }
+}
+
 /// A high-level representation of an IPv6 Hop-by-Hop Header.
 #[derive(Debug, PartialEq, Eq, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+// Indexed by the octets `emit` writes, which is what a caller sizes the hop-by-hop window from.
+#[flux_rs::refined_by(blen: int)]
+#[flux_rs::invariant(0 <= blen)]
 pub struct Repr<'a> {
-    pub options: Vec<Ipv6OptionRepr<'a>, { config::IPV6_HBH_MAX_OPTIONS }>,
+    // Private: the ghost below records the emitted length as options are added, so a caller
+    // pushing directly would desynchronise it. Use `push_padn_option`, or `options()` to read.
+    options: Vec<Ipv6OptionRepr<'a>, { config::IPV6_HBH_MAX_OPTIONS }>,
+    #[flux_rs::field(Ghost[blen])]
+    ghost: Ghost,
 }
 
 impl<'a> Repr<'a> {
@@ -88,20 +121,44 @@ impl<'a> Repr<'a> {
 
         let iter = Ipv6OptionsIterator::new(header.options());
 
+        let mut blen = 0usize;
+
         for option in iter {
             let option = option?;
+            let option_len = option.buffer_len();
 
             if let Err(e) = options.push(option) {
                 net_trace!("error when parsing hop-by-hop options: {}", e);
                 break;
             }
+            blen += option_len;
         }
 
-        Ok(Self { options })
+        Ok(Self {
+            options,
+            ghost: Ghost::new(blen),
+        })
+    }
+
+    /// The options this header will emit.
+    ///
+    /// Trusted: `heapless::Vec`'s `Deref` has no MIR available, so the call reads as
+    /// transitively panicking. It does not touch the `blen` ghost.
+    #[flux_rs::trusted(yes, reason = "heapless Deref has no MIR; read-only, no ghost effect")]
+    #[flux_rs::no_panic]
+    pub fn options(&self) -> &[Ipv6OptionRepr<'a>] {
+        &self.options
     }
 
     /// Return the length, in bytes, of a header that will be emitted from this high-level
     /// representation.
+    ///
+    /// Trusted: this is the anchor for the `blen` ghost. The sum below is over a `Vec`, whose
+    /// elements' refinements are not reachable through the container, so the equality is stated
+    /// rather than derived. It holds by the argument on [`Ghost`].
+    #[flux_rs::trusted(yes, reason = "anchors the `blen` ghost; the sum is over a Vec")]
+    #[flux_rs::sig(fn(self: &Self[@r]) -> usize[r.blen])]
+    #[flux_rs::no_panic]
     pub fn buffer_len(&self) -> usize {
         self.options.iter().map(|o| o.buffer_len()).sum()
     }
@@ -119,6 +176,10 @@ impl<'a> Repr<'a> {
     }
 
     /// The hop-by-hop header containing a MLDv2 router alert option
+    ///
+    /// The 4 is `Ipv6OptionRepr::RouterAlert`'s index: a two-octet preamble plus
+    /// `RouterAlert::DATA_LEN`.
+    #[flux_rs::sig(fn() -> Repr[4])]
     pub fn mldv2_router_alert() -> Self {
         let mut options = Vec::new();
         options
@@ -126,12 +187,33 @@ impl<'a> Repr<'a> {
                 RouterAlert::MulticastListenerDiscovery,
             ))
             .unwrap();
-        Self { options }
+        Self {
+            options,
+            ghost: Ghost::new(4),
+        }
     }
 
     /// Append a PadN option to the vector of hop-by-hop options
+    ///
+    /// `&strg` so the caller keeps the updated length; an existential `&mut` would havoc it.
+    #[flux_rs::trusted(yes, reason = "ghost update: the strong update does not survive the push")]
+    #[flux_rs::sig(
+        fn(self: &strg Repr[@r], n: u8) ensures self: Repr[r.blen + 2 + n]
+    )]
     pub fn push_padn_option(&mut self, n: u8) {
+        // Read before the push: `ghost_val` is indexed off `self`, and the push borrows a field
+        // mutably, after which the place's index is no longer the one the postcondition names.
+        let blen = self.ghost_val() + 2 + n as usize;
         self.options.push(Ipv6OptionRepr::PadN(n)).unwrap();
+        self.ghost = Ghost::new(blen);
+    }
+
+    /// The accumulated emitted length, read back for `push_padn_option`'s update.
+    #[flux_rs::trusted(yes, reason = "opaque ghost: reads the value back")]
+    #[flux_rs::sig(fn(self: &Self[@r]) -> usize[r.blen])]
+    #[flux_rs::no_panic]
+    fn ghost_val(&self) -> usize {
+        self.options.iter().map(|o| o.buffer_len()).sum()
     }
 }
 

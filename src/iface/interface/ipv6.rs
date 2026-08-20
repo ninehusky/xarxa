@@ -284,7 +284,7 @@ impl InterfaceInner {
         let hbh_hdr = check!(Ipv6HopByHopHeader::new_checked(ext_repr.data));
         let hbh_repr = check!(Ipv6HopByHopRepr::parse(&hbh_hdr));
 
-        for opt_repr in &hbh_repr.options {
+        for opt_repr in hbh_repr.options() {
             match opt_repr {
                 Ipv6OptionRepr::Pad1 | Ipv6OptionRepr::PadN(_) | Ipv6OptionRepr::RouterAlert(_) => {
                 }
