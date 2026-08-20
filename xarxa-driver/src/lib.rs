@@ -409,6 +409,11 @@ pub trait TxToken {
     /// closure `f` with a mutable reference to that buffer. The closure should construct
     /// a valid network packet (e.g. an ethernet packet) in the buffer. When the closure
     /// returns, the transmit buffer is sent out.
+    #[flux_rs::sig(
+        fn(self: Self, len: usize[@n], f: F) -> R
+        where
+            F: FnOnce(&mut [u8]{v : v == n}) -> R
+    )]
     fn consume<R, F>(self, len: usize, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R;
@@ -416,4 +421,51 @@ pub trait TxToken {
     /// The packet metadata to be associated with the frame to be transmitted by this [`TxToken`].
     #[allow(unused_variables)]
     fn set_meta(&mut self, meta: PacketMeta) {}
+}
+
+#[cfg(flux)]
+#[allow(dead_code)]
+mod spec_is_live {
+    use super::TxToken;
+
+    /// Accepts only a slice whose length is exactly `n`.
+    #[flux_rs::sig(fn(&mut [u8][@m], usize[@n]) requires m == n)]
+    fn demand_len(_buf: &mut [u8], _n: usize) {}
+
+    pub fn consume_hands_back_exactly_len<T: TxToken>(tok: T, len: usize) {
+        tok.consume(len, |buf| demand_len(buf, len))
+    }
+
+    /// Negative control, off by default. Demands one byte more than `consume`
+    /// promises, so Flux *must* reject it. If this ever verifies, the closure
+    /// refinement is vacuous and the positive control above proves nothing.
+    ///
+    /// Run with:
+    ///   RUSTFLAGS='--cfg flux_negative_control' cargo flux
+    /// Expect exactly one error, on the `demand_len` call below.
+    #[cfg(flux_negative_control)]
+    pub fn negative_control<T: TxToken>(tok: T, len: usize) {
+        tok.consume(len, |buf| demand_len(buf, len + 1))
+    }
+
+    /// Second negative control, off by default. This is the shape of the
+    /// forwarding implementors (`Tracer`, `PcapWriter`, `FuzzInjector`): `f` is
+    /// handed down to an inner token's `consume`. It asks that token for one byte
+    /// more than `f` accepts, so Flux *must* reject the `f(buf)` call.
+    ///
+    /// **It currently does not.** Flux checks the precondition of a refined `Fn*`
+    /// bound at a call in a function body, but not at a call inside a *closure*
+    /// body, which is where every forwarding implementor calls `f`. Until this
+    /// reports an error, those three implementors verify vacuously -- see #23.
+    ///
+    /// (`demand_len` in the same position *is* checked, so the closure body itself
+    /// is checked; it is specifically the generic `F` bound that is not.)
+    #[cfg(flux_negative_control)]
+    #[flux_rs::sig(fn(T, usize[@n], F) where F: FnOnce(&mut [u8]{v : v == n}) -> ())]
+    pub fn negative_control_nested<T: TxToken, F>(tok: T, len: usize, f: F)
+    where
+        F: FnOnce(&mut [u8]),
+    {
+        tok.consume(len + 1, |buf| f(buf))
+    }
 }

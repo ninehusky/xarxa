@@ -189,7 +189,9 @@ impl defmt::Format for Cidr {
 /// A read/write wrapper around an Internet Protocol version 4 packet buffer.
 #[derive(Debug, PartialEq, Eq, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(buffer: T)]
 pub struct Packet<T: AsRef<[u8]>> {
+    #[flux_rs::field(T[buffer])]
     buffer: T,
 }
 
@@ -212,6 +214,8 @@ pub const HEADER_LEN: usize = field::DST_ADDR.end;
 
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Imbue a raw octet buffer with IPv4 packet structure.
+    #[flux_rs::trusted(no, reason = "carries the buffer length into the Packet index")]
+    #[flux_rs::sig(fn (T[@buflen]) -> Packet<T>{v : v.buffer == buflen})]
     pub const fn new_unchecked(buffer: T) -> Packet<T> {
         Packet { buffer }
     }
@@ -220,10 +224,14 @@ impl<T: AsRef<[u8]>> Packet<T> {
     ///
     /// [new_unchecked]: #method.new_unchecked
     /// [check_len]: #method.check_len
+    #[flux_rs::trusted(no, reason = "carries the buffer length through the Result")]
+    #[flux_rs::sig(fn (T[@buflen]) -> Result<Packet<T>{v : v.buffer == buflen}>)]
     pub fn new_checked(buffer: T) -> Result<Packet<T>> {
         let packet = Self::new_unchecked(buffer);
-        packet.check_len()?;
-        Ok(packet)
+        match packet.check_len() {
+            Ok(()) => Ok(packet),
+            Err(e) => Err(e),
+        }
     }
 
     /// Ensure that no accessor method will panic if called.
@@ -238,20 +246,28 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// [set_header_len]: #method.set_header_len
     /// [set_total_len]: #method.set_total_len
     #[allow(clippy::if_same_then_else)]
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(
+        fn(self: &Packet<T>[@buf]) -> Result<()>
+    )]
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
     pub fn check_len(&self) -> Result<()> {
-        let len = self.buffer.as_ref().len();
-        if len < field::DST_ADDR.end {
-            Err(Error)
-        } else if len < self.header_len() as usize {
-            Err(Error)
-        } else if self.header_len() as u16 > self.total_len() {
-            Err(Error)
-        } else if len < self.total_len() as usize {
-            Err(Error)
-        } else if self.header_len() < MINIMUM_IHL_BYTES {
+        let data = self.buffer.as_ref();
+        let len = data.len();
+        if len < 20 { // field::DST_ADDR.end is 20, but flux doesn't know that
             Err(Error)
         } else {
-            Ok(())
+            if len < self.header_len() as usize {
+                Err(Error)
+            } else if self.header_len() as u16 > self.total_len() {
+                Err(Error)
+            } else if len < self.total_len() as usize {
+                Err(Error)
+            } else if self.header_len() < MINIMUM_IHL_BYTES {
+                Err(Error)
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -269,6 +285,11 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the header length, in octets.
     #[inline]
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(
+        fn(self: &Packet<T>[@buf]) -> u8 requires 1 <= <T as AsRef<[u8]>>::as_ref_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic] // why do i need this?
     pub fn header_len(&self) -> u8 {
         let data = self.buffer.as_ref();
         (data[field::VER_IHL] & 0x0f) * 4
@@ -288,9 +309,14 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the total length field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(
+        fn(self: &Packet<T>[@buf]) -> u16 requires 4 <= <T as AsRef<[u8]>>::as_ref_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic] // why do i need this?
     pub fn total_len(&self) -> u16 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::LENGTH])
+        crate::wire::read_u16_at(data, 2)
     }
 
     /// Return the fragment identification field.
@@ -393,6 +419,13 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the version field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            0 < <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_version(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         data[field::VER_IHL] = (data[field::VER_IHL] & !0xf0) | (value << 4);
@@ -400,18 +433,39 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the header length, in octets.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            0 < <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_header_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         data[field::VER_IHL] = (data[field::VER_IHL] & !0x0f) | ((value / 4) & 0x0f);
     }
 
     /// Set the Differential Services Code Point field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            1 < <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_dscp(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         data[field::DSCP_ECN] = (data[field::DSCP_ECN] & !0xfc) | (value << 2)
     }
 
     /// Set the Explicit Congestion Notification field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            1 < <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_ecn(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         data[field::DSCP_ECN] = (data[field::DSCP_ECN] & !0x03) | (value & 0x03)
@@ -419,56 +473,105 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the total length field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            4 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_total_len(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::LENGTH], value)
+        crate::wire::write_u16_at(data, 2, value)
     }
 
     /// Set the fragment identification field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            6 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_ident(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::IDENT], value)
+        crate::wire::write_u16_at(data, 4, value)
     }
 
     /// Clear the entire flags field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf])
+        requires
+            8 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn clear_flags(&mut self) {
         let data = self.buffer.as_mut();
-        let raw = NetworkEndian::read_u16(&data[field::FLG_OFF]);
+        let raw = crate::wire::read_u16_at(data, 6);
         let raw = raw & !0xe000;
-        NetworkEndian::write_u16(&mut data[field::FLG_OFF], raw);
+        crate::wire::write_u16_at(data, 6, raw);
     }
 
     /// Set the "don't fragment" flag.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            8 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_dont_frag(&mut self, value: bool) {
         let data = self.buffer.as_mut();
-        let raw = NetworkEndian::read_u16(&data[field::FLG_OFF]);
+        let raw = crate::wire::read_u16_at(data, 6);
         let raw = if value { raw | 0x4000 } else { raw & !0x4000 };
-        NetworkEndian::write_u16(&mut data[field::FLG_OFF], raw);
+        crate::wire::write_u16_at(data, 6, raw);
     }
 
     /// Set the "more fragments" flag.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            8 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_more_frags(&mut self, value: bool) {
         let data = self.buffer.as_mut();
-        let raw = NetworkEndian::read_u16(&data[field::FLG_OFF]);
+        let raw = crate::wire::read_u16_at(data, 6);
         let raw = if value { raw | 0x2000 } else { raw & !0x2000 };
-        NetworkEndian::write_u16(&mut data[field::FLG_OFF], raw);
+        crate::wire::write_u16_at(data, 6, raw);
     }
 
     /// Set the fragment offset, in octets.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            8 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_frag_offset(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        let raw = NetworkEndian::read_u16(&data[field::FLG_OFF]);
+        let raw = crate::wire::read_u16_at(data, 6);
         let raw = (raw & 0xe000) | (value >> 3);
-        NetworkEndian::write_u16(&mut data[field::FLG_OFF], raw);
+        crate::wire::write_u16_at(data, 6, raw);
     }
 
     /// Set the time to live field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic occurs here")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], value: u8)
+        requires
+            9 < <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_hop_limit(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         data[field::TTL] = value
@@ -476,6 +579,13 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the next header (protocol) field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            9 < <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_next_header(&mut self, value: Protocol) {
         let data = self.buffer.as_mut();
         data[field::PROTOCOL] = value.into()
@@ -483,26 +593,94 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the header checksum field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            12 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_checksum(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::CHECKSUM], value)
+        crate::wire::write_u16_at(data, 10, value)
     }
 
     /// Set the source address field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            16 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_src_addr(&mut self, value: Address) {
         let data = self.buffer.as_mut();
-        data[field::SRC_ADDR].copy_from_slice(&value.octets())
+        crate::wire::write_octets4_at(data, 12, &value.octets())
     }
 
     /// Set the destination address field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], _)
+        requires
+            20 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_dst_addr(&mut self, value: Address) {
         let data = self.buffer.as_mut();
-        data[field::DST_ADDR].copy_from_slice(&value.octets())
+        crate::wire::write_octets4_at(data, 16, &value.octets())
+    }
+
+    /// Compute and fill in the header checksum, over a header of exactly `header_len` octets.
+    ///
+    /// Unlike [`fill_checksum`](Self::fill_checksum) this does not read the IHL nibble back out
+    /// of the buffer, so its safety is a property of the arguments rather than of the buffer's
+    /// contents -- which is what makes it provable. Callers that have just *written* the header
+    /// length know it; use this rather than `fill_checksum` on a path that must verify.
+    #[flux_rs::trusted(no, reason = "checksum over a caller-supplied header length")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf], header_len: usize)
+        requires
+            12 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer) &&
+            header_len <= 60 &&
+            header_len <= <T as AsRef<[u8]>>::as_ref_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
+    pub fn fill_checksum_with_header_len(&mut self, header_len: usize) {
+        self.set_checksum(0);
+        let checksum = {
+            let data = self.buffer.as_ref();
+            !checksum::data(crate::wire::prefix(data, header_len))
+        };
+        self.set_checksum(checksum)
     }
 
     /// Compute and fill in the header checksum.
+    // ASSUMED, NOT PROVEN, on one point. `set_checksum` is discharged by the `20 <=` bounds
+    // below, but the slice `data[..self.header_len()]` is bounded by the IHL nibble read out
+    // of the buffer itself, which flux cannot relate to the buffer's length without tracking
+    // contents. It holds for every caller here because each writes IHL before calling this
+    // (`Repr::emit` sets it to 20 at the top). A buffer whose IHL field exceeds its length
+    // would panic -- reachable only via `new_unchecked` on unvalidated bytes.
+    //
+    // Confirmed by running, not just by reading: adding `#[flux_rs::trusted(no)]` yields two
+    // errors on the line below -- the slice index itself, and `checksum::data`'s `n <= 65535`,
+    // neither of which is provable without relating buffer contents to buffer length. The
+    // `trusted(yes)` is therefore spelled out rather than left to `default_trusted = true`, so
+    // the assumption is machine-visible instead of silent. The provable form is
+    // `fill_checksum_with_header_len`, which takes the length the caller just wrote; every
+    // in-crate caller on a path that must verify has already moved to it. The one remaining
+    // live caller of this function is `socket/raw.rs:412`, inside a `dequeue_with` closure.
+    #[flux_rs::trusted(yes, reason = "IHL-derived bound is a property of buffer contents")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@buf])
+        requires
+            20 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer) &&
+            20 <= <T as AsRef<[u8]>>::as_ref_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn fill_checksum(&mut self) {
         self.set_checksum(0);
         let checksum = {
@@ -521,7 +699,17 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 }
 
+#[flux_rs::assoc(
+    fn as_ref_reft(source: Self) -> int {
+        <T as AsRef<[u8]>>::as_ref_reft(source.buffer)
+    }
+)]
 impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(
+        fn(self: &Self[@source])
+            -> &[u8][Self::as_ref_reft(source)]
+    )]
     fn as_ref(&self) -> &[u8] {
         self.buffer.as_ref()
     }
@@ -530,10 +718,17 @@ impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
 /// A high-level representation of an Internet Protocol version 4 packet header.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+// Indexed by `payload_len`, which is what `ip::Repr::buffer_len()` adds the 20-byte header to
+// and therefore what a caller sizes a transmit buffer from.
+#[flux_rs::refined_by(plen: int)]
+// `payload_len` is a `usize`; stated because the index alone does not carry it, and
+// `ip::Repr::buffer_len`'s `20 <= n` conjunct needs it.
+#[flux_rs::invariant(0 <= plen)]
 pub struct Repr {
     pub src_addr: Address,
     pub dst_addr: Address,
     pub next_header: Protocol,
+    #[flux_rs::field(usize[plen])]
     pub payload_len: usize,
     pub hop_limit: u8,
 }
@@ -575,12 +770,31 @@ impl Repr {
     }
 
     /// Return the length of a header that will be emitted from this high-level representation.
+    // `field::DST_ADDR.end` is 20, but flux can't see through the `Range` const, so the
+    // literal is restated in the signature (same workaround as `check_len`).
+    #[flux_rs::trusted(no, reason = "20 is the constant the whole ipv4 proof rests on")]
+    #[flux_rs::sig(fn(self: &Self) -> usize[20])]
+    #[flux_rs::no_panic]
     pub const fn buffer_len(&self) -> usize {
         // We never emit any options.
-        field::DST_ADDR.end
+        // Literal rather than `field::DST_ADDR.end`: flux cannot see through the `Range`
+        // const (same reason as `check_len`).
+        20
     }
 
     /// Emit a high-level representation into an Internet Protocol version 4 packet.
+    #[flux_rs::trusted(no, reason = "calls packet.set_hop_limit")]
+    #[flux_rs::sig(
+        fn(
+            self: &Self,
+            packet: &mut Packet<T>[@buf],
+            checksum_caps: &ChecksumCapabilities
+        )
+        requires
+            20 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer) &&
+            20 <= <T as AsRef<[u8]>>::as_ref_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(
         &self,
         packet: &mut Packet<T>,
@@ -603,7 +817,7 @@ impl Repr {
         packet.set_dst_addr(self.dst_addr);
 
         if checksum_caps.ipv4.tx() {
-            packet.fill_checksum();
+            packet.fill_checksum_with_header_len(20);
         } else {
             // make sure we get a consistently zeroed checksum,
             // since implementations might rely on it
@@ -670,6 +884,7 @@ impl fmt::Display for Repr {
 use crate::wire::pretty_print::{PrettyIndent, PrettyPrint};
 
 impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
+    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     fn pretty_print(
         buffer: &dyn AsRef<[u8]>,
         f: &mut fmt::Formatter,

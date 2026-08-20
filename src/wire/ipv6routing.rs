@@ -2,6 +2,7 @@ use super::{Error, Result};
 use core::fmt;
 
 use crate::wire::Ipv6Address as Address;
+use crate::wire::{sub, write_octets16_at};
 
 enum_with_unknown! {
     /// IPv6 Extension Routing Header Routing Type
@@ -51,7 +52,9 @@ impl fmt::Display for Type {
 /// A read/write wrapper around an IPv6 Routing Header buffer.
 #[derive(Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(buffer: T)]
 pub struct Header<T: AsRef<[u8]>> {
+    #[flux_rs::field(T[buffer])]
     buffer: T,
 }
 
@@ -73,6 +76,9 @@ pub struct Header<T: AsRef<[u8]>> {
 // **NOTE**: The fields start counting after the header length field.
 mod field {
     #![allow(non_snake_case)]
+    // The accessors write their offsets as literals -- flux cannot see through these consts --
+    // so several are now named only by `check_len` and by the comment beside each literal.
+    #![allow(unused)]
 
     use crate::wire::field::*;
 
@@ -125,6 +131,20 @@ mod field {
     pub const ADDRESSES: usize = 6;
 }
 
+/// Read the sixteen-octet IPv6 address at `at`.
+///
+/// The equal-length `copy_from_slice` stands in for `try_into().unwrap()`, which flux cannot
+/// prove -- it does not model `TryInto<[u8; 16]> for &[u8]`. Both panic on a length mismatch
+/// and `at + 16 <= n` rules both out, so the check is gated rather than removed.
+#[flux_rs::trusted(no, reason = "panic site: copy_from_slice equal-length")]
+#[flux_rs::sig(fn(&[u8][@n], at: usize) -> Address requires at + 16 <= n)]
+#[flux_rs::no_panic]
+fn read_ipv6_at(data: &[u8], at: usize) -> Address {
+    let mut octets = [0; 16];
+    octets.copy_from_slice(sub(data, at, 16));
+    Address::from_octets(octets)
+}
+
 /// Core getter methods relevant to any routing type.
 impl<T: AsRef<[u8]>> Header<T> {
     /// Create a raw octet buffer with an IPv6 Routing Header structure.
@@ -169,17 +189,31 @@ impl<T: AsRef<[u8]>> Header<T> {
     }
 
     /// Return the routing type field.
+    // Literal offsets rather than the `field::` consts: flux cannot see through them, so the
+    // bound has to be written out. Same throughout this file.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &Header<T>[@h]) -> Type
+        requires 1 <= <T as AsRef<[u8]>>::as_ref_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn routing_type(&self) -> Type {
         let data = self.buffer.as_ref();
-        Type::from(data[field::TYPE])
+        Type::from(data[0]) // field::TYPE
     }
 
     /// Return the segments left field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &Header<T>[@h]) -> u8
+        requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn segments_left(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[field::SEG_LEFT]
+        data[1] // field::SEG_LEFT
     }
 }
 
@@ -189,9 +223,15 @@ impl<T: AsRef<[u8]>> Header<T> {
     ///
     /// # Panics
     /// This function may panic if this header is not the Type2 Routing Header routing type.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &Header<T>[@h]) -> Address
+        requires 22 <= <T as AsRef<[u8]>>::as_ref_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn home_address(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_octets(data[field::HOME_ADDRESS].try_into().unwrap())
+        read_ipv6_at(data, 6) // field::HOME_ADDRESS
     }
 }
 
@@ -201,59 +241,106 @@ impl<T: AsRef<[u8]>> Header<T> {
     ///
     /// # Panics
     /// This function may panic if this header is not the RPL Source Routing Header routing type.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &Header<T>[@h]) -> u8
+        requires 3 <= <T as AsRef<[u8]>>::as_ref_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn cmpr_i(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[field::CMPR] >> 4
+        data[2] >> 4 // field::CMPR
     }
 
     /// Return the number of prefix octets elided from the last address (`addresses[n]`).
     ///
     /// # Panics
     /// This function may panic if this header is not the RPL Source Routing Header routing type.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &Header<T>[@h]) -> u8
+        requires 3 <= <T as AsRef<[u8]>>::as_ref_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn cmpr_e(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[field::CMPR] & 0xf
+        data[2] & 0xf // field::CMPR
     }
 
     /// Return the number of octets used for padding after `addresses[n]`.
     ///
     /// # Panics
     /// This function may panic if this header is not the RPL Source Routing Header routing type.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &Header<T>[@h]) -> u8
+        requires 4 <= <T as AsRef<[u8]>>::as_ref_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn pad(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[field::PAD] >> 4
+        data[3] >> 4 // field::PAD
     }
 
     /// Return the address vector in bytes
     ///
     /// # Panics
     /// This function may panic if this header is not the RPL Source Routing Header routing type.
+    #[flux_rs::trusted(no, reason = "panic site: opens the address window at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &Header<T>[@h]) -> &[u8]
+        requires 6 <= <T as AsRef<[u8]>>::as_ref_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn addresses(&self) -> &[u8] {
         let data = self.buffer.as_ref();
-        &data[field::ADDRESSES..]
+        &data[6..] // field::ADDRESSES
     }
 }
 
 /// Core setter methods relevant to any routing type.
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     /// Set the routing type.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Header<T>[@h], value: Type)
+        requires 1 <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_routing_type(&mut self, value: Type) {
         let data = self.buffer.as_mut();
-        data[field::TYPE] = value.into();
+        data[0] = value.into(); // field::TYPE
     }
 
     /// Set the segments left field.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Header<T>[@h], value: u8)
+        requires 2 <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_segments_left(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::SEG_LEFT] = value;
+        data[1] = value; // field::SEG_LEFT
     }
 
     /// Initialize reserved fields to 0.
     ///
     /// # Panics
     /// This function may panic if the routing type is not set.
+    //
+    // This reads through `AsRef` and writes through `AsMut`, and flux relates the two lengths
+    // nowhere, so both are stated. No `no_panic`: the `_` arm's `panic!` is reachable -- the
+    // routing type is buffer contents and nothing here rules the other variants out.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Header<T>[@h])
+        requires
+            1 <= <T as AsRef<[u8]>>::as_ref_reft(h.buffer)
+            && 6 <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+    )]
     #[inline]
     pub fn clear_reserved(&mut self) {
         let routing_type = self.routing_type();
@@ -268,7 +355,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
             }
             Type::Rpl => {
                 // Retain the higher order 4 bits of the padding field
-                data[field::PAD] &= 0xF0;
+                data[3] &= 0xF0; // field::PAD
                 data[4] = 0;
                 data[5] = 0;
             }
@@ -284,9 +371,15 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     ///
     /// # Panics
     /// This function may panic if this header is not the Type 2 Routing Header routing type.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Header<T>[@h], value: Address)
+        requires 22 <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_home_address(&mut self, value: Address) {
         let data = self.buffer.as_mut();
-        data[field::HOME_ADDRESS].copy_from_slice(&value.octets());
+        write_octets16_at(data, 6, &value.octets()); // field::HOME_ADDRESS
     }
 }
 
@@ -296,38 +389,71 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     ///
     /// # Panics
     /// This function may panic if this header is not the RPL Source Routing Header routing type.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Header<T>[@h], value: u8)
+        requires 3 <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_cmpr_i(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        let raw = (value << 4) | (data[field::CMPR] & 0xF);
-        data[field::CMPR] = raw;
+        // field::CMPR
+        let raw = (value << 4) | (data[2] & 0xF);
+        data[2] = raw;
     }
 
     /// Set the number of prefix octets elided from the last address (`addresses[n]`).
     ///
     /// # Panics
     /// This function may panic if this header is not the RPL Source Routing Header routing type.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Header<T>[@h], value: u8)
+        requires 3 <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_cmpr_e(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        let raw = (value & 0xF) | (data[field::CMPR] & 0xF0);
-        data[field::CMPR] = raw;
+        // field::CMPR
+        let raw = (value & 0xF) | (data[2] & 0xF0);
+        data[2] = raw;
     }
 
     /// Set the number of octets used for padding after `addresses[n]`.
     ///
     /// # Panics
     /// This function may panic if this header is not the RPL Source Routing Header routing type.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Header<T>[@h], value: u8)
+        requires 4 <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn set_pad(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::PAD] = value << 4;
+        data[3] = value << 4; // field::PAD
     }
 
     /// Set address data
     ///
     /// # Panics
     /// This function may panic if this header is not the RPL Source Routing Header routing type.
+    //
+    // No `no_panic`: the `6 <= len` bound gates the window, but `copy_from_slice` panics
+    // unless `value.len()` is exactly `len - 6`, which is a real precondition of this function
+    // that no caller establishes. A returned `&mut` loses its length index
+    // (flux-rs/flux#1714), so `addresses`' length is unknown here and the equal-length assert
+    // stays. Stating it needs a `wire::buf` helper of the shape
+    // `fn(&mut [u8][@n], at: usize, src: &[u8][n - at]) requires at <= n`, which `copy_window_at`
+    // does not cover -- it takes the window length as an argument rather than deriving it.
+    #[flux_rs::trusted(no, reason = "panic site: writes the address window at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Header<T>[@h], value: &[u8])
+        requires 6 <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+    )]
     pub fn set_addresses(&mut self, value: &[u8]) {
         let data = self.buffer.as_mut();
-        let addresses = &mut data[field::ADDRESSES..];
+        let addresses = &mut data[6..]; // field::ADDRESSES
         addresses.copy_from_slice(value);
     }
 }

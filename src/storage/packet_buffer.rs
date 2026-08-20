@@ -77,6 +77,15 @@ impl<'a, H> PacketBuffer<'a, H> {
     /// Enqueue a single packet with the given header into the buffer, and
     /// return a reference to its payload, or return `Err(Full)`
     /// if the buffer is full.
+    // Checked. The `Ok` payload really is `size` bytes long: the contiguous-window branches
+    // below establish it, resting on the `RingBuffer` refinement.
+    #[flux_rs::trusted(no, reason = "the postcondition RawSocket::process depends on")]
+    #[flux_rs::sig(
+        fn(self: &mut Self, size: usize[@n], header: H) -> Result<&mut [u8][n], Full>
+    )]
+    // Deliberately not `no_panic`: what `RawSocket::process` needs from this is the length
+    // postcondition. Panic-freedom additionally owes the `debug_assert!` below and the
+    // `enqueue_one`/`enqueue_many` calls, which is a separate obligation.
     pub fn enqueue(&mut self, size: usize, header: H) -> Result<&mut [u8], Full> {
         if self.payload_ring.capacity() < size || self.metadata_ring.is_full() {
             return Err(Full);
@@ -119,6 +128,7 @@ impl<'a, H> PacketBuffer<'a, H> {
 
     /// Call `f` with a packet from the buffer large enough to fit `max_size` bytes. The packet
     /// is shrunk to the size returned from `f` and enqueued into the buffer.
+    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     pub fn enqueue_with_infallible<'b, F>(
         &'b mut self,
         max_size: usize,
@@ -180,6 +190,7 @@ impl<'a, H> PacketBuffer<'a, H> {
 
     /// Call `f` with a single packet from the buffer, and dequeue the packet if `f`
     /// returns successfully, or return `Err(EmptyError)` if the buffer is empty.
+    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     pub fn dequeue_with<'c, R, E, F>(&'c mut self, f: F) -> Result<Result<R, E>, Empty>
     where
         F: FnOnce(&mut H, &'c mut [u8]) -> Result<R, E>,

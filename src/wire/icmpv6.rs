@@ -15,6 +15,29 @@ use crate::wire::{IpProtocol, Ipv6Address, Ipv6Packet, Ipv6Repr};
 /// Error packets must not exceed min MTU
 const MAX_ERROR_PACKET_LEN: usize = IPV6_MIN_MTU - IPV6_HEADER_LEN;
 
+flux_rs::defs! {
+    // `Packet::header_len`, as a function of the message type octet. Kept in lockstep with
+    // that method's body, which is `trusted(no)` and so has to prove it returns exactly this.
+    // The `_ => 4` default covers `RplControl` and every `Unknown`, matching the comment on
+    // the method: types outside RFC 4443 keep the last 32 bits of the header in `payload`.
+    fn icmpv6_header_len(code: int) -> int {
+        if code == 0x89 { 40 }
+        else if code == 0x82 { 28 }
+        else if code == 0x87 || code == 0x88 { 24 }
+        else if code == 0x86 { 16 }
+        else if code == 0x01 || code == 0x02 || code == 0x03 || code == 0x04
+             || code == 0x80 || code == 0x81 || code == 0x85 || code == 0x8f { 8 }
+        else { 4 }
+    }
+
+    // `Repr::buffer_len()` for the four error variants, as a function of `data.len()`:
+    // `min(field::UNUSED.end + Ipv6Repr::buffer_len() + m, MAX_ERROR_PACKET_LEN)`
+    // = `min(8 + 40 + m, 1240)`. Kept in lockstep with that method's body.
+    fn icmpv6_err_buffer_len(m: int) -> int {
+        if 48 + m < 1240 { 48 + m } else { 1240 }
+    }
+}
+
 enum_with_unknown! {
     #[refined]
     /// Internet protocol control message type.
@@ -195,12 +218,13 @@ impl fmt::Display for TimeExceeded {
 /// A read/write wrapper around an Internet Control Message Protocol version 6 packet buffer.
 #[derive(Debug, PartialEq, Eq, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[flux_rs::refined_by(code: int)]
+#[flux_rs::refined_by(code: int, buffer: T)]
 pub struct Packet<T: AsRef<[u8]>> {
     /// Mirrors `buffer[field::TYPE]`, which Flux cannot see. `new_unchecked` reads it out
     /// of the buffer and `set_msg_type` writes both; nothing else in `wire` writes octet 0.
     #[flux_rs::field(Message[code])]
     ty: Message,
+    #[flux_rs::field(T[buffer])]
     pub(super) buffer: T,
 }
 
@@ -267,6 +291,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     ///
     /// [check_len]: #method.check_len
     #[flux_rs::trusted(no, reason = "establishes the `ty` mirror of `buffer[field::TYPE]`")]
+    #[flux_rs::sig(fn(T[@b]) -> Packet<T>{v: v.buffer == b})]
     pub fn new_unchecked(buffer: T) -> Packet<T> {
         let ty = match buffer.as_ref().first() {
             Some(&octet) => Message::from(octet),
@@ -360,7 +385,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the message type field.
     #[flux_rs::trusted(no, reason = "backs Packet's code index")]
-    #[flux_rs::sig(fn(&Packet<T>[@code]) -> Message[code])]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> Message[p.code])]
     #[inline]
     pub fn msg_type(&self) -> Message {
         self.ty
@@ -410,26 +435,38 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the header length. The result depends on the value of
     /// the message type field.
+    // The arms return literals rather than `field::X.end`: a `const` of struct type is opaque
+    // to Flux, so `field::UNUSED.end` is an unconstrained `usize` and the postcondition below
+    // cannot be discharged. The literal on each arm is the value that `const` has; the
+    // original spelling is kept in a trailing comment so the two stay reviewable together.
+    #[flux_rs::trusted(no, reason = "carries the per-type header length to payload/payload_mut")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> usize[icmpv6_header_len(p.code)])]
+    #[flux_rs::no_panic]
     pub fn header_len(&self) -> usize {
         match self.msg_type() {
-            Message::DstUnreachable => field::UNUSED.end,
-            Message::PktTooBig => field::MTU.end,
-            Message::TimeExceeded => field::UNUSED.end,
-            Message::ParamProblem => field::POINTER.end,
-            Message::EchoRequest => field::ECHO_SEQNO.end,
-            Message::EchoReply => field::ECHO_SEQNO.end,
-            Message::RouterSolicit => field::UNUSED.end,
-            Message::RouterAdvert => field::RETRANS_TM.end,
-            Message::NeighborSolicit => field::TARGET_ADDR.end,
-            Message::NeighborAdvert => field::TARGET_ADDR.end,
-            Message::Redirect => field::DEST_ADDR.end,
-            Message::MldQuery => field::QUERY_NUM_SRCS.end,
-            Message::MldReport => field::NR_MCAST_RCRDS.end,
+            Message::DstUnreachable => 8,   // field::UNUSED.end
+            Message::PktTooBig => 8,        // field::MTU.end
+            Message::TimeExceeded => 8,     // field::UNUSED.end
+            Message::ParamProblem => 8,     // field::POINTER.end
+            Message::EchoRequest => 8,      // field::ECHO_SEQNO.end
+            Message::EchoReply => 8,        // field::ECHO_SEQNO.end
+            Message::RouterSolicit => 8,    // field::UNUSED.end
+            Message::RouterAdvert => 16,    // field::RETRANS_TM.end
+            Message::NeighborSolicit => 24, // field::TARGET_ADDR.end
+            Message::NeighborAdvert => 24,  // field::TARGET_ADDR.end
+            Message::Redirect => 40,        // field::DEST_ADDR.end
+            Message::MldQuery => 28,        // field::QUERY_NUM_SRCS.end
+            Message::MldReport => 8,        // field::NR_MCAST_RCRDS.end
             // For packets that are not included in RFC 4443, do not
             // include the last 32 bits of the ICMPv6 header in
             // `header_bytes`. This must be done so that these bytes
             // can be accessed in the `payload`.
-            _ => field::CHECKSUM.end,
+            //
+            // Spelled out rather than left to a `_`, for the same reason as `clear_reserved`:
+            // Flux only learns `code != <every named value>` from the named `Unknown` pattern,
+            // and that is what discharges `icmpv6_header_len(code) == 4` here.
+            Message::RplControl => 4,  // field::CHECKSUM.end
+            Message::Unknown(_) => 4,  // field::CHECKSUM.end
         }
     }
 
@@ -462,7 +499,11 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the message type field.
     #[flux_rs::trusted(no, reason = "the `ensures` is the link clear_reserved's proof rests on")]
-    #[flux_rs::sig(fn(self: &strg Packet<T>, Message[@code]) ensures self: Packet<T>[code])]
+    #[flux_rs::sig(
+        fn(self: &strg Packet<T>[@p], Message[@code])
+        requires 0 < <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        ensures self: Packet<T>[code, p.buffer]
+    )]
     #[inline]
     pub fn set_msg_type(&mut self, value: Message) {
         self.ty = value;
@@ -472,7 +513,10 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     /// Set the message code field.
     #[flux_rs::trusted(no, reason = "the preserved index is a link clear_reserved's proof rests on")]
-    #[flux_rs::sig(fn(&mut Packet<T>[@code], u8))]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p], u8)
+        requires 1 < <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
     #[inline]
     pub fn set_msg_code(&mut self, value: u8) {
         let data = self.buffer.as_mut();
@@ -488,27 +532,38 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// [set_msg_type]: #method.set_msg_type
     #[allow(unsafe_code)]
     #[flux_rs::trusted(no, reason = "discharges the assert(false) licensing unreachable_unchecked")]
-    #[flux_rs::sig(fn(&mut Packet<T>[@code])
-        requires code == 0x82 || code == 0x85 || code == 0x87
-              || code == 0x88 || code == 0x89 || code == 0x8f)]
+    // The buffer bound is per-arm: MLD query also clears `SQRV` at octet 24, MLD report only
+    // reaches `RECORD_RESV.end`, and the NDISC types only reach `UNUSED.end`.
+    #[flux_rs::sig(fn(&mut Packet<T>[@p])
+        requires (p.code == 0x82 || p.code == 0x85 || p.code == 0x87
+               || p.code == 0x88 || p.code == 0x89 || p.code == 0x8f)
+              && (p.code == 0x82 => 25 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))
+              && (p.code == 0x8f => 6 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))
+              && ((p.code == 0x85 || p.code == 0x87 || p.code == 0x88 || p.code == 0x89)
+                  => 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)))]
     #[inline]
     pub fn clear_reserved(&mut self) {
+        // Ranges spelled out: a `const` of struct type is opaque to Flux, so `field::UNUSED`
+        // does not even yield `4 <= 8`.
         match self.msg_type() {
             Message::RouterSolicit
             | Message::NeighborSolicit
             | Message::NeighborAdvert
             | Message::Redirect => {
                 let data = self.buffer.as_mut();
-                NetworkEndian::write_u32(&mut data[field::UNUSED], 0);
+                // Two big-endian halves rather than one `write_u32`: see the note on
+                // `set_pkt_too_big_mtu`. Writing 0 to 4..6 then 6..8 is the same four bytes.
+                crate::wire::write_u16_at(data, 4, 0);
+                crate::wire::write_u16_at(data, 6, 0);
             }
             Message::MldQuery => {
                 let data = self.buffer.as_mut();
-                NetworkEndian::write_u16(&mut data[field::QUERY_RESV], 0);
+                crate::wire::write_u16_at(data, 6, 0);
                 data[field::SQRV] &= 0xf;
             }
             Message::MldReport => {
                 let data = self.buffer.as_mut();
-                NetworkEndian::write_u16(&mut data[field::RECORD_RESV], 0);
+                crate::wire::write_u16_at(data, 4, 0);
             }
             // Spelled out rather than left to a `_`: Flux only rules an arm out for named
             // patterns.
@@ -528,53 +583,105 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         }
     }
 
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p], u16)
+        requires 4 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_checksum(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::CHECKSUM], value)
+        crate::wire::write_u16_at(data, 2, value) // field::CHECKSUM
     }
 
     /// Set the identifier field (for echo request and reply packets).
     ///
     /// # Panics
     /// This function may panic if this packet is not an echo request or reply packet.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p], u16)
+        requires 6 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_echo_ident(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::ECHO_IDENT], value)
+        crate::wire::write_u16_at(data, 4, value) // field::ECHO_IDENT
     }
 
     /// Set the sequence number field (for echo request and reply packets).
     ///
     /// # Panics
     /// This function may panic if this packet is not an echo request or reply packet.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p], u16)
+        requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_echo_seq_no(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::ECHO_SEQNO], value)
+        crate::wire::write_u16_at(data, 6, value) // field::ECHO_SEQNO
     }
 
     /// Set the MTU field (for packet too big messages).
     ///
     /// # Panics
     /// This function may panic if this packet is not an packet too big packet.
+    // The single `write_u32` over `4..8` is written as the two big-endian halves it is defined
+    // to produce. There is no `write_u32_at` helper, and `byteorder::write_u32` has no extern
+    // spec (its body is `NoMIRAvailable`), so the u32 form is unprovable; `write_u16` has both.
+    // The emitted bytes are identical -- `u32::to_be_bytes(v)` is
+    // `to_be_bytes(v >> 16) ++ to_be_bytes(v as u16)`.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p], u32)
+        requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_pkt_too_big_mtu(&mut self, value: u32) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u32(&mut data[field::MTU], value)
+        crate::wire::write_u16_at(data, 4, (value >> 16) as u16); // field::MTU
+        crate::wire::write_u16_at(data, 6, value as u16);
     }
 
     /// Set the pointer field (for parameter problem messages).
     ///
     /// # Panics
     /// This function may panic if this packet is not a parameter problem message.
+    // Split into two big-endian halves for the same reason as `set_pkt_too_big_mtu`.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p], u32)
+        requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_param_problem_ptr(&mut self, value: u32) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u32(&mut data[field::POINTER], value)
+        crate::wire::write_u16_at(data, 4, (value >> 16) as u16); // field::POINTER
+        crate::wire::write_u16_at(data, 6, value as u16);
     }
 
     /// Compute and fill in the header checksum.
+    ///
+    /// The `[@p]` on the receiver is the point of the signature: without it the caller's
+    /// `40 <= as_mut_reft(buffer)` is havoced across this call (a `&mut T{v: ..}` refinement
+    /// does not survive a call to a callee that does not restate the index).
+    /// `as_ref_reft <= 65535` is `checksum::data`'s own bound (a `u16` accumulator cannot
+    /// take more than 65535 octets without the fold overflowing). It is a real, satisfiable
+    /// property of every icmpv6 buffer -- they are sized from `Repr::buffer_len()`, capped at
+    /// 1240 -- so it is stated as a caller obligation rather than assumed here.
+    #[flux_rs::trusted(no, reason = "panic site: two fixed-offset checksum writes")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p], &Ipv6Address, &Ipv6Address)
+        requires 4 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+             && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
+    )]
     pub fn fill_checksum(&mut self, src_addr: &Ipv6Address, dst_addr: &Ipv6Address) {
         self.set_checksum(0);
         let checksum = {
@@ -593,15 +700,57 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     /// Return a mutable pointer to the type-specific data.
+    ///
+    /// The caller owes room for this message type's header; the bound is exactly what
+    /// [check_len] tests at runtime, stated statically.
+    ///
+    /// [check_len]: #method.check_len
+    #[flux_rs::trusted(no, reason = "panic site: the `header_len()..` split")]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p]) -> &mut [u8]
+        requires icmpv6_header_len(p.code) <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn payload_mut(&mut self) -> &mut [u8] {
         let range = self.header_len()..;
         let data = self.buffer.as_mut();
         &mut data[range]
     }
+
+    /// The type-specific data, as a length-carrying [`Buf`].
+    ///
+    /// Same bytes as [`payload_mut`], but the length survives the return: a returned
+    /// `&mut [u8]` lands in the caller with no index (flux-rs/flux#1714), so `payload_mut`'s
+    /// result cannot be sliced or measured under a refinement. `Buf` does the offsetting
+    /// internally and *declares* its length, so the caller gets
+    /// `as_mut_reft(buffer) - icmpv6_header_len(code)` back.
+    ///
+    /// [`payload_mut`]: #method.payload_mut
+    /// [`Buf`]: crate::wire::Buf
+    #[flux_rs::trusted(no, reason = "carries the payload length out to the caller")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p])
+            -> crate::wire::Buf[<T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+                                - icmpv6_header_len(p.code)]
+        requires icmpv6_header_len(p.code) <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
+    #[inline]
+    pub fn payload_buf(&mut self) -> crate::wire::Buf<'_> {
+        let offset = self.header_len();
+        crate::wire::Buf::with_offset(self.buffer.as_mut(), offset)
+    }
 }
 
+#[flux_rs::assoc(
+    fn as_ref_reft(source: Self) -> int {
+        <T as AsRef<[u8]>>::as_ref_reft(source.buffer)
+    }
+)]
 impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(self: &Self[@source]) -> &[u8][Self::as_ref_reft(source)])]
     fn as_ref(&self) -> &[u8] {
         self.buffer.as_ref()
     }
@@ -611,42 +760,63 @@ impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
+// Indexed by `buffer_len()`, which is what every caller of `emit` allocates. That is the only
+// way to state `emit`'s real precondition: the contained-packet copy needs
+// `icmpv6_header_len(code) + 40 + data.len() <= len || 1240 <= len`, and `data.len()` lives
+// inside the `Repr`.
+//
+// The `Ndisc`/`Mld`/`Rpl` variants are indexed `0`, not by their own `buffer_len()`: those
+// reprs are not refined (they belong to `ndisc.rs` / `mld.rs` / `rpl.rs`), so the length is
+// not statable here. Nothing is lost -- `emit`'s separate `40 <= as_mut_reft(buffer)`
+// conjunct still applies to them, and it is all they carried before -- but the bound
+// `NdiscRepr::emit` / `MldRepr::emit` actually need is still owed by nobody. Refining those
+// two reprs is what closes it.
+#[flux_rs::refined_by(blen: int)]
 pub enum Repr<'a> {
+    #[flux_rs::variant({DstUnreachable, Ipv6Repr, &[u8][@m]} -> Repr[icmpv6_err_buffer_len(m)])]
     DstUnreachable {
         reason: DstUnreachable,
         header: Ipv6Repr,
         data: &'a [u8],
     },
+    #[flux_rs::variant({u32, Ipv6Repr, &[u8][@m]} -> Repr[icmpv6_err_buffer_len(m)])]
     PktTooBig {
         mtu: u32,
         header: Ipv6Repr,
         data: &'a [u8],
     },
+    #[flux_rs::variant({TimeExceeded, Ipv6Repr, &[u8][@m]} -> Repr[icmpv6_err_buffer_len(m)])]
     TimeExceeded {
         reason: TimeExceeded,
         header: Ipv6Repr,
         data: &'a [u8],
     },
+    #[flux_rs::variant({ParamProblem, u32, Ipv6Repr, &[u8][@m]} -> Repr[icmpv6_err_buffer_len(m)])]
     ParamProblem {
         reason: ParamProblem,
         pointer: u32,
         header: Ipv6Repr,
         data: &'a [u8],
     },
+    #[flux_rs::variant({u16, u16, &[u8][@m]} -> Repr[8 + m])]
     EchoRequest {
         ident: u16,
         seq_no: u16,
         data: &'a [u8],
     },
+    #[flux_rs::variant({u16, u16, &[u8][@m]} -> Repr[8 + m])]
     EchoReply {
         ident: u16,
         seq_no: u16,
         data: &'a [u8],
     },
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
+    #[flux_rs::variant((NdiscRepr) -> Repr[0])]
     Ndisc(NdiscRepr<'a>),
+    #[flux_rs::variant((MldRepr) -> Repr[0])]
     Mld(MldRepr<'a>),
     #[cfg(feature = "proto-rpl")]
+    #[flux_rs::variant((RplRepr) -> Repr[0])]
     Rpl(RplRepr<'a>),
 }
 
@@ -768,30 +938,86 @@ impl<'a> Repr<'a> {
 
     /// Emit a high-level representation into an Internet Control Message Protocol version 6
     /// packet.
+    // The buffer parameter is `Packet<T>` with `T: Sized`, not `Packet<&mut T>` with `T: ?Sized`.
+    // The old shape instantiated core's blanket `impl<T, U> AsMut<U> for &mut T`, which carries no
+    // associated refinement, so every `requires ... as_mut_reft(p.buffer)` on the setters below
+    // raised `associated refinement 'as_mut_reft' is missing from implementation` rather than an
+    // obligation flux could discharge. The `Sized` form lets a caller pass `wire::Buf`, whose
+    // `AsMut` impl is local and refined; `&mut [u8]` still satisfies the bounds, so this is
+    // strictly more permissive.
+    //
+    // `packet` is `&strg`, not `&mut Packet<T>{v: ..}`. The setters change the `code` index, and
+    // an existential `&mut` is re-established (i.e. `code` is havoced) after every write, so the
+    // four `emit_contained_packet` calls could not see that `icmpv6_header_len(code) == 8`. A
+    // `&strg` place carries the index through. This is a flux-only change: the Rust signature is
+    // still `&mut Packet<T>`.
+    //
+    // `requires` reads:
+    //   * `40 <= as_mut_reft(buffer)` -- the widest header (Redirect) plus a v6 header.
+    //   * `as_ref_reft(buffer) <= 65535` -- `checksum::data`'s own bound, exposed rather than
+    //     assumed; every icmpv6 buffer is sized from `buffer_len()`, capped at 1240.
+    //   * `r.blen <= as_mut_reft(buffer)` -- `r.blen` *is* `Repr::buffer_len()`, which is what
+    //     every caller allocates. It is the only way to state the contained-packet bound
+    //     `icmpv6_header_len(code) + 40 + data.len() <= len || 1240 <= len`, because `data.len()`
+    //     lives inside the `Repr`.
+    //
+    // STILL OWED (3 obligations, all outside this file): `NdiscRepr::emit` and `MldRepr::emit`
+    // have no flux signature, so `packet`'s buffer index is havoced across those two arms and the
+    // trailing `fill_checksum` / `set_checksum` cannot be discharged. Adding
+    // `fn(&Self, &mut Packet<T>[@p]) requires 40 <= as_mut_reft(p.buffer)` to each -- no body
+    // proof needed -- takes this function to zero errors; verified by probe, then reverted,
+    // because those files belong to another slice.
+    #[flux_rs::trusted(no, reason = "panic site: every header setter and the payload copy")]
+    #[flux_rs::sig(
+        fn(self: &Self[@r], &Ipv6Address, &Ipv6Address,
+           packet: &strg Packet<T>[@p], &ChecksumCapabilities)
+        requires 40 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+              && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
+              && r.blen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        ensures packet: Packet<T>
+    )]
     pub fn emit<T>(
         &self,
         src_addr: &Ipv6Address,
         dst_addr: &Ipv6Address,
-        packet: &mut Packet<&mut T>,
+        packet: &mut Packet<T>,
         checksum_caps: &ChecksumCapabilities,
     ) where
-        T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,
+        T: AsRef<[u8]> + AsMut<[u8]>,
     {
-        fn emit_contained_packet<T>(packet: &mut Packet<&mut T>, header: Ipv6Repr, data: &[u8])
+        // The bound below is the weakest one this body needs. `payload_len` is
+        // `min(data.len(), 1240 - h - 40)` with `h = icmpv6_header_len(code)`, and the two
+        // writes together need `h + 40 + payload_len <= len`; that is equivalent to the
+        // disjunction, because the second disjunct is exactly the `min` saturating.
+        //
+        // `header.buffer_len()` is spelled `IPV6_HEADER_LEN`: `Ipv6Repr::buffer_len` is a
+        // `const fn` with no flux signature, so its result is an unconstrained `usize` here.
+        // Both are 40.
+        #[flux_rs::trusted(no, reason = "panic site: the contained-packet copy")]
+        #[flux_rs::sig(
+            fn(packet: &mut Packet<T>[@p], Ipv6Repr, &[u8][@m])
+            requires icmpv6_header_len(p.code) + 40 + m
+                         <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+                  || 1240 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        )]
+        fn emit_contained_packet<T>(packet: &mut Packet<T>, header: Ipv6Repr, data: &[u8])
         where
-            T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,
+            T: AsRef<[u8]> + AsMut<[u8]>,
         {
             let icmp_header_len = packet.header_len();
-            let mut ip_packet = Ipv6Packet::new_unchecked(packet.payload_mut());
+            // Routed through `Buf` so the destination keeps its length: `&mut [u8]` instantiates
+            // core's blanket `AsMut for &mut T`, which carries no associated refinement, and a
+            // returned `&mut` loses its index besides (flux-rs/flux#1714).
+            let mut payload = packet.payload_buf();
+            let mut ip_packet = Ipv6Packet::new_unchecked(payload.reborrow());
             header.emit(&mut ip_packet);
-            let payload = &mut ip_packet.into_inner()[header.buffer_len()..];
             // FIXME: this should rather be checked at link level, as we can't know in advance how
             // much space we have for the packet due to IPv6 options and etc
             let payload_len = cmp::min(
                 data.len(),
                 MAX_ERROR_PACKET_LEN - icmp_header_len - IPV6_HEADER_LEN,
             );
-            payload[..payload_len].copy_from_slice(&data[..payload_len]);
+            payload.copy_at(IPV6_HEADER_LEN, crate::wire::prefix(data, payload_len));
         }
 
         match *self {
@@ -847,8 +1073,9 @@ impl<'a> Repr<'a> {
                 packet.set_msg_code(0);
                 packet.set_echo_ident(ident);
                 packet.set_echo_seq_no(seq_no);
-                let data_len = cmp::min(packet.payload_mut().len(), data.len());
-                packet.payload_mut()[..data_len].copy_from_slice(&data[..data_len])
+                let mut payload = packet.payload_buf();
+                let data_len = cmp::min(payload.as_ref().len(), data.len());
+                payload.copy_at(0, crate::wire::prefix(data, data_len))
             }
 
             Repr::EchoReply {
@@ -860,8 +1087,9 @@ impl<'a> Repr<'a> {
                 packet.set_msg_code(0);
                 packet.set_echo_ident(ident);
                 packet.set_echo_seq_no(seq_no);
-                let data_len = cmp::min(packet.payload_mut().len(), data.len());
-                packet.payload_mut()[..data_len].copy_from_slice(&data[..data_len])
+                let mut payload = packet.payload_buf();
+                let data_len = cmp::min(payload.as_ref().len(), data.len());
+                payload.copy_at(0, crate::wire::prefix(data, data_len))
             }
 
             #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]

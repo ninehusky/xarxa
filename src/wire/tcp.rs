@@ -5,6 +5,7 @@ use super::{Error, Result};
 use crate::phy::ChecksumCapabilities;
 use crate::wire::ip::checksum;
 use crate::wire::{IpAddress, IpProtocol};
+use crate::wire::{read_i32_at, read_u16_at, sub, write_i32_at, write_u16_at};
 
 /// A TCP sequence number.
 ///
@@ -82,11 +83,73 @@ impl cmp::PartialOrd for SeqNumber {
     }
 }
 
+/// A ghost field: carries an integer in the refinement and nothing at runtime.
+///
+/// TCP's options window is `20..header_len` and its payload is `header_len..`, and `header_len`
+/// is computed from the buffer's *contents* -- the top nibble of the u16 at offset 12. Contents
+/// are not in the refinement, so no accessor's bound can mention it. This is the way to name it
+/// anyway. `Packet` holds one of these, and because the struct is a ZST it costs no space and
+/// `Packet<T>`'s layout is unchanged.
+///
+/// The value is anchored by [`Packet::header_len`], the trusted getter that claims the nibble
+/// equals the ghost. Everything else is proved.
+#[flux_rs::opaque]
+#[flux_rs::refined_by(val: int)]
+#[flux_rs::invariant(0 <= val && val <= 255)]
+#[derive(PartialEq, Eq, Clone, Copy)]
+struct Ghost;
+
+impl Ghost {
+    /// A ghost whose value is unconstrained.
+    ///
+    /// The bound is the `u8` range and nothing more. `header_len` in fact only ever reads back a
+    /// multiple of four in `0..=60`, but flux does not interpret `>>` well enough to prove it --
+    /// `(raw >> 12) * 4 <= 60` does not discharge -- so claiming it here would be assuming it.
+    /// The facts the windows actually need, `20 <= hlen` and `hlen <= buffer_len`, come from
+    /// [`Packet::checked_len`], which tests them.
+    #[flux_rs::trusted(yes, reason = "opaque: the ghost carries no runtime value")]
+    #[flux_rs::sig(fn() -> Ghost{v: 0 <= v && v <= 255})]
+    #[flux_rs::no_panic]
+    const fn unknown() -> Ghost {
+        Ghost
+    }
+
+    /// A ghost pinned to `val`.
+    #[flux_rs::trusted(yes, reason = "opaque: establishes the ghost value")]
+    #[flux_rs::sig(fn(val: u8) -> Ghost[val])]
+    #[flux_rs::no_panic]
+    const fn new(_val: u8) -> Ghost {
+        Ghost
+    }
+}
+
 /// A read/write wrapper around a Transmission Control Protocol packet buffer.
-#[derive(Debug, PartialEq, Eq, Clone)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(PartialEq, Eq, Clone)]
+#[flux_rs::refined_by(buffer: T, hlen: int)]
+#[flux_rs::invariant(0 <= hlen && hlen <= 255)]
 pub struct Packet<T: AsRef<[u8]>> {
+    #[flux_rs::field(T[buffer])]
     buffer: T,
+    #[flux_rs::field(Ghost[hlen])]
+    ghlen: Ghost,
+}
+
+// Written out rather than derived so the ghost stays out of the output: a derive would print
+// `Packet { buffer: .., ghlen: Ghost }`, and the ghost is not supposed to be observable. Both
+// impls reproduce the derived form for the one field that existed before.
+impl<T: AsRef<[u8]> + fmt::Debug> fmt::Debug for Packet<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Packet")
+            .field("buffer", &self.buffer)
+            .finish()
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl<T: AsRef<[u8]> + defmt::Format> defmt::Format for Packet<T> {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "Packet {{ buffer: {} }}", self.buffer)
+    }
 }
 
 mod field {
@@ -130,14 +193,27 @@ pub const HEADER_LEN: usize = field::URGENT.end;
 
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Imbue a raw octet buffer with TCP packet structure.
+    ///
+    /// The ghost starts unconstrained: this reads nothing, so it learns nothing. It is pinned to
+    /// the header length field the first time [`header_len`](Self::header_len) is called.
+    #[flux_rs::sig(fn(T[@b]) -> Packet<T>{p: p.buffer == b})]
+    #[flux_rs::no_panic]
     pub const fn new_unchecked(buffer: T) -> Packet<T> {
-        Packet { buffer }
+        Packet {
+            buffer,
+            ghlen: Ghost::unknown(),
+        }
     }
 
     /// Shorthand for a combination of [new_unchecked] and [check_len].
     ///
     /// [new_unchecked]: #method.new_unchecked
     /// [check_len]: #method.check_len
+    ///
+    /// Deliberately left unrefined. `checked_len` proves `20 <= hlen <= buffer_len`, and carrying
+    /// that out through the `Ok` arm would be the natural next step -- but every caller today is
+    /// at a reference self type (`Repr::parse` below, `iface/interface/tcp.rs`), so nothing can
+    /// consume it. Worth doing the moment a reference self type can be refined; see `wire::Buf`.
     pub fn new_checked(buffer: T) -> Result<Packet<T>> {
         let packet = Self::new_unchecked(buffer);
         packet.check_len()?;
@@ -152,16 +228,45 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// The result of this check is invalidated by calling [set_header_len].
     ///
     /// [set_header_len]: #method.set_header_len
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(fn(self: &Packet<T>[@p]) -> Result<()>)]
+    #[flux_rs::no_panic]
     pub fn check_len(&self) -> Result<()> {
+        match self.checked_len() {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// [`check_len`](Self::check_len), returning the buffer length it validated.
+    ///
+    /// The whole of `check_len`; the public method just discards the length. It exists because
+    /// `Result<()>`'s `Ok` payload is `()` and so carries no refinement, which leaves a caller
+    /// with nothing to show for a successful check. Returning the length instead lets the `Ok`
+    /// arm say something, and what it says is exactly the three facts the windows below want:
+    /// the buffer's length is what it is, the header length field is not a lie about the buffer,
+    /// and the options window `20..header_len` does not run backwards.
+    ///
+    /// All three tests were already here. The third is stated in the bound only because the
+    /// ghost makes `header_len` nameable.
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(
+        fn(self: &Packet<T>[@p])
+            -> Result<usize{v: v == <T as AsRef<[u8]>>::as_ref_reft(p.buffer) && 20 <= p.hlen && p.hlen <= v}>
+    )]
+    #[flux_rs::no_panic]
+    fn checked_len(&self) -> Result<usize> {
         let len = self.buffer.as_ref().len();
-        if len < field::URGENT.end {
+        if len < 20 {
+            // field::URGENT.end
             Err(Error)
         } else {
             let header_len = self.header_len() as usize;
-            if len < header_len || header_len < field::URGENT.end {
+            if len < header_len || header_len < 20 {
+                // field::URGENT.end
                 Err(Error)
             } else {
-                Ok(())
+                Ok(len)
             }
         }
     }
@@ -172,135 +277,221 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the source port field.
+    // Literal offsets rather than `field::SRC_PORT`: flux cannot see through the `Field`
+    // (`Range`) const, so the bound has to be written out. Same throughout this impl.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u16 requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn src_port(&self) -> u16 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::SRC_PORT])
+        read_u16_at(data, 0) // field::SRC_PORT
     }
 
     /// Return the destination port field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u16 requires 4 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn dst_port(&self) -> u16 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::DST_PORT])
+        read_u16_at(data, 2) // field::DST_PORT
     }
 
     /// Return the sequence number field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> SeqNumber requires 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn seq_number(&self) -> SeqNumber {
         let data = self.buffer.as_ref();
-        SeqNumber(NetworkEndian::read_i32(&data[field::SEQ_NUM]))
+        SeqNumber(read_i32_at(data, 4)) // field::SEQ_NUM
     }
 
     /// Return the acknowledgement number field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> SeqNumber requires 12 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn ack_number(&self) -> SeqNumber {
         let data = self.buffer.as_ref();
-        SeqNumber(NetworkEndian::read_i32(&data[field::ACK_NUM]))
+        SeqNumber(read_i32_at(data, 8)) // field::ACK_NUM
+    }
+
+    /// The u16 at offset 12, with its bound proved and no claim about its value.
+    ///
+    /// The nine flag getters and [`header_len_field`](Self::header_len_field) all read this one
+    /// field; routing them through here states the bound once.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u16 requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
+    #[inline]
+    fn flags_field(&self) -> u16 {
+        let data = self.buffer.as_ref();
+        read_u16_at(data, 12) // field::FLAGS
     }
 
     /// Return the FIN flag.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> bool requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn fin(&self) -> bool {
-        let data = self.buffer.as_ref();
-        let raw = NetworkEndian::read_u16(&data[field::FLAGS]);
+        let raw = self.flags_field();
         raw & field::FLG_FIN != 0
     }
 
     /// Return the SYN flag.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> bool requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn syn(&self) -> bool {
-        let data = self.buffer.as_ref();
-        let raw = NetworkEndian::read_u16(&data[field::FLAGS]);
+        let raw = self.flags_field();
         raw & field::FLG_SYN != 0
     }
 
     /// Return the RST flag.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> bool requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn rst(&self) -> bool {
-        let data = self.buffer.as_ref();
-        let raw = NetworkEndian::read_u16(&data[field::FLAGS]);
+        let raw = self.flags_field();
         raw & field::FLG_RST != 0
     }
 
     /// Return the PSH flag.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> bool requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn psh(&self) -> bool {
-        let data = self.buffer.as_ref();
-        let raw = NetworkEndian::read_u16(&data[field::FLAGS]);
+        let raw = self.flags_field();
         raw & field::FLG_PSH != 0
     }
 
     /// Return the ACK flag.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> bool requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn ack(&self) -> bool {
-        let data = self.buffer.as_ref();
-        let raw = NetworkEndian::read_u16(&data[field::FLAGS]);
+        let raw = self.flags_field();
         raw & field::FLG_ACK != 0
     }
 
     /// Return the URG flag.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> bool requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn urg(&self) -> bool {
-        let data = self.buffer.as_ref();
-        let raw = NetworkEndian::read_u16(&data[field::FLAGS]);
+        let raw = self.flags_field();
         raw & field::FLG_URG != 0
     }
 
     /// Return the ECE flag.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> bool requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn ece(&self) -> bool {
-        let data = self.buffer.as_ref();
-        let raw = NetworkEndian::read_u16(&data[field::FLAGS]);
+        let raw = self.flags_field();
         raw & field::FLG_ECE != 0
     }
 
     /// Return the CWR flag.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> bool requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn cwr(&self) -> bool {
-        let data = self.buffer.as_ref();
-        let raw = NetworkEndian::read_u16(&data[field::FLAGS]);
+        let raw = self.flags_field();
         raw & field::FLG_CWR != 0
     }
 
     /// Return the NS flag.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> bool requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn ns(&self) -> bool {
-        let data = self.buffer.as_ref();
-        let raw = NetworkEndian::read_u16(&data[field::FLAGS]);
+        let raw = self.flags_field();
         raw & field::FLG_NS != 0
     }
 
-    /// Return the header length, in octets.
+    /// The header length in octets, with its read proved and no claim about its value.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u8 requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
-    pub fn header_len(&self) -> u8 {
-        let data = self.buffer.as_ref();
-        let raw = NetworkEndian::read_u16(&data[field::FLAGS]);
+    fn header_len_field(&self) -> u8 {
+        let raw = self.flags_field();
         ((raw >> 12) * 4) as u8
     }
 
+    /// Return the header length, in octets.
+    ///
+    /// The anchor for the ghost field: the return type *claims* the top nibble of the u16 at
+    /// offset 12, scaled by four, is `hlen`. Nothing proves that -- the buffer's contents are not
+    /// in the refinement -- so it is the assumption the options and payload windows rest on.
+    ///
+    /// What keeps it true is that every writer of those two octets preserves the nibble.
+    /// [`set_header_len`](Self::set_header_len) is the only one that changes it, and it updates
+    /// the ghost in the same step; the ten flag writers all mask the low twelve bits only. See
+    /// `test_flag_writes_preserve_header_len`.
+    ///
+    /// The read itself stays checked: the trusted body is a call, and the bound is discharged
+    /// inside [`header_len_field`](Self::header_len_field). All this assumes is the equality,
+    /// which is the part flux cannot see.
+    #[flux_rs::trusted(yes, reason = "anchors the `hlen` ghost to the nibble at offset 12")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u8[p.hlen] requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
+    #[inline]
+    pub fn header_len(&self) -> u8 {
+        self.header_len_field()
+    }
+
     /// Return the window size field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u16 requires 16 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn window_len(&self) -> u16 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::WIN_SIZE])
+        read_u16_at(data, 14) // field::WIN_SIZE
     }
 
     /// Return the checksum field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u16 requires 18 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn checksum(&self) -> u16 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::CHECKSUM])
+        read_u16_at(data, 16) // field::CHECKSUM
     }
 
     /// Return the urgent pointer field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u16 requires 20 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn urgent_at(&self) -> u16 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::URGENT])
+        read_u16_at(data, 18) // field::URGENT
     }
 
     /// Return the length of the segment, in terms of sequence space.
+    //
+    // `p.hlen <= as_ref_reft` is what keeps the subtraction below from running backwards; it is
+    // the second half of what `checked_len` returns. The crate is `check_overflow = "lazy"`, so
+    // flux does not exercise it yet -- under `"strict"` it discharges one of this body's
+    // obligations, and dropping it takes the body from 2 errors to 3.
+    #[flux_rs::trusted(no, reason = "panic site: subtracts the header length from the buffer")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> usize requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer) && p.hlen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     pub fn segment_len(&self) -> usize {
         let data = self.buffer.as_ref();
         let mut length = data.len() - self.header_len() as usize;
@@ -314,9 +505,12 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Returns whether the selective acknowledgement SYN flag is set or not.
+    #[flux_rs::trusted(no, reason = "panic site: reslices the window named by the header length")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> Result<bool> requires 20 <= p.hlen && p.hlen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
     pub fn selective_ack_permitted(&self) -> Result<bool> {
+        let header_len = self.header_len() as usize;
         let data = self.buffer.as_ref();
-        let mut options = &data[field::OPTIONS(self.header_len())];
+        let mut options = sub(data, 20, header_len - 20); // field::OPTIONS(header_len)
         while !options.is_empty() {
             let (next_options, option) = TcpOption::parse(options)?;
             if option == TcpOption::SackPermitted {
@@ -330,9 +524,12 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// Return the selective acknowledgement ranges, if any. If there are none in the packet, an
     /// array of ``None`` values will be returned.
     ///
+    #[flux_rs::trusted(no, reason = "panic site: reslices the window named by the header length")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> Result<[Option<(u32, u32)>; 3]> requires 20 <= p.hlen && p.hlen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
     pub fn selective_ack_ranges(&self) -> Result<[Option<(u32, u32)>; 3]> {
+        let header_len = self.header_len() as usize;
         let data = self.buffer.as_ref();
-        let mut options = &data[field::OPTIONS(self.header_len())];
+        let mut options = sub(data, 20, header_len - 20); // field::OPTIONS(header_len)
         while !options.is_empty() {
             let (next_options, option) = TcpOption::parse(options)?;
             if let TcpOption::SackRange(slice) = option {
@@ -351,6 +548,12 @@ impl<T: AsRef<[u8]>> Packet<T> {
     ///
     /// # Fuzzing
     /// This function always returns `true` when fuzzing.
+    //
+    // No `no_panic`: the family-mismatch panic documented above lives in
+    // `checksum::pseudo_header` and is a *value* obligation on the two addresses, a different
+    // axis from the length work here. The `requires` covers only the header read.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p], &IpAddress, &IpAddress) -> bool requires 18 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
     pub fn verify_partial_checksum(&self, src_addr: &IpAddress, dst_addr: &IpAddress) -> bool {
         if cfg!(fuzzing) {
             return true;
@@ -370,6 +573,12 @@ impl<T: AsRef<[u8]>> Packet<T> {
     ///
     /// # Fuzzing
     /// This function always returns `true` when fuzzing.
+    //
+    // See `verify_partial_checksum` for why there is no `no_panic`. The `<= 65535` half is
+    // `checksum::data`'s own bound: this hands it the whole buffer, so the bound lands on the
+    // buffer rather than on a window of it.
+    #[flux_rs::trusted(no, reason = "panic site: checksums the whole buffer")]
+    #[flux_rs::sig(fn(&Packet<T>[@p], &IpAddress, &IpAddress) -> bool requires <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535)]
     pub fn verify_checksum(&self, src_addr: &IpAddress, dst_addr: &IpAddress) -> bool {
         if cfg!(fuzzing) {
             return true;
@@ -383,6 +592,18 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 }
 
+// Left bounds-checked, both of them. The buffer here is `&'a T`, so a length index would have
+// to come from core's blanket `impl<T, U> AsRef<U> for &T`, which carries no associated
+// refinement (`as_ref_reft` is missing). Every bound these two windows need -- `20 <= hlen`,
+// `hlen <= buffer_len` -- is therefore *unstatable* at this self type, not merely unproven, so
+// the ghost does not help here and neither would routing through a helper. An extern spec for
+// that blanket impl does not work either: flux gives a reference self type the unit sort, so the
+// spec is ill-sorted, and it fails in the worst way -- the refinement registers as present and
+// the "missing" errors go quiet around a body that proves nothing.
+//
+// The same wall accounts for every remaining error in this file: `Repr::parse`, `Repr::emit` and
+// `Display` all take `Packet<&T>` or `Packet<&mut T>`. Convertible once a reference self type can
+// be refined; the route is routing `iface/packet.rs` through `wire::Buf`.
 impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
     /// Return a pointer to the options.
     #[inline]
@@ -403,187 +624,279 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
 
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the source port field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], _) requires 2 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_src_port(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::SRC_PORT], value)
+        write_u16_at(data, 0, value) // field::SRC_PORT
     }
 
     /// Set the destination port field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], _) requires 4 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_dst_port(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::DST_PORT], value)
+        write_u16_at(data, 2, value) // field::DST_PORT
     }
 
     /// Set the sequence number field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], _) requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_seq_number(&mut self, value: SeqNumber) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_i32(&mut data[field::SEQ_NUM], value.0)
+        write_i32_at(data, 4, value.0) // field::SEQ_NUM
     }
 
     /// Set the acknowledgement number field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], _) requires 12 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_ack_number(&mut self, value: SeqNumber) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_i32(&mut data[field::ACK_NUM], value.0)
+        write_i32_at(data, 8, value.0) // field::ACK_NUM
     }
 
     /// Clear the entire flags field.
+    //
+    // Masks the low twelve bits only, so the header-length nibble -- and with it
+    // [`header_len`](Self::header_len)'s claim about the ghost -- survives. `&mut` rather than
+    // `&strg` says the same thing in the refinement: `self` comes back at the index it went in
+    // with, ghost included.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p]) requires 14 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn clear_flags(&mut self) {
         let data = self.buffer.as_mut();
-        let raw = NetworkEndian::read_u16(&data[field::FLAGS]);
+        let raw = read_u16_at(data, 12); // field::FLAGS
         let raw = raw & !0x0fff;
-        NetworkEndian::write_u16(&mut data[field::FLAGS], raw)
+        write_u16_at(data, 12, raw) // field::FLAGS
     }
 
     /// Set the FIN flag.
+    //
+    // Touches one of the low nine bits only; see `clear_flags` on why the ghost survives.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], _) requires 14 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_fin(&mut self, value: bool) {
         let data = self.buffer.as_mut();
-        let raw = NetworkEndian::read_u16(&data[field::FLAGS]);
+        let raw = read_u16_at(data, 12); // field::FLAGS
         let raw = if value {
             raw | field::FLG_FIN
         } else {
             raw & !field::FLG_FIN
         };
-        NetworkEndian::write_u16(&mut data[field::FLAGS], raw)
+        write_u16_at(data, 12, raw) // field::FLAGS
     }
 
     /// Set the SYN flag.
+    //
+    // Touches one of the low nine bits only; see `clear_flags` on why the ghost survives.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], _) requires 14 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_syn(&mut self, value: bool) {
         let data = self.buffer.as_mut();
-        let raw = NetworkEndian::read_u16(&data[field::FLAGS]);
+        let raw = read_u16_at(data, 12); // field::FLAGS
         let raw = if value {
             raw | field::FLG_SYN
         } else {
             raw & !field::FLG_SYN
         };
-        NetworkEndian::write_u16(&mut data[field::FLAGS], raw)
+        write_u16_at(data, 12, raw) // field::FLAGS
     }
 
     /// Set the RST flag.
+    //
+    // Touches one of the low nine bits only; see `clear_flags` on why the ghost survives.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], _) requires 14 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_rst(&mut self, value: bool) {
         let data = self.buffer.as_mut();
-        let raw = NetworkEndian::read_u16(&data[field::FLAGS]);
+        let raw = read_u16_at(data, 12); // field::FLAGS
         let raw = if value {
             raw | field::FLG_RST
         } else {
             raw & !field::FLG_RST
         };
-        NetworkEndian::write_u16(&mut data[field::FLAGS], raw)
+        write_u16_at(data, 12, raw) // field::FLAGS
     }
 
     /// Set the PSH flag.
+    //
+    // Touches one of the low nine bits only; see `clear_flags` on why the ghost survives.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], _) requires 14 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_psh(&mut self, value: bool) {
         let data = self.buffer.as_mut();
-        let raw = NetworkEndian::read_u16(&data[field::FLAGS]);
+        let raw = read_u16_at(data, 12); // field::FLAGS
         let raw = if value {
             raw | field::FLG_PSH
         } else {
             raw & !field::FLG_PSH
         };
-        NetworkEndian::write_u16(&mut data[field::FLAGS], raw)
+        write_u16_at(data, 12, raw) // field::FLAGS
     }
 
     /// Set the ACK flag.
+    //
+    // Touches one of the low nine bits only; see `clear_flags` on why the ghost survives.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], _) requires 14 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_ack(&mut self, value: bool) {
         let data = self.buffer.as_mut();
-        let raw = NetworkEndian::read_u16(&data[field::FLAGS]);
+        let raw = read_u16_at(data, 12); // field::FLAGS
         let raw = if value {
             raw | field::FLG_ACK
         } else {
             raw & !field::FLG_ACK
         };
-        NetworkEndian::write_u16(&mut data[field::FLAGS], raw)
+        write_u16_at(data, 12, raw) // field::FLAGS
     }
 
     /// Set the URG flag.
+    //
+    // Touches one of the low nine bits only; see `clear_flags` on why the ghost survives.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], _) requires 14 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_urg(&mut self, value: bool) {
         let data = self.buffer.as_mut();
-        let raw = NetworkEndian::read_u16(&data[field::FLAGS]);
+        let raw = read_u16_at(data, 12); // field::FLAGS
         let raw = if value {
             raw | field::FLG_URG
         } else {
             raw & !field::FLG_URG
         };
-        NetworkEndian::write_u16(&mut data[field::FLAGS], raw)
+        write_u16_at(data, 12, raw) // field::FLAGS
     }
 
     /// Set the ECE flag.
+    //
+    // Touches one of the low nine bits only; see `clear_flags` on why the ghost survives.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], _) requires 14 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_ece(&mut self, value: bool) {
         let data = self.buffer.as_mut();
-        let raw = NetworkEndian::read_u16(&data[field::FLAGS]);
+        let raw = read_u16_at(data, 12); // field::FLAGS
         let raw = if value {
             raw | field::FLG_ECE
         } else {
             raw & !field::FLG_ECE
         };
-        NetworkEndian::write_u16(&mut data[field::FLAGS], raw)
+        write_u16_at(data, 12, raw) // field::FLAGS
     }
 
     /// Set the CWR flag.
+    //
+    // Touches one of the low nine bits only; see `clear_flags` on why the ghost survives.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], _) requires 14 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_cwr(&mut self, value: bool) {
         let data = self.buffer.as_mut();
-        let raw = NetworkEndian::read_u16(&data[field::FLAGS]);
+        let raw = read_u16_at(data, 12); // field::FLAGS
         let raw = if value {
             raw | field::FLG_CWR
         } else {
             raw & !field::FLG_CWR
         };
-        NetworkEndian::write_u16(&mut data[field::FLAGS], raw)
+        write_u16_at(data, 12, raw) // field::FLAGS
     }
 
     /// Set the NS flag.
+    //
+    // Touches one of the low nine bits only; see `clear_flags` on why the ghost survives.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], _) requires 14 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_ns(&mut self, value: bool) {
         let data = self.buffer.as_mut();
-        let raw = NetworkEndian::read_u16(&data[field::FLAGS]);
+        let raw = read_u16_at(data, 12); // field::FLAGS
         let raw = if value {
             raw | field::FLG_NS
         } else {
             raw & !field::FLG_NS
         };
-        NetworkEndian::write_u16(&mut data[field::FLAGS], raw)
+        write_u16_at(data, 12, raw) // field::FLAGS
     }
 
     /// Set the header length, in octets.
+    ///
+    /// Writes the ghost as well as the octets. This is the whole of what keeps
+    /// [`header_len`](Self::header_len)'s claim true, so the two must not drift apart: `&strg`
+    /// rather than `&mut` because a `&mut T{v: ..}` weakening does not compose through a call
+    /// chain, and `Repr::emit` needs the new value to survive into `options_mut` after it.
+    ///
+    /// The ghost is set to `(value / 4) * 4`, not to `value`. The field is a four-bit count of
+    /// 32-bit words, so this stores `value / 4` and reads back a multiple of four; a `value` that
+    /// is not one comes back truncated, which `test_impossible_len` relies on. Requiring
+    /// `value % 4 == 0` instead would state a contract the function does not have.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &strg Packet<T>[@p], value: u8)
+        requires 14 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        ensures self: Packet<T>[p.buffer, (value / 4) * 4]
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_header_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        let raw = NetworkEndian::read_u16(&data[field::FLAGS]);
+        let raw = read_u16_at(data, 12); // field::FLAGS
         let raw = (raw & !0xf000) | ((value as u16) / 4) << 12;
-        NetworkEndian::write_u16(&mut data[field::FLAGS], raw)
+        write_u16_at(data, 12, raw); // field::FLAGS
+        self.ghlen = Ghost::new((value / 4) * 4);
     }
 
     /// Set the window size field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], _) requires 16 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_window_len(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::WIN_SIZE], value)
+        write_u16_at(data, 14, value) // field::WIN_SIZE
     }
 
     /// Set the checksum field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], _) requires 18 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_checksum(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::CHECKSUM], value)
+        write_u16_at(data, 16, value) // field::CHECKSUM
     }
 
     /// Set the urgent pointer field.
+    #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], _) requires 20 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_urgent_at(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::URGENT], value)
+        write_u16_at(data, 18, value) // field::URGENT
     }
 
     /// Compute and fill in the header checksum.
@@ -591,6 +904,14 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// # Panics
     /// This function panics unless `src_addr` and `dst_addr` belong to the same family,
     /// and that family is IPv4 or IPv6.
+    //
+    // See `Packet::verify_partial_checksum` for why there is no `no_panic`, and
+    // `Packet::verify_checksum` for where the `<= 65535` comes from.
+    #[flux_rs::trusted(no, reason = "panic site: checksums the whole buffer")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p], &IpAddress, &IpAddress)
+        requires 18 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer) && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
+    )]
     pub fn fill_checksum(&mut self, src_addr: &IpAddress, dst_addr: &IpAddress) {
         self.set_checksum(0);
         let checksum = {
@@ -604,14 +925,35 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     /// Return a pointer to the options.
+    //
+    // Indexed directly rather than through a `wire::buf` helper. The window is written
+    // `20..header_len` rather than `field::OPTIONS(header_len)` only because flux cannot see
+    // through a `const fn` returning a `Range`; spelled out, both ends are in the `requires` and
+    // flux proves the slice itself. A trusted helper here would buy nothing -- a returned `&mut`
+    // loses its length index either way (flux-rs/flux#1714) -- and would swap a proved bound for
+    // an assumed one.
+    #[flux_rs::trusted(no, reason = "panic site: reslices the window named by the header length")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p]) -> &mut [u8]
+        requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer) && 20 <= p.hlen && p.hlen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn options_mut(&mut self) -> &mut [u8] {
-        let header_len = self.header_len();
+        let header_len = self.header_len() as usize;
         let data = self.buffer.as_mut();
-        &mut data[field::OPTIONS(header_len)]
+        &mut data[20..header_len] // field::OPTIONS(header_len)
     }
 
     /// Return a mutable pointer to the payload data.
+    //
+    // See `options_mut` on why this indexes directly.
+    #[flux_rs::trusted(no, reason = "panic site: reslices past the header length")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p]) -> &mut [u8]
+        requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer) && p.hlen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn payload_mut(&mut self) -> &mut [u8] {
         let header_len = self.header_len() as usize;
@@ -620,7 +962,14 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 }
 
+#[flux_rs::assoc(
+    fn as_ref_reft(source: Self) -> int {
+        <T as AsRef<[u8]>>::as_ref_reft(source.buffer)
+    }
+)]
 impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(self: &Self[@source]) -> &[u8][Self::as_ref_reft(source)])]
     fn as_ref(&self) -> &[u8] {
         self.buffer.as_ref()
     }
@@ -1218,6 +1567,50 @@ mod test {
 
     #[cfg(feature = "proto-ipv4")]
     static PAYLOAD_BYTES: [u8; 4] = [0xaa, 0x00, 0x00, 0xff];
+
+    #[test]
+    fn ghost_field_is_not_observable() {
+        let bytes = [0u8; 24];
+        let packet = Packet::new_unchecked(&bytes[..]);
+        let s = format!("{packet:?}");
+        assert!(!s.contains("Ghost"), "ghost leaked into Debug: {s}");
+        assert!(s.starts_with("Packet { buffer: "), "Debug shape changed: {s}");
+    }
+
+    #[test]
+    fn test_flag_writes_preserve_header_len() {
+        // `header_len`'s claim about the ghost is only kept true because every other writer of
+        // the u16 at offset 12 leaves the top nibble alone. This is that claim, tested.
+        let mut bytes = vec![0; 24];
+        let mut packet = Packet::new_unchecked(&mut bytes);
+        packet.set_header_len(24);
+
+        packet.clear_flags();
+        assert_eq!(packet.header_len(), 24, "clear_flags");
+
+        macro_rules! check {
+            ($($setter:ident),*) => {$(
+                packet.$setter(true);
+                assert_eq!(packet.header_len(), 24, concat!(stringify!($setter), "(true)"));
+                packet.$setter(false);
+                assert_eq!(packet.header_len(), 24, concat!(stringify!($setter), "(false)"));
+            )*};
+        }
+        check!(set_fin, set_syn, set_rst, set_psh, set_ack, set_urg, set_ece, set_cwr, set_ns);
+    }
+
+    #[test]
+    fn test_set_header_len_truncates() {
+        // The field is a four-bit word count, so `set_header_len` stores `value / 4`. The ghost
+        // is written to match what reads back, which is why its `ensures` says `(value / 4) * 4`
+        // and not `value`.
+        let mut bytes = vec![0; 24];
+        let mut packet = Packet::new_unchecked(&mut bytes);
+        for value in 0u8..=60 {
+            packet.set_header_len(value);
+            assert_eq!(packet.header_len(), (value / 4) * 4, "set_header_len({value})");
+        }
+    }
 
     #[test]
     #[cfg(feature = "proto-ipv4")]
