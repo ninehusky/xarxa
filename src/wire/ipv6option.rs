@@ -108,11 +108,66 @@ impl From<Type> for FailureType {
     }
 }
 
+/// A ghost field: carries an integer in the refinement and nothing at runtime.
+///
+/// The option data window is `2..2 + data_len`, and `data_len` lives in the buffer's
+/// *contents* -- contents are not in the refinement, so no accessor's bound can mention them.
+/// This is the way to name it anyway. Because the struct is a ZST it costs no space and
+/// `Ipv6Option<T>`'s layout is unchanged. Same device as `arp::Ghost`.
+///
+/// The value is anchored by [`Ipv6Option::data_len`], the trusted getter that claims the octet
+/// at offset 1 equals the ghost. Everything else is proved.
+#[flux_rs::opaque]
+#[flux_rs::refined_by(val: int)]
+#[flux_rs::invariant(0 <= val && val <= 255)]
+#[derive(PartialEq, Eq)]
+struct Ghost;
+
+impl Ghost {
+    /// A ghost whose value is unconstrained.
+    #[flux_rs::trusted(yes, reason = "opaque: the ghost carries no runtime value")]
+    #[flux_rs::sig(fn() -> Ghost{v: 0 <= v && v <= 255})]
+    #[flux_rs::no_panic]
+    const fn unknown() -> Ghost {
+        Ghost
+    }
+
+    /// A ghost pinned to `val`.
+    #[flux_rs::trusted(yes, reason = "opaque: establishes the ghost value")]
+    #[flux_rs::sig(fn(val: u8) -> Ghost[val])]
+    #[flux_rs::no_panic]
+    const fn new(_val: u8) -> Ghost {
+        Ghost
+    }
+}
+
 /// A read/write wrapper around an IPv6 Extension Header Option.
-#[derive(Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(PartialEq, Eq)]
+#[flux_rs::refined_by(buffer: T, data_len: int)]
+#[flux_rs::invariant(0 <= data_len && data_len <= 255)]
 pub struct Ipv6Option<T: AsRef<[u8]>> {
+    #[flux_rs::field(T[buffer])]
     buffer: T,
+    #[flux_rs::field(Ghost[data_len])]
+    data_len: Ghost,
+}
+
+// Written out rather than derived so the ghost stays out of the output: a derive would print
+// `Ipv6Option { buffer: .., data_len: Ghost }`, and the ghost is not supposed to be
+// observable. These reproduce the derived form for the one field that existed before.
+impl<T: AsRef<[u8]> + fmt::Debug> fmt::Debug for Ipv6Option<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Ipv6Option")
+            .field("buffer", &self.buffer)
+            .finish()
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl<T: AsRef<[u8]> + defmt::Format> defmt::Format for Ipv6Option<T> {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "Ipv6Option {{ buffer: {} }}", self.buffer)
+    }
 }
 
 // Format of Option
@@ -140,8 +195,16 @@ mod field {
 
 impl<T: AsRef<[u8]>> Ipv6Option<T> {
     /// Create a raw octet buffer with an IPv6 Extension Header Option structure.
+    ///
+    /// The ghost starts unconstrained: this reads nothing, so it learns nothing. It is pinned
+    /// to the length octet the first time `data_len` is called.
+    #[flux_rs::sig(fn(T[@b]) -> Ipv6Option<T>{o: o.buffer == b})]
+    #[flux_rs::no_panic]
     pub const fn new_unchecked(buffer: T) -> Ipv6Option<T> {
-        Ipv6Option { buffer }
+        Ipv6Option {
+            buffer,
+            data_len: Ghost::unknown(),
+        }
     }
 
     /// Shorthand for a combination of [new_unchecked] and [check_len].
@@ -191,20 +254,53 @@ impl<T: AsRef<[u8]>> Ipv6Option<T> {
     }
 
     /// Return the option type.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Ipv6Option<T>[@o]) -> Type
+        requires 1 <= <T as AsRef<[u8]>>::as_ref_reft(o.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn option_type(&self) -> Type {
         let data = self.buffer.as_ref();
         Type::from(data[field::TYPE])
     }
 
+    /// Read the length octet. The read that [`data_len`](Self::data_len) anchors.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Ipv6Option<T>[@o]) -> u8
+        requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(o.buffer)
+    )]
+    #[flux_rs::no_panic]
+    #[inline]
+    fn data_len_octet(&self) -> u8 {
+        let data = self.buffer.as_ref();
+        data[field::LENGTH]
+    }
+
     /// Return the length of the data.
+    ///
+    /// The anchor for the ghost field: the return type *claims* the octet at offset 1 is
+    /// `data_len`. Nothing proves that -- the buffer's contents are not in the refinement -- so
+    /// it is the assumption the data window's extent rests on, and it is kept true by
+    /// [`set_data_len`](Self::set_data_len), the only thing that writes this octet, which
+    /// updates the ghost in the same step.
+    ///
+    /// The read itself stays checked, in `data_len_octet`; the trusted body is a call and
+    /// nothing else. All this assumes is the equality, which is the part flux cannot see.
     ///
     /// # Panics
     /// This function panics if this is an 1-byte padding option.
+    #[flux_rs::trusted(yes, reason = "anchors the `data_len` ghost to the octet at offset 1")]
+    #[flux_rs::sig(
+        fn(&Ipv6Option<T>[@o]) -> u8[o.data_len]
+        requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(o.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn data_len(&self) -> u8 {
-        let data = self.buffer.as_ref();
-        data[field::LENGTH]
+        self.data_len_octet()
     }
 }
 
@@ -213,16 +309,31 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Ipv6Option<&'a T> {
     ///
     /// # Panics
     /// This function panics if this is an 1-byte padding option.
+    //
+    // The window is written out rather than taken from `field::DATA`, which is a `const fn`
+    // flux cannot see through -- with the range opaque, neither `start <= end` nor
+    // `end <= len` was provable; written out, `2 <= len + 2` is.
+    //
+    // `2 + data_len <= len` is left as a reported obligation, and it is unstatable rather than
+    // merely unproven: the buffer here is `&'a T`, so its length index would have to come from
+    // core's blanket `impl<T, U> AsRef<U> for &T`, which carries no associated refinement.
+    // Convertible once a reference self type can be refined; see `wire::Buf`.
     #[inline]
     pub fn data(&self) -> &'a [u8] {
-        let len = self.data_len();
         let data = self.buffer.as_ref();
-        &data[field::DATA(len)]
+        let len = data[field::LENGTH]; // == self.data_len()
+        &data[2..len as usize + 2] // field::DATA(len)
     }
 }
 
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Ipv6Option<T> {
     /// Set the option type.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Ipv6Option<T>[@o], value: Type)
+        requires 1 <= <T as AsMut<[u8]>>::as_mut_reft(o.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_option_type(&mut self, value: Type) {
         let data = self.buffer.as_mut();
@@ -233,23 +344,46 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Ipv6Option<T> {
     ///
     /// # Panics
     /// This function panics if this is an 1-byte padding option.
+    //
+    // Writes the ghost as well as the octet. This is the whole of what keeps
+    // [`data_len`](Self::data_len)'s claim true, so the two must not drift apart. `&strg`
+    // rather than `&mut` because a `&mut T{v: ..}` weakening does not compose through a call
+    // chain, and a caller needs the new value to survive into the `data_mut` after it.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &strg Ipv6Option<T>[@o], value: u8)
+        requires 2 <= <T as AsMut<[u8]>>::as_mut_reft(o.buffer)
+        ensures self: Ipv6Option<T>[o.buffer, value]
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_data_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         data[field::LENGTH] = value;
+        self.data_len = Ghost::new(value);
     }
-}
 
-impl<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> Ipv6Option<&mut T> {
     /// Return a mutable pointer to the option data.
     ///
     /// # Panics
     /// This function panics if this is an 1-byte padding option.
+    //
+    // The window is written out rather than taken from `field::DATA`, which is a `const fn`
+    // flux cannot see through. The extent comes from the ghost, so the bound is statable here:
+    // it is the same `2 + data_len <= len` the `data` getter cannot state, because this impl is
+    // over a generic `T` rather than a reference self type.
+    #[flux_rs::trusted(no, reason = "panic site: opens the data window")]
+    #[flux_rs::sig(
+        fn(self: &mut Ipv6Option<T>[@o]) -> &mut [u8][o.data_len]
+        requires 2 + o.data_len <= <T as AsMut<[u8]>>::as_mut_reft(o.buffer)
+              && 2 <= <T as AsRef<[u8]>>::as_ref_reft(o.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn data_mut(&mut self) -> &mut [u8] {
         let len = self.data_len();
         let data = self.buffer.as_mut();
-        &mut data[field::DATA(len)]
+        &mut data[2..len as usize + 2] // field::DATA(len)
     }
 }
 
@@ -282,6 +416,33 @@ pub enum Repr<'a> {
     },
 }
 
+/// Read the two Router Alert octets out of an option's data window.
+///
+/// Lifted out of [`Repr::parse`] so this obligation stays reported. `parse` takes
+/// `&Ipv6Option<&T>`, so its first accessor call aborts the body with `associated refinement
+/// 'as_ref_reft' is missing`, and every obligation inside an aborted body stops being checked
+/// *and stops being reported*. This one has nothing to do with that abort: it is about the
+/// length of the slice `Ipv6Option::data` returns, which is not in the refinement because
+/// `data`'s self type is a reference and so cannot reach the `data_len` ghost.
+#[flux_rs::trusted(no, reason = "panic site: byteorder needs two readable octets")]
+#[flux_rs::sig(fn(&[u8]) -> u16)]
+fn read_router_alert(data: &[u8]) -> u16 {
+    NetworkEndian::read_u16(data)
+}
+
+/// Borrow the first `length` octets of an unknown option's data.
+///
+/// Lifted out of [`Repr::emit`] for the same reason as [`read_router_alert`], and this one is a
+/// genuinely unproved bound rather than a limitation: `Repr::Unknown` carries `length` and
+/// `data` as independent fields and nothing states `length <= data.len()`. Stating it would mean
+/// refining the enum, which every construction site outside this file would then have to
+/// discharge.
+#[flux_rs::trusted(no, reason = "panic site: Repr::Unknown does not state length <= data.len()")]
+#[flux_rs::sig(fn(&[u8], length: u8) -> &[u8])]
+fn unknown_data(data: &[u8], length: u8) -> &[u8] {
+    &data[..length as usize]
+}
+
 impl<'a> Repr<'a> {
     /// Parse an IPv6 Extension Header Option and return a high-level representation.
     pub fn parse<T>(opt: &Ipv6Option<&'a T>) -> Result<Repr<'a>>
@@ -294,7 +455,7 @@ impl<'a> Repr<'a> {
             Type::PadN => Ok(Repr::PadN(opt.data_len())),
             Type::RouterAlert => {
                 if opt.data_len() == RouterAlert::DATA_LEN {
-                    let raw = NetworkEndian::read_u16(opt.data());
+                    let raw = read_router_alert(opt.data());
                     Ok(Repr::RouterAlert(RouterAlert::from(raw)))
                 } else {
                     Err(Error)
@@ -363,18 +524,26 @@ impl<'a> Repr<'a> {
             } => {
                 opt.set_option_type(type_);
                 opt.set_data_len(length);
-                opt.data_mut().copy_from_slice(&data[..length as usize]);
+                opt.data_mut().copy_from_slice(unknown_data(data, length));
             }
         }
     }
 }
 
 /// A iterator for IPv6 options.
+///
+/// `length` is refined to equal `data`'s length, which is what `new` establishes and what
+/// `next` needs to know before it reslices at `pos`. `pos` is deliberately left unrefined --
+/// `next` advances it by a parsed option's length, which is not bounded by anything the type
+/// can state, and the `pos < length` test in `next` is what makes the reslice safe.
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(length: int)]
 pub struct Ipv6OptionsIterator<'a> {
     pos: usize,
+    #[flux_rs::field(usize[length])]
     length: usize,
+    #[flux_rs::field(&[u8][length])]
     data: &'a [u8],
     hit_error: bool,
 }
@@ -383,6 +552,8 @@ impl<'a> Ipv6OptionsIterator<'a> {
     /// Create a new `Ipv6OptionsIterator`, used to iterate over the
     /// options contained in a IPv6 Extension Header (e.g. the Hop-by-Hop
     /// header).
+    #[flux_rs::sig(fn(&[u8][@n]) -> Ipv6OptionsIterator[n])]
+    #[flux_rs::no_panic]
     pub fn new(data: &'a [u8]) -> Ipv6OptionsIterator<'a> {
         let length = data.len();
         Ipv6OptionsIterator {
@@ -398,10 +569,13 @@ impl<'a> Iterator for Ipv6OptionsIterator<'a> {
     type Item = Result<Repr<'a>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.pos < self.length && !self.hit_error {
+        // `pos` is read into a local so that the test below and the reslice under it are the
+        // same value to flux; two reads of `self.pos` through the `&mut` are not.
+        let pos = self.pos;
+        if pos < self.length && !self.hit_error {
             // If we still have data to parse and we have not previously
             // hit an error, attempt to parse the next option.
-            match Ipv6Option::new_checked(&self.data[self.pos..]) {
+            match Ipv6Option::new_checked(&self.data[pos..]) {
                 Ok(hdr) => match Repr::parse(&hdr) {
                     Ok(repr) => {
                         self.pos += repr.buffer_len();
@@ -685,6 +859,40 @@ mod test {
 
             assert_eq!(&bytes, &IPV6OPTION_BYTES_RPL);
         }
+    }
+
+    // The `data_len` ghost claims the octet at offset 1 equals the ghost value. Only
+    // `set_data_len` writes that octet, and it updates the ghost in the same step. These pin
+    // the runtime half of that: the window `data_mut` opens follows the octet, and it starts
+    // at offset 2, so nothing written through it can reach the octet the ghost mirrors.
+    #[test]
+    fn test_set_data_len_moves_the_data_window() {
+        let mut bytes = [0u8; 8];
+        let mut opt = Ipv6Option::new_unchecked(&mut bytes[..]);
+        opt.set_data_len(3);
+        assert_eq!(opt.data_len(), 3);
+        assert_eq!(opt.data_mut().len(), 3);
+        opt.set_data_len(5);
+        assert_eq!(opt.data_len(), 5);
+        assert_eq!(opt.data_mut().len(), 5);
+    }
+
+    #[test]
+    fn test_data_mut_cannot_reach_the_length_octet() {
+        let mut bytes = [0u8; 8];
+        let mut opt = Ipv6Option::new_unchecked(&mut bytes[..]);
+        opt.set_data_len(4);
+        for x in opt.data_mut().iter_mut() {
+            *x = 0xff;
+        }
+        assert_eq!(opt.data_len(), 4);
+        assert_eq!(bytes, [0x00, 0x04, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_ghost_field_is_not_observable() {
+        let opt = Ipv6Option::new_unchecked(&IPV6OPTION_BYTES_PADN[..]);
+        assert!(!format!("{opt:?}").contains("data_len"));
     }
 
     #[test]
