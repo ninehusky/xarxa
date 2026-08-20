@@ -699,13 +699,13 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         fn(self: &strg Packet<T>[@buf], value: u8)
         requires
             0 < <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
-        ensures self: Packet<T>[buf.buffer, (value / 4) * 4, buf.tlen]
+        ensures self: Packet<T>[buf.buffer, ((value / 4) & 0x0f) * 4, buf.tlen]
     )]
     #[flux_rs::no_panic]
     pub fn set_header_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         data[field::VER_IHL] = (data[field::VER_IHL] & !0x0f) | ((value / 4) & 0x0f);
-        self.ghlen = GhostU8::new((value / 4) * 4);
+        self.ghlen = GhostU8::new(((value / 4) & 0x0f) * 4);
     }
 
     /// Set the Differential Services Code Point field.
