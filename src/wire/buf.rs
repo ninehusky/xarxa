@@ -26,24 +26,26 @@
 //! constructors below are the complete set of ways a `Buf` comes into existence:
 //!
 //! * `new(inner)`        -- `offset = 0 <= inner.len()`, and `len = inner.len()`.
-//! * `with_offset(i, o)` -- `requires o <= n`, discharged at every call site the firmware
-//!                          feature set reaches but one: the three in `dispatch_ip` (which is
-//!                          `trusted(no)` and carries a local `check_overflow = "strict"` for
-//!                          exactly this reason), `iface/packet.rs:184`, and
-//!                          `wire/icmpv6.rs:742`. **Not yet discharged** at `wire/mld.rs:717`,
-//!                          which needs `mld::Repr::emit`'s `28 <= buffer` strengthened to
-//!                          `8 + 20 * records.len() <= buffer`, a bound no caller owes today.
+//! * `with_offset(i, o)` -- `requires o <= n`. Discharged at the three sites in `dispatch_ip`,
+//!                          which is `trusted(no)` and carries a local
+//!                          `check_overflow = "strict"` for exactly this reason, and at
+//!                          `wire/icmpv6.rs:742`. **Not yet discharged** at
+//!                          `iface/packet.rs:184` (needs `emit_payload`'s `&mut [u8]` refined
+//!                          -- the known L2 blocker) or at `wire/mld.rs:717` (needs
+//!                          `mld::Repr::emit`'s `28 <= buffer` strengthened to
+//!                          `8 + 20 * records.len() <= buffer`, which no caller owes today).
 //!                          A further site, `iface/interface/ipv4.rs:570` in
 //!                          `dispatch_ipv4_frag`, is `cfg`'d out of the firmware config and
 //!                          will hit the identical `tx_len = ip_len + eth_len` wall when it
 //!                          is not.
 //!
-//!                          That one undischarged bound is *true*: `mld.rs:717` holds by
-//!                          induction on the record loop, since iteration k-1's
-//!                          `set_record_type` indexes checked and would have panicked first.
-//!                          It is proof debt, not a defect. But until it is discharged this
-//!                          invariant rests on it, and so does `as_ref`/`as_mut`'s unchecked
-//!                          slicing.
+//!                          Both undischarged bounds are *true* -- `packet.rs:184` is guarded
+//!                          by the checked `&mut payload[hbh_start..hbh_end]` two lines above,
+//!                          and `mld.rs:717` holds by induction on the record loop, since
+//!                          iteration k-1's `set_record_type` indexes checked and would have
+//!                          panicked first. They are proof debt, not defects. But until they
+//!                          are discharged, this invariant rests on them, and so does
+//!                          `as_ref`/`as_mut`'s unchecked slicing.
 //! * `reborrow(&mut self)` -- copies both fields verbatim, so it preserves whatever held before.
 //!
 //! Each establishes the stronger equality `inner.len() - offset == len`. Exactly one method
