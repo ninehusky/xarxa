@@ -26,15 +26,35 @@
 //! constructors below are the complete set of ways a `Buf` comes into existence:
 //!
 //! * `new(inner)`        -- `offset = 0 <= inner.len()`, and `len = inner.len()`.
-//! * `with_offset(i, o)` -- `requires o <= n`, discharged by flux at all four call sites
-//!                          (three in `dispatch_ip`, one in `dispatch_ipv4_frag`, both
-//!                          `trusted(no)`).
+//! * `with_offset(i, o)` -- `requires o <= n`. Discharged at the two sites in `dispatch_ip`,
+//!                          which is `trusted(no)` and carries a local
+//!                          `check_overflow = "strict"` for exactly this reason. **Not yet
+//!                          discharged** at `iface/packet.rs:132` (needs `emit_payload`'s
+//!                          `&mut [u8]` refined -- the known L2 blocker) or at
+//!                          `wire/mld.rs:688` (needs `mld::Repr::emit`'s `28 <= buffer`
+//!                          strengthened to `8 + 20 * records.len() <= buffer`, which no
+//!                          caller owes today). A fifth site, `wire/ipv4.rs:561` in
+//!                          `dispatch_ipv4_frag`, is `cfg`'d out of the firmware config and
+//!                          will hit the identical `tx_len = ip_len + eth_len` wall when it
+//!                          is not.
+//!
+//!                          Both undischarged bounds are *true* -- `packet.rs:132` is guarded
+//!                          by the checked `&mut payload[hbh_start..hbh_end]` two lines above,
+//!                          and `mld.rs:688` holds by induction on the record loop, since
+//!                          iteration k-1's `set_record_type` indexes checked and would have
+//!                          panicked first. They are proof debt, not defects. But until they
+//!                          are discharged, this invariant rests on them, and so does
+//!                          `as_ref`/`as_mut`'s unchecked slicing.
 //! * `reborrow(&mut self)` -- copies both fields verbatim, so it preserves whatever held before.
 //!
-//! Each establishes the stronger equality `inner.len() - offset == len`. No method mutates
-//! `offset` or replaces `inner`: `copy_at` only writes bytes, and `as_mut` hands out a `&mut [u8]`
-//! *into* the tail, through which neither the field nor the slice's length is reachable. So no
-//! path can shrink `inner` or grow `offset` after construction, and the invariant is stable.
+//! Each establishes the stronger equality `inner.len() - offset == len`. Exactly one method
+//! mutates `offset` and none replaces `inner`: `copy_at` only writes bytes, and `as_mut` hands
+//! out a `&mut [u8]` *into* the tail, through which neither the field nor the slice's length is
+//! reachable, so no path can shrink `inner`. `advance(n)` does grow `offset`, and preserves the
+//! invariant: its `n <= len` precondition, checked at every call site, gives
+//! `n <= inner.len() - offset`, hence `offset + n <= inner.len()`. It also preserves the
+//! equality, since it decreases `len` by exactly what it adds to `offset`. So the invariant is
+//! stable across every operation.
 //!
 //! This is the "internal assumption" side of the boundary/internal distinction, so it is spelled
 //! out rather than assumed. Note the contrast with the free functions further down, whose safety
@@ -84,6 +104,18 @@ impl<'a> Buf<'a> {
     pub fn copy_at(&mut self, at: usize, src: &[u8]) {
         let len = src.len();
         self.inner[self.offset + at..][..len].copy_from_slice(src);
+    }
+
+    /// Advance past `n` octets, which the caller has finished with.
+    ///
+    /// Trusted for the same reason as the constructors: `offset` is private to an `opaque`
+    /// struct, so the update cannot be expressed as a field index. `n <= len` is what keeps
+    /// `offset <= inner.len()` -- see the closed-module invariant in the module docs.
+    #[flux_rs::trusted(yes, reason = "opaque: `offset + n <= inner.len()` follows from `n <= len`")]
+    #[flux_rs::sig(fn(self: &mut Self[@len], n: usize{n <= len}) ensures self: Buf[len - n])]
+    #[flux_rs::no_panic]
+    pub fn advance(&mut self, n: usize) {
+        self.offset += n;
     }
 
     /// Wrap the tail of a mutable byte slice, starting at `offset`.
@@ -295,6 +327,21 @@ pub fn prefix(data: &[u8], n: usize) -> &[u8] {
 #[flux_rs::no_panic]
 pub fn sub(data: &[u8], at: usize, n: usize) -> &[u8] {
     &data[at..at + n]
+}
+
+/// Borrow the tail of `data` from `at`.
+///
+/// Unlike [`prefix`] and [`sub`] the result is deliberately left *un*indexed, and this function
+/// is therefore checked rather than trusted. `dhcpv4::Packet::options` walks a cursor down by
+/// reassigning it to successive tails; a slot whose type carries a fixed length index cannot be
+/// reassigned to a shorter one ("assignment might be unsafe"), least of all a closure upvar,
+/// whose type is fixed at capture. That walk re-derives every bound it needs from `len()` within
+/// a single step, so the exact residual length is not wanted here -- only the guarantee that
+/// `at` is a legal split point.
+#[flux_rs::sig(fn(&[u8][@len], at: usize) -> &[u8] requires at <= len)]
+#[flux_rs::no_panic]
+pub fn tail(data: &[u8], at: usize) -> &[u8] {
+    &data[at..]
 }
 
 /// Copy `src` into the `len`-octet window of `data` at `at`. See [`read_u16_at`] for why the

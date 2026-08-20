@@ -1,11 +1,10 @@
-use byteorder::{ByteOrder, NetworkEndian};
 use core::fmt;
 
 use super::{Error, Result};
 use crate::time::Duration;
 use crate::wire::ip::checksum;
 
-use crate::wire::Ipv4Address;
+use crate::wire::{Ipv4Address, copy_window_at, read_u16_at, sub, write_u16_at};
 
 enum_with_unknown! {
     /// Internet Group Management Protocol v1/v2 message version/type.
@@ -24,11 +23,18 @@ enum_with_unknown! {
 /// A read/write wrapper around an Internet Group Management Protocol v1/v2 packet buffer.
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(buffer: T)]
 pub struct Packet<T: AsRef<[u8]>> {
+    #[flux_rs::field(T[buffer])]
     buffer: T,
 }
 
 mod field {
+    // The offsets below are also written out as literals at the accessors, which need a
+    // value flux can see; these consts stay as the single reviewable statement of the
+    // layout, and several of them are now referenced only from those trailing comments.
+    #![allow(unused)]
+
     use crate::wire::field::*;
 
     pub const TYPE: usize = 0;
@@ -70,12 +76,43 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Ensure that no accessor method will panic if called.
     /// Returns `Err(Error)` if the buffer is too short.
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(fn(self: &Packet<T>[@p]) -> Result<()>)]
+    #[flux_rs::no_panic]
     pub fn check_len(&self) -> Result<()> {
+        match self.checked_len() {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// [`check_len`](Self::check_len), returning the buffer length it validated.
+    ///
+    /// The whole of `check_len`; the public method just discards the length. `Result<()>`'s `Ok`
+    /// payload carries no refinement, so a successful check leaves a caller with nothing to show
+    /// for it. Returning the length lets the `Ok` arm say what the buffer's length is and that it
+    /// reaches the end of the header.
+    ///
+    /// Nothing consumes that yet: `new_checked`'s callers instantiate `T` at a reference type,
+    /// which flux gives the unit sort, so none of them can name `as_ref_reft`. Worth wiring
+    /// through the moment a reference self type can be refined; see `wire::Buf`.
+    ///
+    /// This message is eight octets of fixed-offset fields with nothing after them, so this
+    /// single test is the whole precondition of the file -- no window's extent depends on buffer
+    /// *contents*, and hence there is no ghost field as in `arp`, `udp` and `tcp`.
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(
+        fn(self: &Packet<T>[@p])
+            -> Result<usize{v: v == <T as AsRef<[u8]>>::as_ref_reft(p.buffer) && 8 <= v}>
+    )]
+    #[flux_rs::no_panic]
+    fn checked_len(&self) -> Result<usize> {
         let len = self.buffer.as_ref().len();
-        if len < field::GROUP_ADDRESS.end {
+        if len < 8 {
+            // field::GROUP_ADDRESS.end
             Err(Error)
         } else {
-            Ok(())
+            Ok(len)
         }
     }
 
@@ -85,40 +122,68 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the message type field.
+    // Literal offsets rather than the `field::X` consts: flux cannot see through the `Field`
+    // (`Range`) const, so the bound has to be written out. Same throughout this impl.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> Message requires 1 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn msg_type(&self) -> Message {
         let data = self.buffer.as_ref();
-        Message::from(data[field::TYPE])
+        Message::from(data[0]) // field::TYPE
     }
 
     /// Return the maximum response time, using the encoding specified in
     /// [RFC 3376]: 4.1.1. Max Resp Code.
     ///
     /// [RFC 3376]: https://tools.ietf.org/html/rfc3376
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u8 requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn max_resp_code(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[field::MAX_RESP_CODE]
+        data[1] // field::MAX_RESP_CODE
     }
 
     /// Return the checksum field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u16 requires 4 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn checksum(&self) -> u16 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::CHECKSUM])
+        read_u16_at(data, 2) // field::CHECKSUM
     }
 
     /// Return the source address field.
+    ///
+    /// The equal-length `copy_from_slice` stands in for `try_into().unwrap()`, which flux cannot
+    /// prove -- it does not model `TryInto<[u8; 4]> for &[u8]`. Both panic on a length mismatch
+    /// and `8 <= len` rules both out, so the check is gated rather than removed.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> Ipv4Address requires 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn group_addr(&self) -> Ipv4Address {
         let data = self.buffer.as_ref();
-        Ipv4Address::from_octets(data[field::GROUP_ADDRESS].try_into().unwrap())
+        let mut octets = [0; 4];
+        octets.copy_from_slice(sub(data, 4, 4)); // field::GROUP_ADDRESS
+        Ipv4Address::from_octets(octets)
     }
 
     /// Validate the header checksum.
     ///
+    /// `as_ref_reft <= 65535` is `checksum::data`'s own bound -- its `u32` accumulator cannot take
+    /// more than 65535 octets without overflowing. It is a real, satisfiable property of every
+    /// IGMP buffer, which are sized from `Repr::buffer_len()` under an IPv4 MTU, so it is stated
+    /// as a caller obligation rather than assumed here.
+    ///
     /// # Fuzzing
     /// This function always returns `true` when fuzzing.
+    #[flux_rs::trusted(no, reason = "panic site: checksum::data's length bound")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> bool requires <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535)]
+    #[flux_rs::no_panic]
     pub fn verify_checksum(&self) -> bool {
         if cfg!(fuzzing) {
             return true;
@@ -131,35 +196,61 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the message type field.
+    // Literal offsets rather than the `field::X` consts, as in the impl above.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: Message) requires 1 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_msg_type(&mut self, value: Message) {
         let data = self.buffer.as_mut();
-        data[field::TYPE] = value.into()
+        data[0] = value.into() // field::TYPE
     }
 
     /// Set the maximum response time, using the encoding specified in
     /// [RFC 3376]: 4.1.1. Max Resp Code.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: u8) requires 2 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_max_resp_code(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::MAX_RESP_CODE] = value;
+        data[1] = value; // field::MAX_RESP_CODE
     }
 
     /// Set the checksum field.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: u16) requires 4 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_checksum(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[field::CHECKSUM], value)
+        write_u16_at(data, 2, value) // field::CHECKSUM
     }
 
     /// Set the group address field
+    ///
+    /// No `no_panic`: `copy_window_at` deliberately keeps `copy_from_slice`'s equal-length
+    /// assert, which is the bounds check this line had before. The `requires` is stated alongside
+    /// it, not instead of it.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::sig(fn(self: &mut Packet<T>[@p], addr: Ipv4Address) requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
     #[inline]
     pub fn set_group_address(&mut self, addr: Ipv4Address) {
         let data = self.buffer.as_mut();
-        data[field::GROUP_ADDRESS].copy_from_slice(&addr.octets());
+        copy_window_at(data, 4, 4, &addr.octets()); // field::GROUP_ADDRESS
     }
 
     /// Compute and fill in the header checksum.
+    ///
+    /// The `<= 65535` conjunct is `checksum::data`'s bound; see
+    /// [`verify_checksum`](Self::verify_checksum).
+    #[flux_rs::trusted(no, reason = "panic site: the checksum write and checksum::data's bound")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p])
+        requires 4 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+             && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
+    )]
+    #[flux_rs::no_panic]
     pub fn fill_checksum(&mut self) {
         self.set_checksum(0);
         let checksum = {

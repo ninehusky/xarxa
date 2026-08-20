@@ -44,6 +44,6 @@ impl<'a, T> core::ops::Deref for ManagedSlice<'a, T> {
 #[extern_spec(managed)]
 impl<'a, T> core::ops::DerefMut for ManagedSlice<'a, T> {
     #[no_panic]
-    #[sig(fn(self: &mut Self[@v]) -> &mut <ManagedSlice<T> as core::ops::Deref>::Target[v])]
+    #[sig(fn(self: &strg ManagedSlice<T>[@v]) -> &mut <ManagedSlice<T> as core::ops::Deref>::Target[v] ensures self: ManagedSlice<T>[v])]
     fn deref_mut(&'a mut self) -> &'a mut <ManagedSlice<'a, T> as core::ops::Deref>::Target;
 }
