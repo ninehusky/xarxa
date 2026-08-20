@@ -81,7 +81,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
 /// it -- `parse`, `mldv2_router_alert`, `push_padn_option` -- adds the same amount here.
 #[flux_rs::opaque]
 #[flux_rs::refined_by(val: int)]
-#[flux_rs::invariant(0 <= val)]
+// At most `config::IPV6_HBH_MAX_OPTIONS` options, each at most `Ipv6OptionRepr`'s 257, so the
+// total fits in 1028. The ceiling is what keeps sums over this value from wrapping.
+#[flux_rs::invariant(0 <= val && val <= 1028)]
 #[derive(Debug, PartialEq, Eq, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 struct Ghost;
@@ -101,7 +103,7 @@ impl Ghost {
     /// no runtime value, so there is nothing to compute: the index comes from the signature of
     /// whoever produces the `Repr`, not from this call.
     #[flux_rs::trusted(yes, reason = "opaque: the ghost carries no runtime value")]
-    #[flux_rs::sig(fn() -> Ghost{v: 0 <= v})]
+    #[flux_rs::sig(fn() -> Ghost{v: 0 <= v && v <= 1028})]
     #[flux_rs::no_panic]
     const fn unknown() -> Ghost {
         Ghost
@@ -113,7 +115,7 @@ impl Ghost {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 // Indexed by the octets `emit` writes, which is what a caller sizes the hop-by-hop window from.
 #[flux_rs::refined_by(blen: int)]
-#[flux_rs::invariant(0 <= blen)]
+#[flux_rs::invariant(0 <= blen && blen <= 1028)]
 pub struct Repr<'a> {
     // Private: the ghost below records the emitted length as options are added, so a caller
     // pushing directly would desynchronise it. Use `push_padn_option`, or `options()` to read.

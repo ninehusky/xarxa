@@ -615,11 +615,17 @@ impl<'a> Repr<'a> {
     }
 
     /// Return the length of a packet that will be emitted from this high-level representation.
-    pub const fn buffer_len(&self) -> usize {
+    // 28 and 8 restate `field::QUERY_NUM_SRCS.end` and `field::NR_MCAST_RCRDS.end`: flux cannot
+    // see through the `Range` consts. `byte_len` carries the slice's `isize::MAX` ceiling, which
+    // is what keeps the sums from wrapping under `check_overflow = "lazy"`.
+    #[flux_rs::trusted(no, reason = "ties the `blen` index to the emitted length")]
+    #[flux_rs::sig(fn(self: &Self[@r]) -> usize[r.blen])]
+    #[flux_rs::no_panic]
+    pub fn buffer_len(&self) -> usize {
         match self {
-            Repr::Query { data, .. } => field::QUERY_NUM_SRCS.end + data.len(),
-            Repr::Report { data, .. } => field::NR_MCAST_RCRDS.end + data.len(),
-            Repr::ReportRecordReprs(_data) => field::NR_MCAST_RCRDS.end,
+            Repr::Query { data, .. } => 28 + crate::flux_util::byte_len(data),
+            Repr::Report { data, .. } => 8 + crate::flux_util::byte_len(data),
+            Repr::ReportRecordReprs(_data) => 8,
         }
     }
 

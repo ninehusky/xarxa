@@ -562,6 +562,20 @@ impl InterfaceInner {
         ))
     }
 
+    /// `requires` is the group-table capacity, `config::IFACE_MAX_MULTICAST_GROUP_COUNT`,
+    /// restated as a literal. Without a ceiling on the record count, `20 * records.len()` is
+    /// unbounded, the `payload_len` sum below wraps under `check_overflow = "lazy"`, and the
+    /// hop-by-hop floor cannot be shown to fit inside it.
+    ///
+    /// **Not discharged at every caller.** The three one-element-array sites in `multicast`
+    /// pass; `multicast.rs:364` does not, because it derefs a
+    /// `heapless::Vec<_, IFACE_MAX_MULTICAST_GROUP_COUNT>` to a slice and the length does not
+    /// survive (flux-rs/flux#1714). The bound is true there -- the capacity is the same 4 --
+    /// so this is proof debt, and it is invisible under any feature set without `multicast`,
+    /// which is where the obligation moved rather than closed.
+    #[flux_rs::sig(
+        fn(&Self, records: &[MldAddressRecordRepr][@k]) -> Option<Packet> requires k <= 4
+    )]
     pub(super) fn mldv2_report_packet<'any>(
         &self,
         records: &'any [MldAddressRecordRepr<'any>],
@@ -589,10 +603,7 @@ impl InterfaceInner {
         hbh_repr.push_padn_option(0);
 
         let mld_repr = MldRepr::ReportRecordReprs(records);
-        let records_len = records
-            .iter()
-            .map(MldAddressRecordRepr::buffer_len)
-            .sum::<usize>();
+        let records_len = mld_records_len(records);
 
         // All MLDv2 messages must be sent with an IPv6 Hop limit of 1.
         Some(Packet::new_ipv6(
@@ -738,4 +749,19 @@ impl Interface {
             .unwrap();
         self.inner.slaac.rs_sent(self.inner.now);
     }
+}
+
+/// The octets `MldRepr::ReportRecordReprs` writes after its 8-octet header.
+///
+/// Trusted: the sum is an iterator fold, which flux does not follow. The claim is exact rather
+/// than a bound -- `MldAddressRecordRepr::buffer_len` is `usize[20]`, so `k` records are `20 * k`
+/// octets -- so the only thing taken on faith is that `sum` adds each element once.
+#[flux_rs::trusted(yes, reason = "iterator fold; each record is `buffer_len() == 20`")]
+#[flux_rs::sig(fn(&[MldAddressRecordRepr][@k]) -> usize[20 * k])]
+#[flux_rs::no_panic]
+fn mld_records_len(records: &[MldAddressRecordRepr]) -> usize {
+    records
+        .iter()
+        .map(MldAddressRecordRepr::buffer_len)
+        .sum::<usize>()
 }
