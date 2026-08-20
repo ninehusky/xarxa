@@ -444,8 +444,8 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Same window as [`payload_mut`](Self::payload_mut). A `&mut [u8]` loses its length index
     /// on the way back to the caller (flux-rs/flux#1714), so a caller that must write exactly
     /// `len - 8` octets into it -- `Repr::emit`'s two named payload paths -- cannot state that
-    /// obligation. `Buf` carries the length in its own refinement instead. The window itself is
-    /// still proved here: the body is `trusted(no)`.
+    /// obligation. `Buf` carries the length in its own refinement instead. The window is
+    /// bounds-checked here, exactly as in `payload_mut`.
     #[flux_rs::trusted(no, reason = "panic site: reslices the window named by the length field")]
     #[flux_rs::sig(
         fn(self: &mut Packet<T>[@p]) -> Buf[p.len - 8]
@@ -457,7 +457,12 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     pub fn payload_buf(&mut self) -> Buf<'_> {
         let length = self.len() as usize;
         let data = self.buffer.as_mut();
-        Buf::with_offset(&mut data[..length], 8) // field::PAYLOAD(length)
+        // Same window and the same bounds check as `payload_mut`. Sliced here rather than via
+        // `Buf::with_offset`, whose `as_mut` is `get_unchecked_mut(offset..)`: that would be UB
+        // for `length < 8`, and the `8 <= p.len` that rules it out is not discharged -- it rests
+        // on `emit_ports_and_len`'s `8 + payload_len <= 65535`, whose body truncates.
+        // `Buf::new` carries offset 0, so its `as_mut` is in bounds by construction.
+        Buf::new(&mut data[8..length]) // field::PAYLOAD(length)
     }
 }
 
