@@ -1343,7 +1343,9 @@ impl InterfaceInner {
         requires
             (ipr.ip_ty == 0 => 20 <= n) &&
             (ipr.ip_ty == 1 => 40 <= n) &&
-            (p.blen != -1 => (ipr.ip_ty == 0 && 20 + p.blen == n && p.blen <= 65535))
+            (p.blen != -1 => (ipr.ip_ty == 0 && 20 + p.blen == n && p.blen <= 65535)) &&
+            (ipr.ip_ty == 0 => 20 + p.minlen <= n) &&
+            (ipr.ip_ty == 1 => 40 + p.minlen <= n)
     )]
     fn emit_ip_into(
         repr: &IpRepr,
