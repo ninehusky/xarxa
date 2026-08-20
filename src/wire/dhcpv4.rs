@@ -1,13 +1,14 @@
 // See https://tools.ietf.org/html/rfc2131 for the DHCP specification.
 
 use bitflags::bitflags;
+use core::fmt;
 use core::iter;
 use heapless::Vec;
 
 use super::{Error, Result};
 use crate::wire::arp::Hardware;
 use crate::wire::{
-    EthernetAddress, Ipv4Address, copy_window_at, read_u16_at, read_u32_at, sub, write_octets4_at,
+    Buf, EthernetAddress, Ipv4Address, copy_window_at, read_u16_at, read_u32_at, sub, tail,
     write_u16_at, write_u32_at,
 };
 
@@ -60,46 +61,88 @@ impl MessageType {
 }
 
 /// A buffer for DHCP options.
-#[derive(Debug)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+///
+/// Backed by a `wire::Buf` rather than a bare `&mut [u8]`. The writer walks its buffer down one
+/// option at a time, and a *returned* `&mut` loses its length index (flux-rs/flux#1714), so the
+/// `split_at_mut` this used to do left the remainder unrefined and the writes that follow it
+/// unprovable. `Buf` carries an offset instead and slices inside `as_mut`, so the remaining
+/// length is declared rather than derived -- see that module's header.
+#[flux_rs::refined_by(len: int)]
 pub struct DhcpOptionWriter<'a> {
     /// The underlying buffer, directly from the DHCP packet representation.
-    buffer: &'a mut [u8],
+    #[flux_rs::field(Buf[len])]
+    buffer: Buf<'a>,
+}
+
+// Written out rather than derived: `Buf` is opaque and implements neither trait. Both impls
+// reproduce the derived form from when the field was a `&mut [u8]`, which is what `as_ref`
+// hands back.
+impl fmt::Debug for DhcpOptionWriter<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("DhcpOptionWriter")
+            .field("buffer", &self.buffer.as_ref())
+            .finish()
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for DhcpOptionWriter<'_> {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(f, "DhcpOptionWriter {{ buffer: {} }}", self.buffer.as_ref())
+    }
 }
 
 impl<'a> DhcpOptionWriter<'a> {
+    #[flux_rs::sig(fn(&mut [u8][@n]) -> DhcpOptionWriter[n])]
+    #[flux_rs::no_panic]
     pub fn new(buffer: &'a mut [u8]) -> Self {
-        Self { buffer }
+        Self {
+            buffer: Buf::new(buffer),
+        }
     }
 
     /// Emit a  [`DhcpOption`] into a [`DhcpOptionWriter`].
+    ///
+    /// The postcondition is an inequality rather than an equality because the two early returns
+    /// leave the writer where it was. Nothing is `require`d of the caller: the `total_len` guard
+    /// below is what proves all four obligations that follow it, and it is still checked at
+    /// runtime.
+    #[flux_rs::trusted(no, reason = "panic site: writes an option at the head of the buffer")]
+    #[flux_rs::sig(fn(self: &mut Self[@len], option: DhcpOption) -> Result<()>
+                   ensures self: Self{rest: rest <= len})]
+    #[flux_rs::no_panic]
     pub fn emit(&mut self, option: DhcpOption<'_>) -> Result<()> {
         if option.data.len() > u8::MAX as _ {
             return Err(Error);
         }
 
         let total_len = 2 + option.data.len();
-        if self.buffer.len() < total_len {
+        if self.buffer.as_ref().len() < total_len {
             return Err(Error);
         }
 
-        let (buf, rest) = core::mem::take(&mut self.buffer).split_at_mut(total_len);
-        self.buffer = rest;
-
+        let buf = self.buffer.as_mut();
         buf[0] = option.kind;
         buf[1] = option.data.len() as _;
-        buf[2..].copy_from_slice(option.data);
+        self.buffer.copy_at(2, option.data);
+        self.buffer.advance(total_len);
 
         Ok(())
     }
 
+    /// Terminate the option list.
+    ///
+    /// See [`emit`](Self::emit) on the postcondition; on success the writer is left empty.
+    #[flux_rs::trusted(no, reason = "panic site: writes the terminator at the head of the buffer")]
+    #[flux_rs::sig(fn(self: &mut Self[@len]) -> Result<()> ensures self: Self{rest: rest <= len})]
+    #[flux_rs::no_panic]
     pub fn end(&mut self) -> Result<()> {
-        if self.buffer.is_empty() {
+        if self.buffer.as_ref().is_empty() {
             return Err(Error);
         }
 
-        self.buffer[0] = field::OPT_END;
-        self.buffer = &mut [];
+        self.buffer.as_mut()[0] = field::OPT_END;
+        self.buffer = Buf::new(&mut []);
         Ok(())
     }
 }
@@ -110,6 +153,19 @@ impl<'a> DhcpOptionWriter<'a> {
 pub struct DhcpOption<'a> {
     pub kind: u8,
     pub data: &'a [u8],
+}
+
+/// The cursor `Packet::options` walks the option list with.
+///
+/// A newtype around `&[u8]` for a refinement reason. The walk reassigns the cursor to successive
+/// tails, and the cursor lives in a closure upvar, so each reassignment is a *weak* update: flux
+/// checks the new value against the slot's existing type. A `&[u8]` slot carries a length index
+/// and no shorter tail is a subtype of it, which is the `assignment might be unsafe` this used to
+/// report. This struct has no `refined_by`, so its slot carries no index and any cursor fits;
+/// every step re-derives the bound it needs from `is_empty()`/`len()` within that step. See
+/// `wire::tail` for the other half.
+struct OptionCursor<'a> {
+    buf: &'a [u8],
 }
 
 /// A read/write wrapper around a Dynamic Host Configuration Protocol packet buffer.
@@ -489,11 +545,13 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return an iterator over the options.
     ///
-    /// The `240 <= len` bound proves the window this opens on. The walk *inside* the closure is
-    /// not proved: `buf` is reassigned to `&buf[..]` sub-slices, and a returned `&` loses its
-    /// length index (flux-rs/flux#1714), so after the first step `buf`'s length is unknown and
-    /// its own `buf.len() < 2 + len` guards cannot be connected to the slicing. Refining the
-    /// walk belongs with `DhcpOptionWriter`, which has the same shape on the write side.
+    /// The `240 <= len` bound proves the window this opens on, and the walk *inside* the closure
+    /// is proved as well. Two changes got it there. It carries an `OptionCursor` rather than a
+    /// `&[u8]`, so advancing it is not a length-changing weak update on a closure upvar; and
+    /// `first()` became `is_empty()` plus `buf[0]`, because `first`'s spec indexes the `Option`
+    /// it returns and this crate carries no refinement for `Option`, whereas `is_empty`'s
+    /// `bool[n == 0]` stands on its own. Each step then re-derives its own bound from
+    /// `is_empty()`/`len()`, which is what `tail` leaves it free to do.
     ///
     /// The signature's return type drops both lifetimes. Writing them, as
     /// `impl Iterator<Item = DhcpOption<'_>> + '_`, is a `syntax error` -- flux's sig grammar
@@ -502,19 +560,26 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[flux_rs::trusted(no, reason = "panic site: opens the options window at a fixed offset")]
     #[flux_rs::sig(fn(&Packet<T>[@p]) -> impl Iterator<Item = DhcpOption>
                    requires 240 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn options(&self) -> impl Iterator<Item = DhcpOption<'_>> + '_ {
-        let mut buf = &self.buffer.as_ref()[240..]; // field::OPTIONS
+        let mut cur = OptionCursor {
+            buf: tail(self.buffer.as_ref(), 240), // field::OPTIONS
+        };
         iter::from_fn(move || {
             loop {
-                match buf.first().copied() {
-                    // No more options, return.
-                    None => return None,
-                    Some(field::OPT_END) => return None,
+                let buf = cur.buf;
+                // No more options, return.
+                if buf.is_empty() {
+                    return None;
+                }
+
+                match buf[0] {
+                    field::OPT_END => return None,
 
                     // Skip padding.
-                    Some(field::OPT_PAD) => buf = &buf[1..],
-                    Some(kind) => {
+                    field::OPT_PAD => cur = OptionCursor { buf: tail(buf, 1) },
+                    kind => {
                         if buf.len() < 2 {
                             return None;
                         }
@@ -530,7 +595,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
                             data: &buf[2..2 + len],
                         };
 
-                        buf = &buf[2 + len..];
+                        cur = OptionCursor { buf: tail(buf, 2 + len) };
                         return Some(opt);
                     }
                 }
@@ -695,37 +760,33 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// and can respond to ARP requests”.
     #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
     #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: Ipv4Address) requires 16 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
-    #[flux_rs::no_panic]
     pub fn set_client_ip(&mut self, value: Ipv4Address) {
         let data = self.buffer.as_mut();
-        write_octets4_at(data, 12, &value.octets()) // field::CIADDR
+        copy_window_at(data, 12, 4, &value.octets()) // field::CIADDR
     }
 
     /// Sets the value of the `yiaddr` field.
     #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
     #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: Ipv4Address) requires 20 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
-    #[flux_rs::no_panic]
     pub fn set_your_ip(&mut self, value: Ipv4Address) {
         let data = self.buffer.as_mut();
-        write_octets4_at(data, 16, &value.octets()) // field::YIADDR
+        copy_window_at(data, 16, 4, &value.octets()) // field::YIADDR
     }
 
     /// Sets the value of the `siaddr` field.
     #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
     #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: Ipv4Address) requires 24 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
-    #[flux_rs::no_panic]
     pub fn set_server_ip(&mut self, value: Ipv4Address) {
         let data = self.buffer.as_mut();
-        write_octets4_at(data, 20, &value.octets()) // field::SIADDR
+        copy_window_at(data, 20, 4, &value.octets()) // field::SIADDR
     }
 
     /// Sets the value of the `giaddr` field.
     #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
     #[flux_rs::sig(fn(self: &mut Packet<T>[@p], value: Ipv4Address) requires 28 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer))]
-    #[flux_rs::no_panic]
     pub fn set_relay_agent_ip(&mut self, value: Ipv4Address) {
         let data = self.buffer.as_mut();
-        write_octets4_at(data, 24, &value.octets()) // field::GIADDR
+        copy_window_at(data, 24, 4, &value.octets()) // field::GIADDR
     }
 
     /// Sets the flags to the specified value.
@@ -736,13 +797,29 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         let data = self.buffer.as_mut();
         write_u16_at(data, 10, val.bits()) // field::FLAGS
     }
-}
 
-impl<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> Packet<&mut T> {
     /// Return a pointer to the options.
+    ///
+    /// Lives here, on `Packet<T>` with `T: Sized`, rather than on `Packet<&mut T>` with
+    /// `T: ?Sized`. That is what makes the bound statable at all: a reference self type gets the
+    /// unit sort, so on `Packet<&mut T>` there is no `as_mut_reft` to name. The move is strictly
+    /// widening -- `&mut T` is `Sized` and satisfies `AsRef<[u8]> + AsMut<[u8]>` through core's
+    /// blanket impls whenever `T` does, so every existing `Packet<&mut T>` caller still resolves.
+    ///
+    /// The return type carries no index: a *returned* `&mut` loses its length
+    /// (flux-rs/flux#1714), so the writer's `len` cannot be tied to the buffer here.
+    //
+    // The window is written out rather than taken from `field::OPTIONS`, which is a `Range`
+    // const flux cannot see through. Same value.
+    #[flux_rs::trusted(no, reason = "panic site: opens the options window at a fixed offset")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p]) -> DhcpOptionWriter
+        requires 240 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn options_mut(&mut self) -> DhcpOptionWriter<'_> {
-        DhcpOptionWriter::new(&mut self.buffer.as_mut()[field::OPTIONS])
+        DhcpOptionWriter::new(&mut self.buffer.as_mut()[240..]) // field::OPTIONS
     }
 }
 

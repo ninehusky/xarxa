@@ -51,8 +51,19 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Header<&'a T> {
     }
 }
 
-impl<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized> Header<&mut T> {
+impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     /// Return a mutable pointer to the options of the IPv6 Hop-by-Hop header.
+    ///
+    /// Lives here, on `Header<T>` with `T: Sized`, rather than on `Header<&mut T>` with
+    /// `T: ?Sized`: a reference self type gets the unit sort, so on `Header<&mut T>` there is no
+    /// `as_mut_reft` to name and no buffer bound can be written. The move is strictly widening --
+    /// `&mut T` is `Sized` and satisfies `AsRef<[u8]> + AsMut<[u8]>` through core's blanket impls
+    /// whenever `T` does, so every existing `Header<&mut T>` caller still resolves.
+    ///
+    /// No bound is stated, because the body has no panic site to gate: it hands back the whole
+    /// buffer without indexing it. The two out-of-bounds obligations in this file are in
+    /// [`Repr::emit`], on the slices it takes *of the returned* `&mut [u8]`, and a returned `&mut`
+    /// has already lost its length index (flux-rs/flux#1714), so they are out of reach from here.
     pub fn options_mut(&mut self) -> &mut [u8] {
         self.buffer.as_mut()
     }

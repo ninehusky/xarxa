@@ -79,7 +79,7 @@ pub mod pretty_print;
 
 mod buf;
 pub(crate) use buf::{
-    Buf, copy_window_at, prefix, read_i32_at, read_u16_at, read_u32_at, sub, write_i32_at,
+    Buf, copy_window_at, prefix, read_i32_at, read_u16_at, read_u32_at, sub, tail, write_i32_at,
     write_octets4_at, write_octets16_at, write_u16_at, write_u24_at, write_u32_at,
 };
 
@@ -375,6 +375,11 @@ impl Default for HardwareAddress {
     feature = "medium-ieee802154"
 ))]
 impl HardwareAddress {
+    // The bound is what `RawHardwareAddress::from_bytes` requires, and it is the tightest
+    // one true under every medium cfg: `MAX_HARDWARE_ADDRESS_LEN` is 6 without
+    // `medium-ieee802154` (the only address variant is the six-octet Ethernet one) and 8
+    // with it (an IEEE 802.15.4 address is absent, two or eight octets).
+    #[flux_rs::sig(fn(&HardwareAddress) -> &[u8]{n: n <= MAX_HARDWARE_ADDRESS_LEN})]
     pub const fn as_bytes(&self) -> &[u8] {
         match self {
             #[cfg(feature = "medium-ip")]
@@ -529,7 +534,10 @@ pub const MAX_HARDWARE_ADDRESS_LEN: usize = 8;
 #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(len: int)]
+#[flux_rs::invariant(0 <= len && len <= MAX_HARDWARE_ADDRESS_LEN)]
 pub struct RawHardwareAddress {
+    #[flux_rs::field(u8[len])]
     len: u8,
     data: [u8; MAX_HARDWARE_ADDRESS_LEN],
 }
@@ -540,9 +548,18 @@ impl RawHardwareAddress {
     ///
     /// # Panics
     /// Panics if `addr.len() > MAX_HARDWARE_ADDRESS_LEN`.
+    ///
+    /// The `requires` states that documented panic rather than defusing it: the panic is
+    /// `data[..addr.len()]`, and the bound is exactly the one the doc comment names.
+    #[flux_rs::trusted(no, reason = "panic site: the documented over-long-address panic")]
+    #[flux_rs::sig(
+        fn(&[u8][@n]) -> RawHardwareAddress[n]
+        requires n <= MAX_HARDWARE_ADDRESS_LEN
+    )]
     pub fn from_bytes(addr: &[u8]) -> Self {
         let mut data = [0u8; MAX_HARDWARE_ADDRESS_LEN];
-        data[..addr.len()].copy_from_slice(addr);
+        let dst: &mut [u8] = &mut data;
+        dst[..addr.len()].copy_from_slice(addr);
 
         Self {
             len: addr.len() as u8,
@@ -550,14 +567,22 @@ impl RawHardwareAddress {
         }
     }
 
+    #[flux_rs::trusted(no, reason = "panic site: the slice range on `data`")]
+    #[flux_rs::sig(fn(&RawHardwareAddress[@a]) -> &[u8][a.len])]
+    #[flux_rs::no_panic]
     pub fn as_bytes(&self) -> &[u8] {
-        &self.data[..self.len as usize]
+        let src: &[u8] = &self.data;
+        &src[..self.len as usize]
     }
 
+    #[flux_rs::sig(fn(&RawHardwareAddress[@a]) -> usize[a.len])]
+    #[flux_rs::no_panic]
     pub const fn len(&self) -> usize {
         self.len as usize
     }
 
+    #[flux_rs::sig(fn(&RawHardwareAddress[@a]) -> bool[a.len == 0])]
+    #[flux_rs::no_panic]
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
