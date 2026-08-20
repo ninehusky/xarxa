@@ -238,7 +238,10 @@ impl<T: AsRef<[u8]>> NdiscOption<T> {
     /// Return the Source/Target Link-layer Address.
     #[inline]
     pub fn link_layer_addr(&self) -> RawHardwareAddress {
-        let len = MAX_HARDWARE_ADDRESS_LEN.min(self.data_len() as usize * 8 - 2);
+        // `core::cmp::min` rather than `usize::min`: the free function is the one xarxa
+        // refines (see `flux_specs::cmp`), so the `len <= MAX_HARDWARE_ADDRESS_LEN` that
+        // `RawHardwareAddress::from_bytes` requires stays visible. Same value.
+        let len = core::cmp::min(MAX_HARDWARE_ADDRESS_LEN, self.data_len() as usize * 8 - 2);
         let data = self.buffer.as_ref();
         RawHardwareAddress::from_bytes(&data[2..len + 2])
     }
@@ -370,19 +373,15 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
     /// Set the Source/Target Link-layer Address.
     //
-    // `trusted(yes)`, but *with* a `requires`, so it states an obligation rather than deleting
-    // one. `2 + addr.len() <= 2 + MAX_HARDWARE_ADDRESS_LEN <= 10` holds by construction of
-    // `RawHardwareAddress` (its `data` is `[u8; MAX_HARDWARE_ADDRESS_LEN]` and `from_bytes`
-    // rejects anything longer), so `10 <= n` is sufficient. Flux cannot *derive* it:
-    // `RawHardwareAddress` is unrefined and defined in `wire/mod.rs`, so `len()` and
-    // `as_bytes()` carry no length index and `copy_from_slice`'s length equality is unstatable.
-    // Refining `RawHardwareAddress` by its `len` would let this become `trusted(no)`.
-    #[flux_rs::trusted(yes, reason = "RawHardwareAddress is unrefined (wire/mod.rs); len() and \
-as_bytes() carry no index, so 2 + addr.len() <= n is unstatable")]
+    // The bound is `10` rather than `2 + addr.len()`: `RawHardwareAddress`'s invariant is
+    // `len <= MAX_HARDWARE_ADDRESS_LEN`, which is 6 without `medium-ieee802154` and 8 with
+    // it, so `2 + addr.len() <= 10` under either cfg and callers get the simpler contract.
+    #[flux_rs::trusted(no, reason = "panic site: the link-layer address copy")]
     #[flux_rs::sig(
         fn(&mut NdiscOption<T>[@p], RawHardwareAddress)
         requires 10 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
     )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn set_link_layer_addr(&mut self, addr: RawHardwareAddress) {
         let data = self.buffer.as_mut();
@@ -741,19 +740,11 @@ impl<'a> Repr<'a> {
 
 /// Emit a Source/Target Link-layer Address option.
 ///
-/// Lifted out of [`Repr::emit`] so the rest of that function can be checked. This arm cannot
-/// be: `opt_len` is `addr.len() + 2`, and `RawHardwareAddress` is unrefined (it lives in
-/// `wire/mod.rs`), so Flux cannot see `addr.len() <= MAX_HARDWARE_ADDRESS_LEN`. Without that
-/// bound `opt_len.div_ceil(8)` reports `MightPanic(SynthesizedPanic)` -- `div_ceil` panics on
-/// the `self + rhs - 1` overflow, which is only ruled out by a bound on `addr.len()`.
-/// Confirmed by running: with the arm inline and `emit` at `trusted(no)`, both copies of this
-/// arm produce exactly that error.
-///
-/// Refining `RawHardwareAddress` by its `len` (with the `len <= MAX_HARDWARE_ADDRESS_LEN`
-/// invariant its `[u8; MAX_HARDWARE_ADDRESS_LEN]` field already guarantees) would make this
-/// `trusted(no)` and would also unblock `set_link_layer_addr` and `link_layer_addr`.
-#[flux_rs::trusted(yes, reason = "RawHardwareAddress is unrefined (wire/mod.rs), so \
-addr.len() <= MAX_HARDWARE_ADDRESS_LEN is unstatable and div_ceil's overflow check fails")]
+/// Lifted out of [`Repr::emit`] so each arm's bound can be stated separately. The bound the
+/// body needs is `10`, which `RawHardwareAddress`'s `len <= MAX_HARDWARE_ADDRESS_LEN`
+/// invariant supplies: it is what puts `opt_len = addr.len() + 2` in range and so rules out
+/// the `self + rhs - 1` overflow inside `opt_len.div_ceil(8)`.
+#[flux_rs::trusted(no, reason = "panic site: the link-layer address option body")]
 // The bound is `emit`'s 48 rather than the 10 this body needs: `&mut` is invariant in Flux,
 // so a weaker bound here would leave `emit` unable to re-establish its own on return.
 #[flux_rs::sig(
