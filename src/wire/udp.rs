@@ -4,7 +4,7 @@ use super::{Error, Result};
 use crate::phy::ChecksumCapabilities;
 use crate::wire::ip::checksum;
 use crate::wire::{IpAddress, IpProtocol};
-use crate::wire::{prefix, read_u16_at, write_u16_at};
+use crate::wire::{prefix, read_u16_at, write_u16_at, Buf};
 
 /// A ghost field: carries an integer in the refinement and nothing at runtime.
 ///
@@ -438,6 +438,32 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         let data = self.buffer.as_mut();
         &mut data[8..length] // field::PAYLOAD(length)
     }
+
+    /// The payload window, as a [`Buf`] so its length survives the return.
+    ///
+    /// Same window as [`payload_mut`](Self::payload_mut). A `&mut [u8]` loses its length index
+    /// on the way back to the caller (flux-rs/flux#1714), so a caller that must write exactly
+    /// `len - 8` octets into it -- `Repr::emit`'s two named payload paths -- cannot state that
+    /// obligation. `Buf` carries the length in its own refinement instead. The window is
+    /// bounds-checked here, exactly as in `payload_mut`.
+    #[flux_rs::trusted(no, reason = "panic site: reslices the window named by the length field")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p]) -> Buf[p.len - 8]
+        requires 6 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+              && 8 <= p.len && p.len <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
+    #[inline]
+    pub fn payload_buf(&mut self) -> Buf<'_> {
+        let length = self.len() as usize;
+        let data = self.buffer.as_mut();
+        // Same window and the same bounds check as `payload_mut`. Sliced here rather than via
+        // `Buf::with_offset`, whose `as_mut` is `get_unchecked_mut(offset..)`: that would be UB
+        // for `length < 8`, and the `8 <= p.len` that rules it out is not discharged -- it rests
+        // on `emit_ports_and_len`'s `8 + payload_len <= 65535`, whose body truncates.
+        // `Buf::new` carries offset 0, so its `as_mut` is in bounds by construction.
+        Buf::new(&mut data[8..length]) // field::PAYLOAD(length)
+    }
 }
 
 #[flux_rs::assoc(
@@ -498,38 +524,50 @@ impl Repr {
         HEADER_LEN
     }
 
-    /// Emit a high-level representation into an User Datagram Protocol packet.
+    /// Write the source port, destination port and length fields.
     ///
-    /// This never calculates the checksum, and is intended for internal-use only,
-    /// not for packets that are going to be actually sent over the network. For
-    /// example, when decompressing 6lowpan.
-    pub(crate) fn emit_header<T>(&self, packet: &mut Packet<&mut T>, payload_len: usize)
+    /// Split out of the three emitters below so the payload window's width is named once. The
+    /// `ensures` is the whole point: `set_len` pins the ghost, and the ghost is what
+    /// [`payload_buf`](Packet::payload_buf) and `fill_checksum` read the window from.
+    ///
+    /// `strict` locally, and `8 + payload_len <= 65535` in the `requires`: under the crate's
+    /// default `lazy` the sum is modelled as wrapping and the `as u16` cast cannot be equated
+    /// with `8 + payload_len`. The bound is not a new restriction -- the length field is a
+    /// `u16`, so a longer datagram was already unrepresentable.
+    #[flux_rs::opts(check_overflow = "strict")]
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at fixed offsets")]
+    #[flux_rs::sig(
+        fn(&Self, packet: &strg Packet<T>[@p], payload_len: usize)
+        requires 6 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer) && 8 + payload_len <= 65535
+        ensures packet: Packet<T>[p.buffer, 8 + payload_len]
+    )]
+    #[flux_rs::no_panic]
+    fn emit_ports_and_len<T>(&self, packet: &mut Packet<T>, payload_len: usize)
     where
-        T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,
+        T: AsRef<[u8]> + AsMut<[u8]>,
     {
         packet.set_src_port(self.src_port);
         packet.set_dst_port(self.dst_port);
         packet.set_len((HEADER_LEN + payload_len) as u16);
-        packet.set_checksum(0);
     }
 
-    /// Emit a high-level representation into an User Datagram Protocol packet.
-    pub fn emit<T>(
+    /// Fill in or zero the checksum field, whichever the capabilities call for.
+    #[flux_rs::trusted(no, reason = "panic site: fill_checksum reads the window")]
+    #[flux_rs::sig(
+        fn(&Self, packet: &mut Packet<T>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities)
+        requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+              && 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+              && p.len <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    fn emit_checksum<T>(
         &self,
-        packet: &mut Packet<&mut T>,
+        packet: &mut Packet<T>,
         src_addr: &IpAddress,
         dst_addr: &IpAddress,
-        payload_len: usize,
-        emit_payload: impl FnOnce(&mut [u8]),
         checksum_caps: &ChecksumCapabilities,
     ) where
-        T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,
+        T: AsRef<[u8]> + AsMut<[u8]>,
     {
-        packet.set_src_port(self.src_port);
-        packet.set_dst_port(self.dst_port);
-        packet.set_len((HEADER_LEN + payload_len) as u16);
-        emit_payload(packet.payload_mut());
-
         if checksum_caps.udp.tx() {
             packet.fill_checksum(src_addr, dst_addr)
         } else {
@@ -537,6 +575,106 @@ impl Repr {
             // since implementations might rely on it
             packet.set_checksum(0);
         }
+    }
+
+    /// Emit a high-level representation into an User Datagram Protocol packet.
+    ///
+    /// This never calculates the checksum, and is intended for internal-use only,
+    /// not for packets that are going to be actually sent over the network. For
+    /// example, when decompressing 6lowpan.
+    //
+    // `Packet<T>` with `T: Sized`, not `Packet<&mut T>` with `T: ?Sized`. The old shape
+    // instantiated core's blanket `impl<T, U> AsMut<U> for &mut T`, which carries no associated
+    // refinement, so `associated refinement 'as_mut_reft' is missing` aborted refinement
+    // checking of this whole body -- every setter bound below was silently unchecked. `&mut T`
+    // still satisfies the bounds, so every existing caller still resolves; the same move was
+    // made for `icmpv4::Repr::emit`.
+    #[flux_rs::trusted(no, reason = "panic site: writes the header at fixed offsets")]
+    #[flux_rs::sig(
+        fn(&Self, packet: &strg Packet<T>[@p], payload_len: usize)
+        requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer) && 8 + payload_len <= 65535
+        ensures packet: Packet<T>[p.buffer, 8 + payload_len]
+    )]
+    #[flux_rs::no_panic]
+    pub(crate) fn emit_header<T>(&self, packet: &mut Packet<T>, payload_len: usize)
+    where
+        T: AsRef<[u8]> + AsMut<[u8]>,
+    {
+        self.emit_ports_and_len(packet, payload_len);
+        packet.set_checksum(0);
+    }
+
+    /// Emit a high-level representation into an User Datagram Protocol packet.
+    //
+    // See `emit_header` for why the buffer parameter is `Packet<T>` rather than
+    // `Packet<&mut T>`.
+    //
+    // The payload window is handed to `emit_payload` as a bare `&mut [u8]`, which carries no
+    // length, and a refined bound on the `FnOnce` parameter would not be checked inside a
+    // closure body (see `emit_slice`). So what this signature states is what the *header*
+    // needs; the window's own obligation is the caller's, and `emit_slice` is the way to
+    // discharge it.
+    #[flux_rs::trusted(no, reason = "panic site: the header setters and the payload window")]
+    #[flux_rs::sig(
+        fn(
+            &Self,
+            packet: &strg Packet<T>[@p],
+            &IpAddress,
+            &IpAddress,
+            payload_len: usize,
+            _,
+            &ChecksumCapabilities,
+        )
+        requires 8 + payload_len <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+              && 8 + payload_len <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+              && 8 + payload_len <= 65535
+        ensures packet: Packet<T>[p.buffer, 8 + payload_len]
+    )]
+    pub fn emit<T>(
+        &self,
+        packet: &mut Packet<T>,
+        src_addr: &IpAddress,
+        dst_addr: &IpAddress,
+        payload_len: usize,
+        emit_payload: impl FnOnce(&mut [u8]),
+        checksum_caps: &ChecksumCapabilities,
+    ) where
+        T: AsRef<[u8]> + AsMut<[u8]>,
+    {
+        self.emit_ports_and_len(packet, payload_len);
+        emit_payload(packet.payload_mut());
+        self.emit_checksum(packet, src_addr, dst_addr, checksum_caps);
+    }
+
+    /// [`emit`](Self::emit), with the payload copied from a slice.
+    ///
+    /// Exactly `emit(.., payload.len(), |buf| buf.copy_from_slice(payload), ..)`, as a named
+    /// function. A refined bound on an `impl FnOnce` parameter is *not* checked inside a
+    /// closure body (flux-rs/flux#23), so stating the window's width on `emit`'s closure
+    /// parameter would verify vacuously and the `copy_from_slice` would stay unproved. Named,
+    /// the copy is an ordinary call and its equal-length obligation is discharged here, from
+    /// the window `emit_ports_and_len` just pinned.
+    #[flux_rs::trusted(no, reason = "panic site: the header setters and the payload copy")]
+    #[flux_rs::sig(
+        fn(&Self, packet: &strg Packet<T>[@p], &IpAddress, &IpAddress, payload: &[u8][@m], &ChecksumCapabilities)
+        requires 8 + m <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+              && 8 + m <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+              && 8 + m <= 65535
+        ensures packet: Packet<T>[p.buffer, 8 + m]
+    )]
+    pub fn emit_slice<T>(
+        &self,
+        packet: &mut Packet<T>,
+        src_addr: &IpAddress,
+        dst_addr: &IpAddress,
+        payload: &[u8],
+        checksum_caps: &ChecksumCapabilities,
+    ) where
+        T: AsRef<[u8]> + AsMut<[u8]>,
+    {
+        self.emit_ports_and_len(packet, payload.len());
+        packet.payload_buf().as_mut().copy_from_slice(payload);
+        self.emit_checksum(packet, src_addr, dst_addr, checksum_caps);
     }
 }
 

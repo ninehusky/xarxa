@@ -192,14 +192,20 @@ impl<'p> Packet<'p> {
                 payload[..len].copy_from_slice(raw_packet)
             }
             #[cfg(any(feature = "socket-udp", feature = "socket-dns"))]
-            IpPayload::Udp(udp_repr, inner_payload) => udp_repr.emit(
-                &mut UdpPacket::new_unchecked(payload),
-                &_ip_repr.src_addr(),
-                &_ip_repr.dst_addr(),
-                inner_payload.len(),
-                |buf| buf.copy_from_slice(inner_payload),
-                &caps.checksum,
-            ),
+            IpPayload::Udp(udp_repr, inner_payload) => {
+                // `emit_slice` rather than `emit` with a copying closure: a refined bound on an
+                // `impl FnOnce` parameter is not checked inside a closure body
+                // (flux-rs/flux#23), so the closure's `copy_from_slice` could never be proved.
+                // Routed through `Buf` for the same reason as the Icmpv4 arm above.
+                let mut udp_packet = UdpPacket::new_unchecked(Buf::new(payload));
+                udp_repr.emit_slice(
+                    &mut udp_packet,
+                    &_ip_repr.src_addr(),
+                    &_ip_repr.dst_addr(),
+                    inner_payload,
+                    &caps.checksum,
+                )
+            }
             #[cfg(feature = "socket-tcp")]
             &IpPayload::Tcp(mut tcp_repr) => {
                 // This is a terrible hack to make TCP performance more acceptable on systems
@@ -220,22 +226,33 @@ impl<'p> Packet<'p> {
                     }
                 }
 
+                // Routed through `Buf` for the same reason as the Icmpv4 arm above. The bound
+                // is *stated* here and not discharged: `TcpRepr` carries no refinement, so
+                // `tcp_repr.buffer_len()` is not statable at this type and this variant is
+                // still indexed `-1`. See the note on `IpPayload`.
                 tcp_repr.emit(
-                    &mut TcpPacket::new_unchecked(payload),
+                    &mut TcpPacket::new_unchecked(Buf::new(payload)),
                     &_ip_repr.src_addr(),
                     &_ip_repr.dst_addr(),
                     &caps.checksum,
                 );
             }
             #[cfg(feature = "socket-dhcpv4")]
-            IpPayload::Dhcpv4(udp_repr, dhcp_repr) => udp_repr.emit(
-                &mut UdpPacket::new_unchecked(payload),
-                &_ip_repr.src_addr(),
-                &_ip_repr.dst_addr(),
-                dhcp_repr.buffer_len(),
-                |buf| dhcp_repr.emit(&mut DhcpPacket::new_unchecked(buf)).unwrap(),
-                &caps.checksum,
-            ),
+            IpPayload::Dhcpv4(udp_repr, dhcp_repr) => {
+                // Routed through `Buf` so `udp::Repr::emit`'s buffer bound binds something. The
+                // bound is *stated* here and not discharged: `DhcpRepr` carries no refinement,
+                // so `dhcp_repr.buffer_len()` is not statable at this type and this variant is
+                // still indexed `-1`. See the note on `IpPayload`.
+                let mut udp_packet = UdpPacket::new_unchecked(Buf::new(payload));
+                udp_repr.emit(
+                    &mut udp_packet,
+                    &_ip_repr.src_addr(),
+                    &_ip_repr.dst_addr(),
+                    dhcp_repr.buffer_len(),
+                    |buf| dhcp_repr.emit(&mut DhcpPacket::new_unchecked(buf)).unwrap(),
+                    &caps.checksum,
+                )
+            }
         }
     }
 }
@@ -277,12 +294,17 @@ pub(crate) struct PacketV6<'p> {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 // `blen` is the buffer this payload will fill exactly, or `-1` where it is not tracked.
 //
-// Only the `Icmpv4` variant is exact. Every other repr here is unrefined -- its `buffer_len()`
-// is not statable at this type -- so they are indexed `-1`, and `emit_payload`'s precondition
-// guards on `blen != -1`. That leaves those arms owing exactly what they owed before (nothing),
-// rather than claiming a length the code does not carry. Refining `UdpRepr`, `TcpRepr`,
-// `DhcpRepr`, `Icmpv6Repr`'s callers and `IgmpRepr` by their own `buffer_len()` is what turns
-// each `-1` into a real index.
+// `Icmpv4` and `Udp` are exact. `Udp` needs no refinement on `UdpRepr` at all: the datagram is
+// the fixed 8-octet header plus the payload slice, and the slice's length is already in the
+// refinement, so the variant states it directly.
+//
+// Every other repr here is unrefined -- its `buffer_len()` is not statable at this type -- so
+// they are indexed `-1`, and `emit_payload`'s precondition guards on `blen != -1`. That leaves
+// those arms owing exactly what they owed before, rather than claiming a length the code does
+// not carry. `Tcp` and `Dhcpv4` now *state* their emitter's buffer bound without discharging
+// it; refining `TcpRepr`, `DhcpRepr` and `IgmpRepr` by their own `buffer_len()`, and tying
+// `Icmpv6Repr`'s existing `blen` index to its `buffer_len()`, is what turns each `-1` into a
+// real index.
 #[flux_rs::refined_by(blen: int)]
 #[flux_rs::invariant(blen == -1 || 8 <= blen)]
 pub(crate) enum IpPayload<'p> {
@@ -302,7 +324,9 @@ pub(crate) enum IpPayload<'p> {
     #[flux_rs::variant((&[u8]) -> IpPayload[-1])]
     Raw(&'p [u8]),
     #[cfg(any(feature = "socket-udp", feature = "socket-dns"))]
-    #[flux_rs::variant((UdpRepr, &[u8]) -> IpPayload[-1])]
+    // 8 is `udp::HEADER_LEN`, restated as a literal because flux cannot see through the
+    // `Range` const it is derived from.
+    #[flux_rs::variant((UdpRepr, &[u8][@m]) -> IpPayload[8 + m])]
     Udp(UdpRepr, &'p [u8]),
     #[cfg(feature = "socket-tcp")]
     #[flux_rs::variant((TcpRepr) -> IpPayload[-1])]
