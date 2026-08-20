@@ -603,7 +603,6 @@ impl InterfaceInner {
         hbh_repr.push_padn_option(0);
 
         let mld_repr = MldRepr::ReportRecordReprs(records);
-        let records_len = mld_records_len(records);
 
         // All MLDv2 messages must be sent with an IPv6 Hop limit of 1.
         Some(Packet::new_ipv6(
@@ -611,10 +610,11 @@ impl InterfaceInner {
                 src_addr,
                 dst_addr,
                 next_header: IpProtocol::HopByHop,
+                // `mld_repr.buffer_len()` now includes `20 * records.len()`; the record term
+                // used to be added separately here. Same octets either way.
                 payload_len: dummy_ext_hdr.header_len()
                     + hbh_repr.buffer_len()
-                    + mld_repr.buffer_len()
-                    + records_len,
+                    + mld_repr.buffer_len(),
                 hop_limit: 1,
             },
             IpPayload::HopByHopIcmpv6(hbh_repr, Icmpv6Repr::Mld(mld_repr)),
@@ -749,19 +749,4 @@ impl Interface {
             .unwrap();
         self.inner.slaac.rs_sent(self.inner.now);
     }
-}
-
-/// The octets `MldRepr::ReportRecordReprs` writes after its 8-octet header.
-///
-/// Trusted: the sum is an iterator fold, which flux does not follow. The claim is exact rather
-/// than a bound -- `MldAddressRecordRepr::buffer_len` is `usize[20]`, so `k` records are `20 * k`
-/// octets -- so the only thing taken on faith is that `sum` adds each element once.
-#[flux_rs::trusted(yes, reason = "iterator fold; each record is `buffer_len() == 20`")]
-#[flux_rs::sig(fn(&[MldAddressRecordRepr][@k]) -> usize[20 * k])]
-#[flux_rs::no_panic]
-fn mld_records_len(records: &[MldAddressRecordRepr]) -> usize {
-    records
-        .iter()
-        .map(MldAddressRecordRepr::buffer_len)
-        .sum::<usize>()
 }

@@ -552,19 +552,29 @@ impl<'a> AddressRecordRepr<'a> {
     }
 }
 
+/// The octets a slice of address records occupies.
+///
+/// Trusted: the sum is an iterator fold, which flux does not follow. The claim is exact rather
+/// than a bound -- `AddressRecordRepr::buffer_len` is `usize[20]`, so `k` records are `20 * k`
+/// octets -- so the only thing taken on faith is that `sum` adds each element once.
+#[flux_rs::trusted(yes, reason = "iterator fold; each record is `buffer_len() == 20`")]
+#[flux_rs::sig(fn(&[AddressRecordRepr][@k]) -> usize[20 * k])]
+#[flux_rs::no_panic]
+pub(crate) fn records_len(records: &[AddressRecordRepr]) -> usize {
+    records.iter().map(AddressRecordRepr::buffer_len).sum::<usize>()
+}
+
 /// A high-level representation of an MLDv2 packet header.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 // Indexed to agree with `buffer_len()` exactly, variant for variant: `28 + data.len()` for
 // Query (`field::QUERY_NUM_SRCS.end`), `8 + data.len()` for Report (`NR_MCAST_RCRDS.end`) and
-// a bare `8` for ReportRecordReprs.
+// `8 + 20 * records.len()` for ReportRecordReprs, each record being
+// `AddressRecordRepr::buffer_len()`.
 //
-// The `ReportRecordReprs` index is deliberately *approximate*: `buffer_len()` returns only 8 for
-// that variant, omitting `20 * records.len()`, and `iface::interface::ipv6` compensates by adding
-// the record lengths at the call site. `AddressRecordRepr` is unrefined, so the true length is not
-// statable here anyway. Indexing it 8 reproduces today's behaviour and today's obligation -- the
-// record loop's `8 + 20 * records.len() <= buffer` stays owed by nobody, exactly as before. It is
-// NOT fixed here, because correcting `buffer_len()` would change what `ipv6.rs` allocates.
+// The record term is what `Repr::emit`'s loop walks, so it is what makes that loop's
+// `offset <= buffer` statable. `iface::interface::ipv6` adds no record length of its own: the
+// two together are the same octets the allocation always had.
 // Smallest variant is Report/ReportRecordReprs at `field::NR_MCAST_RCRDS.end` == 8. Flux checks
 // this against the `variant` indices below; `Icmpv6Repr`'s `4 <= blen` invariant rests on it.
 #[flux_rs::invariant(8 <= blen)]
@@ -585,7 +595,7 @@ pub enum Repr<'a> {
         nr_mcast_addr_rcrds: u16,
         data: &'a [u8],
     },
-    #[flux_rs::variant((&[AddressRecordRepr]) -> Repr[8])]
+    #[flux_rs::variant((&[AddressRecordRepr][@k]) -> Repr[8 + 20 * k])]
     ReportRecordReprs(&'a [AddressRecordRepr<'a>]),
 }
 
@@ -625,7 +635,7 @@ impl<'a> Repr<'a> {
         match self {
             Repr::Query { data, .. } => 28 + crate::flux_util::byte_len(data),
             Repr::Report { data, .. } => 8 + crate::flux_util::byte_len(data),
-            Repr::ReportRecordReprs(_data) => 8,
+            Repr::ReportRecordReprs(records) => 8 + records_len(records),
         }
     }
 
@@ -717,12 +727,19 @@ impl<'a> Repr<'a> {
                 //   * a reborrowed sub-slice loses its length (flux-rs/flux#1714), so the
                 //     original form could not state the per-record bound at all.
                 // `test_report_record_reprs_emit` pins the resulting bytes.
-                let mut offset = 8; // field::NR_MCAST_RCRDS.end
-                for record in *records {
+                // Indexed rather than `for record in *records` with an accumulating `offset`:
+                // the offsets are identical -- 8, 28, 48, ... -- but written in closed form,
+                // `8 + 20 * i`, flux relates them to `r.blen == 8 + 20 * k` directly. Over an
+                // accumulator it would need an inductive invariant across the loop body, which
+                // it does not infer. 8 is `field::NR_MCAST_RCRDS.end` and 20 is
+                // `AddressRecordRepr::buffer_len()`.
+                let n = records.len();
+                let mut i = 0;
+                while i < n {
                     let data = packet.buffer.as_mut();
-                    let buf = crate::wire::Buf::with_offset(data, offset);
-                    record.emit(&mut AddressRecord::new_unchecked(buf));
-                    offset += record.buffer_len();
+                    let buf = crate::wire::Buf::with_offset(data, 8 + 20 * i);
+                    records[i].emit(&mut AddressRecord::new_unchecked(buf));
+                    i += 1;
                 }
             }
         }

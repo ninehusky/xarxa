@@ -154,6 +154,17 @@ impl<'a> Repr<'a> {
         })
     }
 
+    /// Build a header from a list of options.
+    ///
+    /// `options` is private, so this is how a caller outside the module makes one. The emitted
+    /// length is left unconstrained; `buffer_len()` still reports it at runtime.
+    pub fn new(options: Vec<Ipv6OptionRepr<'a>, { config::IPV6_HBH_MAX_OPTIONS }>) -> Self {
+        Self {
+            options,
+            ghost: Ghost::unknown(),
+        }
+    }
+
     /// The options this header will emit.
     ///
     /// Trusted: `heapless::Vec`'s `Deref` has no MIR available, so the call reads as
@@ -261,21 +272,21 @@ mod tests {
 
         let mut options = Vec::new();
         options.push(Ipv6OptionRepr::PadN(4)).unwrap();
-        assert_eq!(repr, Repr { options });
+        assert_eq!(repr, Repr::new(options));
 
         let header = Header::new_unchecked(&REPR_PACKET_PAD12);
         let repr = Repr::parse(&header).unwrap();
 
         let mut options = Vec::new();
         options.push(Ipv6OptionRepr::PadN(12)).unwrap();
-        assert_eq!(repr, Repr { options });
+        assert_eq!(repr, Repr::new(options));
     }
 
     #[test]
     fn test_repr_emit() {
         let mut options = Vec::new();
         options.push(Ipv6OptionRepr::PadN(4)).unwrap();
-        let repr = Repr { options };
+        let repr = Repr::new(options);
 
         let mut bytes = [0u8; 6];
         let mut header = Header::new_unchecked(&mut bytes);
@@ -285,7 +296,7 @@ mod tests {
 
         let mut options = Vec::new();
         options.push(Ipv6OptionRepr::PadN(12)).unwrap();
-        let repr = Repr { options };
+        let repr = Repr::new(options);
 
         let mut bytes = [0u8; 14];
         let mut header = Header::new_unchecked(&mut bytes);
