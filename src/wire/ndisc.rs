@@ -284,10 +284,25 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 /// A high-level representation of an Neighbor Discovery packet header.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+// Indexed by the length of the *fixed* header each variant writes, which is the per-arm bound
+// `Repr::emit`'s setters actually need: 8 for RouterSolicit (`field::UNUSED.end`), 16 for
+// RouterAdvert (`RETRANS_TM.end`), 24 for the two Neighbor arms (`TARGET_ADDR.end`) and 40 for
+// Redirect (`DEST_ADDR.end`). It is a *lower* bound on `buffer_len()`, not equal to it: the
+// trailing NDISC options contribute a length that `NdiscOptionRepr` -- unrefined -- cannot state.
+// That is enough for the caller: `Icmpv6Repr::emit` can now discharge this arm from its own
+// `r.blen <= buffer` conjunct instead of a blanket `40 <= buffer`.
+// Smallest variant is RouterSolicit at `field::UNUSED.end` == 8. Flux checks this against the
+// `variant` indices below; `Icmpv6Repr`'s own `4 <= blen` invariant rests on it.
+#[flux_rs::invariant(8 <= blen)]
+#[flux_rs::refined_by(blen: int)]
 pub enum Repr<'a> {
+    #[flux_rs::variant({Option<RawHardwareAddress>} -> Repr[8])]
     RouterSolicit {
         lladdr: Option<RawHardwareAddress>,
     },
+    #[flux_rs::variant({u8, RouterFlags, Duration, Duration, Duration,
+                        Option<RawHardwareAddress>, Option<u32>,
+                        Option<NdiscPrefixInformation>} -> Repr[16])]
     RouterAdvert {
         hop_limit: u8,
         flags: RouterFlags,
@@ -298,15 +313,19 @@ pub enum Repr<'a> {
         mtu: Option<u32>,
         prefix_info: Option<NdiscPrefixInformation>,
     },
+    #[flux_rs::variant({Ipv6Address, Option<RawHardwareAddress>} -> Repr[24])]
     NeighborSolicit {
         target_addr: Ipv6Address,
         lladdr: Option<RawHardwareAddress>,
     },
+    #[flux_rs::variant({NeighborFlags, Ipv6Address, Option<RawHardwareAddress>} -> Repr[24])]
     NeighborAdvert {
         flags: NeighborFlags,
         target_addr: Ipv6Address,
         lladdr: Option<RawHardwareAddress>,
     },
+    #[flux_rs::variant({Ipv6Address, Ipv6Address, Option<RawHardwareAddress>,
+                        Option<NdiscRedirectedHeader>} -> Repr[40])]
     Redirect {
         target_addr: Ipv6Address,
         dest_addr: Ipv6Address,
@@ -457,8 +476,8 @@ impl<'a> Repr<'a> {
     /// `usize`. Refining `NdiscOptionRepr` by its buffer length is what closes both.
     #[flux_rs::trusted(no, reason = "carries the icmpv6 buffer bound to the ndisc setters")]
     #[flux_rs::sig(
-        fn(&Repr, packet: &strg Packet<T>[@p])
-        requires 40 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        fn(&Repr[@r], packet: &strg Packet<T>[@p])
+        requires r.blen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
         ensures packet: Packet<T>{v: v.buffer == p.buffer}
     )]
     pub fn emit<T>(&self, packet: &mut Packet<T>)
