@@ -613,23 +613,22 @@ impl<T: Into<Address>> From<(T, u16)> for ListenEndpoint {
 /// or IPv6 concrete high-level representation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-// `plen` is the v4 payload length, and `-1` on the v6 side: `Ipv6Repr` is not refined, so the
-// length is not statable here. `-1` rather than an unconstrained index because a variant's
-// index must be determined; every consumer below guards on `plen != -1`, so the v6 arm carries
-// exactly what it carried before -- nothing.
+// `plen` is the payload length of whichever variant this is, which is what lets `buffer_len()`
+// state an equality on both arms and so what a caller sizes a transmit buffer from.
 #[flux_rs::refined_by(ip_ty: int, plen: int)]
 // The enum has exactly these two variants, so `ip_ty` is 0 or 1. Without stating it, a
 // per-variant precondition like `(ip_ty == 0 => ..) && (ip_ty == 1 => ..)` is vacuous for any
 // other value and discharges nothing at the call site.
 #[flux_rs::invariant(ip_ty == 0 || ip_ty == 1)]
-// `-1` is the v6 sentinel; every other value is an `Ipv4Repr::payload_len`, a `usize`.
-#[flux_rs::invariant(-1 <= plen)]
+// Both variants carry a `usize` payload length bounded by their `u16` length field.
+#[flux_rs::invariant(0 <= plen)]
+#[flux_rs::invariant(plen <= 65535)]
 pub enum Repr {
     #[cfg(feature = "proto-ipv4")]
     #[flux_rs::variant((Ipv4Repr[@r]) -> Repr[0, r.plen])]
     Ipv4(Ipv4Repr),
     #[cfg(feature = "proto-ipv6")]
-    #[flux_rs::variant((Ipv6Repr) -> Repr[1, -1])]
+    #[flux_rs::variant((Ipv6Repr[@r]) -> Repr[1, r.plen])]
     Ipv6(Ipv6Repr),
 }
 
@@ -830,7 +829,7 @@ impl Repr {
     }
 
     /// Return the payload length.
-    #[flux_rs::sig(fn(self: &Self[@r]) -> usize{n: r.ip_ty == 0 => n == r.plen})]
+    #[flux_rs::sig(fn(self: &Self[@r]) -> usize[r.plen])]
     #[flux_rs::no_panic]
     pub const fn payload_len(&self) -> usize {
         match *self {
@@ -905,10 +904,10 @@ impl Repr {
     /// high-level representation.
     ///
     /// This is the same as `repr.buffer_len() + repr.payload_len()`.
-    #[flux_rs::trusted(no, reason = "carries the per-variant header floor to dispatch_ip")]
+    #[flux_rs::trusted(no, reason = "carries the per-variant header size to dispatch_ip")]
     #[flux_rs::sig(
         fn(self: &Self[@r]) -> usize{n:
-            (r.ip_ty == 0 => n == 20 + r.plen) && (r.ip_ty == 1 => 40 <= n)
+            (r.ip_ty == 0 => n == 20 + r.plen) && (r.ip_ty == 1 => n == 40 + r.plen)
         }
     )]
     #[flux_rs::no_panic]
