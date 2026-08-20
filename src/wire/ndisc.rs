@@ -471,7 +471,7 @@ impl<'a> Repr<'a> {
                 packet.set_msg_code(0);
                 packet.clear_reserved();
                 if let Some(lladdr) = lladdr {
-                    let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_buf());
+                    let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_mut());
                     NdiscOptionRepr::SourceLinkLayerAddr(lladdr).emit(&mut opt_pkt);
                 }
             }
@@ -495,7 +495,7 @@ impl<'a> Repr<'a> {
                 packet.set_retrans_time(retrans_time);
                 let mut offset = 0;
                 if let Some(lladdr) = lladdr {
-                    let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_buf());
+                    let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_mut());
                     let opt = NdiscOptionRepr::SourceLinkLayerAddr(lladdr);
                     opt.emit(&mut opt_pkt);
                     offset += opt.buffer_len();
@@ -518,7 +518,7 @@ impl<'a> Repr<'a> {
                 packet.clear_reserved();
                 packet.set_target_addr(target_addr);
                 if let Some(lladdr) = lladdr {
-                    let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_buf());
+                    let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_mut());
                     NdiscOptionRepr::SourceLinkLayerAddr(lladdr).emit(&mut opt_pkt);
                 }
             }
@@ -534,7 +534,7 @@ impl<'a> Repr<'a> {
                 packet.set_neighbor_flags(flags);
                 packet.set_target_addr(target_addr);
                 if let Some(lladdr) = lladdr {
-                    let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_buf());
+                    let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_mut());
                     NdiscOptionRepr::TargetLinkLayerAddr(lladdr).emit(&mut opt_pkt);
                 }
             }
@@ -552,7 +552,7 @@ impl<'a> Repr<'a> {
                 packet.set_dest_addr(dest_addr);
                 let offset = match lladdr {
                     Some(lladdr) => {
-                        let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_buf());
+                        let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_mut());
                         NdiscOptionRepr::TargetLinkLayerAddr(lladdr).emit(&mut opt_pkt);
                         NdiscOptionRepr::TargetLinkLayerAddr(lladdr).buffer_len()
                     }
