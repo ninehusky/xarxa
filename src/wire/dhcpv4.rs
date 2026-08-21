@@ -1121,9 +1121,23 @@ impl<'a> Repr<'a> {
 
     /// Emit a high-level representation into a Dynamic Host
     /// Configuration Protocol packet.
-    pub fn emit<T>(&self, packet: &mut Packet<&mut T>) -> Result<()>
+    // The buffer parameter is `Packet<T>` with `T: Sized`, not `Packet<&mut T>` with `T: ?Sized`.
+    // The old shape instantiated core's blanket `impl<T, U> AsMut<U> for &mut T`, which carries no
+    // associated refinement, so naming `as_mut_reft` for the setters below raised `associated
+    // refinement 'as_mut_reft' is missing from implementation` -- a spec error, which aborts the
+    // whole body. The `Sized` form lets a caller pass `wire::Buf`, whose `AsMut` impl is local and
+    // refined; `&mut [u8]` still satisfies the bounds, so this is strictly more permissive.
+    //
+    // 240 is the fixed header, the reach of `set_magic_number` and the offset `options_mut`
+    // opens its window at. The options themselves are not covered by it: `DhcpOptionWriter`
+    // reports a short buffer as `Err(Error)`, which is why this returns a `Result`.
+    #[flux_rs::sig(
+        fn(&Repr, packet: &mut Packet<T>[@p]) -> Result<()>
+        requires 240 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    pub fn emit<T>(&self, packet: &mut Packet<T>) -> Result<()>
     where
-        T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,
+        T: AsRef<[u8]> + AsMut<[u8]>,
     {
         packet.set_sname_and_boot_file_to_zero();
         packet.set_opcode(self.message_type.opcode());
@@ -1263,9 +1277,13 @@ impl<'a> SizedRepr<'a> {
     }
 
     /// Emit the representation into `packet`, exactly as [`Repr::emit`] would.
-    pub(crate) fn emit<T>(&self, packet: &mut Packet<&mut T>) -> Result<()>
+    #[flux_rs::sig(
+        fn(&SizedRepr, packet: &mut Packet<T>[@p]) -> Result<()>
+        requires 240 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    pub(crate) fn emit<T>(&self, packet: &mut Packet<T>) -> Result<()>
     where
-        T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,
+        T: AsRef<[u8]> + AsMut<[u8]>,
     {
         self.repr.emit(packet)
     }

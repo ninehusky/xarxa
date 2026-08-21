@@ -248,7 +248,21 @@ impl Repr {
     }
 
     /// Emit a high-level representation into an IPv6 Fragment Header.
-    pub fn emit<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized>(&self, header: &mut Header<&mut T>) {
+    // The buffer parameter is `Header<T>` with `T: Sized`, not `Header<&mut T>` with `T: ?Sized`.
+    // The old shape instantiated core's blanket `impl<T, U> AsMut<U> for &mut T`, which carries no
+    // associated refinement, so every `requires ... as_mut_reft(h.buffer)` on the setters below
+    // raised `associated refinement 'as_mut_reft' is missing from implementation` instead of an
+    // obligation flux could discharge -- a spec error, which aborts the whole body. The `Sized`
+    // form lets a caller pass `wire::Buf`, whose `AsMut` impl is local and refined; `&mut [u8]`
+    // still satisfies the bounds, so this is strictly more permissive.
+    //
+    // 6 is `buffer_len()`, i.e. `field::IDENT.end`, and is also the widest reach of any setter
+    // below (`set_ident`'s `write_u32_at(data, 2, ..)`).
+    #[flux_rs::sig(
+        fn(&Repr, header: &mut Header<T>[@h])
+        requires 6 <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+    )]
+    pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, header: &mut Header<T>) {
         header.clear_reserved();
         header.set_frag_offset(self.frag_offset);
         header.set_more_frags(self.more_frags);

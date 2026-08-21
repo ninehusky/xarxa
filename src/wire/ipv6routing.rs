@@ -474,13 +474,22 @@ impl<T: AsRef<[u8]> + ?Sized> fmt::Display for Header<&T> {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
+// Indexed by the number of octets `emit` writes, which is `buffer_len()`. `Type2` is the
+// two-octet routing-type/segments-left preamble, four reserved octets and a 16-octet address;
+// `Rpl` is the same six-octet preamble followed by the address vector. The index is what lets
+// `emit` state a bound the `Rpl` arm can actually meet -- a blanket `22 <=` would be the
+// `Type2` width charged to every caller.
+#[flux_rs::refined_by(blen: int)]
+#[flux_rs::invariant(6 <= blen)]
 pub enum Repr<'a> {
+    #[flux_rs::variant({u8, Address} -> Repr[22])]
     Type2 {
         /// Number of route segments remaining.
         segments_left: u8,
         /// The home address of the destination mobile node.
         home_address: Address,
     },
+    #[flux_rs::variant({u8, u8, u8, u8, &[u8][@m]} -> Repr[6 + m])]
     Rpl {
         /// Number of route segments remaining.
         segments_left: u8,
@@ -531,7 +540,21 @@ impl<'a> Repr<'a> {
     }
 
     /// Emit a high-level representation into an IPv6 Routing Header.
-    pub fn emit<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized>(&self, header: &mut Header<&mut T>) {
+    // The buffer parameter is `Header<T>` with `T: Sized`, not `Header<&mut T>` with `T: ?Sized`.
+    // The old shape instantiated core's blanket `impl<T, U> AsMut<U> for &mut T`, which carries no
+    // associated refinement, so naming `as_mut_reft` for the setters below raised `associated
+    // refinement 'as_mut_reft' is missing from implementation` -- a spec error, which aborts the
+    // whole body. The `Sized` form lets a caller pass `wire::Buf`, whose `AsMut` impl is local and
+    // refined; `&mut [u8]` still satisfies the bounds, so this is strictly more permissive.
+    //
+    // `r.blen` is `buffer_len()`. `clear_reserved` reads the routing type back through `AsRef`,
+    // which flux relates to the `AsMut` length nowhere, so both are named.
+    #[flux_rs::sig(
+        fn(self: &Self[@r], header: &mut Header<T>[@h])
+        requires r.blen <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+              && r.blen <= <T as AsRef<[u8]>>::as_ref_reft(h.buffer)
+    )]
+    pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, header: &mut Header<T>) {
         match *self {
             Repr::Type2 {
                 segments_left,

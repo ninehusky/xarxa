@@ -514,7 +514,28 @@ impl<'a> Repr<'a> {
     }
 
     /// Emit a high-level representation into an IPv6 Extension Header Option.
-    pub fn emit<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized>(&self, opt: &mut Ipv6Option<&'a mut T>) {
+    // The buffer parameter is `Ipv6Option<T>` with `T: Sized`, not `Ipv6Option<&mut T>` with
+    // `T: ?Sized`. The old shape instantiated core's blanket `impl<T, U> AsMut<U> for &mut T`,
+    // which carries no associated refinement, so naming `as_mut_reft` for the setters below
+    // raised `associated refinement 'as_mut_reft' is missing from implementation` -- a spec
+    // error, which aborts the whole body. The `Sized` form lets a caller pass `wire::Buf`, whose
+    // `AsMut` impl is local and refined; `&mut [u8]` still satisfies the bounds, so this is
+    // strictly more permissive.
+    //
+    // `opt` is `&strg` because `set_data_len` is: it writes the `data_len` ghost, and the
+    // `data_mut` that follows needs the new value.
+    //
+    // `r.blen` is what `buffer_len()` returns. Both `as_mut_reft` and `as_ref_reft` are named:
+    // `data_mut` reads through `AsRef` and writes through `AsMut`, and flux relates the two
+    // lengths nowhere. The `Pad1` arm needs neither past 1, and the match is path-sensitive, so
+    // the weaker `r.blen` bound is enough there.
+    #[flux_rs::sig(
+        fn(self: &Self[@r], opt: &strg Ipv6Option<T>[@o])
+        requires r.blen <= <T as AsMut<[u8]>>::as_mut_reft(o.buffer)
+              && r.blen <= <T as AsRef<[u8]>>::as_ref_reft(o.buffer)
+        ensures opt: Ipv6Option<T>{v: v.buffer == o.buffer}
+    )]
+    pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, opt: &mut Ipv6Option<T>) {
         match *self {
             Repr::Pad1 => opt.set_option_type(Type::Pad1),
             Repr::PadN(len) => {

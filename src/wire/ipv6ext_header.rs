@@ -358,7 +358,23 @@ impl<'a> Repr<'a> {
     }
 
     /// Emit a high-level representation into an IPv6 Extension Header.
-    pub fn emit<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized>(&self, header: &mut Header<&mut T>) {
+    // The buffer parameter is `Header<T>` with `T: Sized`, not `Header<&mut T>` with `T: ?Sized`.
+    // The old shape instantiated core's blanket `impl<T, U> AsMut<U> for &mut T`, which carries no
+    // associated refinement, so naming `as_mut_reft` for the setters below raised `associated
+    // refinement 'as_mut_reft' is missing from implementation` -- a spec error, which aborts the
+    // whole body. The `Sized` form lets a caller pass `wire::Buf`, whose `AsMut` impl is local and
+    // refined; `&mut [u8]` still satisfies the bounds, so this is strictly more permissive.
+    //
+    // `header` is `&strg` because `set_header_len` is: it writes the `hlen` ghost, and a caller
+    // that reads `header_len` afterwards needs the new value to survive the call.
+    //
+    // 2 is `header_len()`, i.e. `field::MIN_HEADER_SIZE`, and is the reach of `set_header_len`.
+    #[flux_rs::sig(
+        fn(&Repr, header: &strg Header<T>[@h])
+        requires 2 <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+        ensures header: Header<T>{v: v.buffer == h.buffer}
+    )]
+    pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, header: &mut Header<T>) {
         header.set_next_header(self.next_header);
         header.set_header_len(self.length);
     }
