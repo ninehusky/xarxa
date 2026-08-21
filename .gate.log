@@ -377,32 +377,6 @@ error[E0999]: associated refinement `as_mut_reft` is missing from implementation
    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error[E0999]: refinement type error
-   --> src/iface/interface/ipv4.rs:246:38
-    |
-246 |                     data: &ip_payload[0..payload_len],
-    |                                      ^^^^^^^^^^^^^^^^ a precondition cannot be proved
-    |
-note: this is the condition that cannot be proved
-   --> src/flux_specs/flux_core.rs:118:77
-    |
-118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
-    |                                                                             ^^^^^^^^^^^^
-    = note: to rerun: `cargo flux check -p xarxa --only-check='def:iface::interface::ipv4::<impl iface::interface::InterfaceInner>::process_ipv4'`
-
-error[E0999]: refinement type error
-   --> src/iface/interface/ipv6.rs:277:38
-    |
-277 |                     data: &ip_payload[0..payload_len],
-    |                                      ^^^^^^^^^^^^^^^^ a precondition cannot be proved
-    |
-note: this is the condition that cannot be proved
-   --> src/flux_specs/flux_core.rs:118:77
-    |
-118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
-    |                                                                             ^^^^^^^^^^^^
-    = note: to rerun: `cargo flux check -p xarxa --only-check='def:iface::interface::ipv6::<impl iface::interface::InterfaceInner>::process_hopbyhop'`
-
-error[E0999]: refinement type error
    --> src/iface/interface/ipv6.rs:317:24
     |
 317 |             &ip_payload[ext_repr.header_len() + ext_repr.data.len()..],
@@ -414,45 +388,6 @@ note: this is the condition that cannot be proved
 128 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= len })]
     |                                                         ^^^^^^^^^^^^^^
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:iface::interface::ipv6::<impl iface::interface::InterfaceInner>::process_hopbyhop'`
-
-error[E0999]: refinement type error
-   --> src/iface/interface/ipv6.rs:361:38
-    |
-361 |                     data: &ip_payload[0..payload_len],
-    |                                      ^^^^^^^^^^^^^^^^ a precondition cannot be proved
-    |
-note: this is the condition that cannot be proved
-   --> src/flux_specs/flux_core.rs:118:77
-    |
-118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
-    |                                                                             ^^^^^^^^^^^^
-    = note: to rerun: `cargo flux check -p xarxa --only-check='def:iface::interface::ipv6::<impl iface::interface::InterfaceInner>::process_nxt_hdr'`
-
-error[E0999]: refinement type error
-   --> src/iface/interface/udp.rs:75:38
-    |
- 75 |                     data: &ip_payload[0..payload_len],
-    |                                      ^^^^^^^^^^^^^^^^ a precondition cannot be proved
-    |
-note: this is the condition that cannot be proved
-   --> src/flux_specs/flux_core.rs:118:77
-    |
-118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
-    |                                                                             ^^^^^^^^^^^^
-    = note: to rerun: `cargo flux check -p xarxa --only-check='def:iface::interface::udp::<impl iface::interface::InterfaceInner>::process_udp'`
-
-error[E0999]: refinement type error
-   --> src/iface/interface/udp.rs:64:38
-    |
- 64 |                     data: &ip_payload[0..payload_len],
-    |                                      ^^^^^^^^^^^^^^^^ a precondition cannot be proved
-    |
-note: this is the condition that cannot be proved
-   --> src/flux_specs/flux_core.rs:118:77
-    |
-118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
-    |                                                                             ^^^^^^^^^^^^
-    = note: to rerun: `cargo flux check -p xarxa --only-check='def:iface::interface::udp::<impl iface::interface::InterfaceInner>::process_udp'`
 
 error[E0999]: associated refinement `as_mut_reft` is missing from implementation
     --> src/iface/interface/mod.rs:1095:21
@@ -535,14 +470,6 @@ error[E0999]: invalid use of opaque struct
     = note: opaque structs can only be accessed in trusted code (see <https://flux-rs.github.io/flux/guide/specifications.html#opaque-structs>)
 
 error[E0999]: assertion might fail: possible out-of-bounds access
-   --> src/storage/assembler.rs:173:31
-    |
-173 |             self.contigs[i] = self.contigs[i + 1];
-    |                               ^^^^^^^^^^^^^^^^^^^
-    |
-    = note: to rerun: `cargo flux check -p xarxa --only-check='def:storage::assembler::Assembler::remove_contig_at'`
-
-error[E0999]: assertion might fail: possible out-of-bounds access
    --> src/storage/assembler.rs:167:23
     |
 167 |         debug_assert!(self.contigs[at].has_data());
@@ -557,6 +484,22 @@ error[E0999]: assertion might fail: possible out-of-bounds access
     |                 ^^^^^^^^^^^^^^^
     |
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:storage::assembler::Assembler::remove_contig_at'`
+
+error[E0999]: assertion might fail: possible out-of-bounds access
+   --> src/storage/assembler.rs:173:31
+    |
+173 |             self.contigs[i] = self.contigs[i + 1];
+    |                               ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: to rerun: `cargo flux check -p xarxa --only-check='def:storage::assembler::Assembler::remove_contig_at'`
+
+error[E0999]: assertion might fail: possible out-of-bounds access
+   --> src/storage/assembler.rs:187:13
+    |
+187 |             self.contigs[i] = self.contigs[i - 1];
+    |             ^^^^^^^^^^^^^^^
+    |
+    = note: to rerun: `cargo flux check -p xarxa --only-check='def:storage::assembler::Assembler::add_contig_at'`
 
 error[E0999]: assertion might fail: possible out-of-bounds access
    --> src/storage/assembler.rs:190:9
@@ -575,22 +518,6 @@ error[E0999]: assertion might fail: possible out-of-bounds access
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:storage::assembler::Assembler::add_contig_at'`
 
 error[E0999]: assertion might fail: possible out-of-bounds access
-   --> src/storage/assembler.rs:187:13
-    |
-187 |             self.contigs[i] = self.contigs[i - 1];
-    |             ^^^^^^^^^^^^^^^
-    |
-    = note: to rerun: `cargo flux check -p xarxa --only-check='def:storage::assembler::Assembler::add_contig_at'`
-
-error[E0999]: assertion might fail: possible out-of-bounds access
-   --> src/storage/assembler.rs:209:31
-    |
-209 |             let contig = &mut self.contigs[i];
-    |                               ^^^^^^^^^^^^^^^
-    |
-    = note: to rerun: `cargo flux check -p xarxa --only-check='def:storage::assembler::Assembler::add'`
-
-error[E0999]: assertion might fail: possible out-of-bounds access
    --> src/storage/assembler.rs:233:17
     |
 233 |                 self.contigs[i + 1].shrink_hole_by(offset + size);
@@ -606,18 +533,26 @@ error[E0999]: assertion might fail: possible out-of-bounds access
     |
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:storage::assembler::Assembler::add'`
 
-error[E0999]: assignment might be unsafe
-   --> src/storage/assembler.rs:330:13
+error[E0999]: assertion might fail: possible out-of-bounds access
+   --> src/storage/assembler.rs:209:31
     |
-330 |             offset += contig.data_size;
-    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+209 |             let contig = &mut self.contigs[i];
+    |                               ^^^^^^^^^^^^^^^
     |
-    = note: to rerun: `cargo flux check -p xarxa --only-check='def:storage::assembler::Assembler::iter_data'`
+    = note: to rerun: `cargo flux check -p xarxa --only-check='def:storage::assembler::Assembler::add'`
 
 error[E0999]: assignment might be unsafe
    --> src/storage/assembler.rs:328:13
     |
 328 |             offset += contig.hole_size;
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: to rerun: `cargo flux check -p xarxa --only-check='def:storage::assembler::Assembler::iter_data'`
+
+error[E0999]: assignment might be unsafe
+   --> src/storage/assembler.rs:330:13
+    |
+330 |             offset += contig.data_size;
     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^
     |
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:storage::assembler::Assembler::iter_data'`
@@ -637,6 +572,45 @@ error[E0999]: assertion might fail: possible division by zero
     |         ^^^^^^^^^^^^^^^^^^^^^^^^^
     |
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:<time::Duration as core::ops::DivAssign<u32>>::div_assign'`
+
+error[E0999]: refinement type error
+   --> src/wire/arp.rs:641:21
+    |
+641 |                     self.operation()
+    |                     ^^^^^^^^^^^^^^^^ a precondition cannot be proved
+    |
+note: this is the condition that cannot be proved
+   --> src/wire/arp.rs:298:18
+    |
+298 |         requires 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: to rerun: `cargo flux check -p xarxa --only-check='def:<wire::arp::Packet<T> as core::fmt::Display>::fmt'`
+
+error[E0999]: refinement type error
+   --> src/wire/arp.rs:639:21
+    |
+639 |                     self.hardware_len(),
+    |                     ^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
+    |
+note: this is the condition that cannot be proved
+   --> src/wire/arp.rs:272:18
+    |
+272 |         requires 5 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: to rerun: `cargo flux check -p xarxa --only-check='def:<wire::arp::Packet<T> as core::fmt::Display>::fmt'`
+
+error[E0999]: refinement type error
+   --> src/wire/arp.rs:648:21
+    |
+648 |                     self.target_hardware_addr(),
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
+    |
+note: this is the condition that cannot be proved
+   --> src/wire/arp.rs:344:18
+    |
+344 |         requires 8 + 2 * p.hlen + p.plen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: to rerun: `cargo flux check -p xarxa --only-check='def:<wire::arp::Packet<T> as core::fmt::Display>::fmt'`
 
 error[E0999]: refinement type error
    --> src/wire/arp.rs:646:21
@@ -665,19 +639,6 @@ note: this is the condition that cannot be proved
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:<wire::arp::Packet<T> as core::fmt::Display>::fmt'`
 
 error[E0999]: refinement type error
-   --> src/wire/arp.rs:638:21
-    |
-638 |                     self.protocol_type(),
-    |                     ^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
-    |
-note: this is the condition that cannot be proved
-   --> src/wire/arp.rs:223:18
-    |
-223 |         requires 4 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
-    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    = note: to rerun: `cargo flux check -p xarxa --only-check='def:<wire::arp::Packet<T> as core::fmt::Display>::fmt'`
-
-error[E0999]: refinement type error
    --> src/wire/arp.rs:640:21
     |
 640 |                     self.protocol_len(),
@@ -691,15 +652,15 @@ note: this is the condition that cannot be proved
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:<wire::arp::Packet<T> as core::fmt::Display>::fmt'`
 
 error[E0999]: refinement type error
-   --> src/wire/arp.rs:637:21
+   --> src/wire/arp.rs:638:21
     |
-637 |                     self.hardware_type(),
+638 |                     self.protocol_type(),
     |                     ^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
     |
 note: this is the condition that cannot be proved
-   --> src/wire/arp.rs:209:18
+   --> src/wire/arp.rs:223:18
     |
-209 |         requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+223 |         requires 4 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
     |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:<wire::arp::Packet<T> as core::fmt::Display>::fmt'`
 
@@ -717,41 +678,15 @@ note: this is the condition that cannot be proved
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:<wire::arp::Packet<T> as core::fmt::Display>::fmt'`
 
 error[E0999]: refinement type error
-   --> src/wire/arp.rs:641:21
+   --> src/wire/arp.rs:637:21
     |
-641 |                     self.operation()
-    |                     ^^^^^^^^^^^^^^^^ a precondition cannot be proved
-    |
-note: this is the condition that cannot be proved
-   --> src/wire/arp.rs:298:18
-    |
-298 |         requires 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
-    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    = note: to rerun: `cargo flux check -p xarxa --only-check='def:<wire::arp::Packet<T> as core::fmt::Display>::fmt'`
-
-error[E0999]: refinement type error
-   --> src/wire/arp.rs:648:21
-    |
-648 |                     self.target_hardware_addr(),
-    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
+637 |                     self.hardware_type(),
+    |                     ^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
     |
 note: this is the condition that cannot be proved
-   --> src/wire/arp.rs:344:18
+   --> src/wire/arp.rs:209:18
     |
-344 |         requires 8 + 2 * p.hlen + p.plen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
-    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    = note: to rerun: `cargo flux check -p xarxa --only-check='def:<wire::arp::Packet<T> as core::fmt::Display>::fmt'`
-
-error[E0999]: refinement type error
-   --> src/wire/arp.rs:639:21
-    |
-639 |                     self.hardware_len(),
-    |                     ^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
-    |
-note: this is the condition that cannot be proved
-   --> src/wire/arp.rs:272:18
-    |
-272 |         requires 5 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+209 |         requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
     |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:<wire::arp::Packet<T> as core::fmt::Display>::fmt'`
 
@@ -814,19 +749,6 @@ error[E0999]: assertion might fail: possible out-of-bounds access
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::icmpv6::Packet::<T>::msg_code'`
 
 error[E0999]: refinement type error
-   --> src/wire/icmpv6.rs:405:9
-    |
-405 |         NetworkEndian::read_u16(&data[field::CHECKSUM])
-    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
-    |
-note: this is the condition that cannot be proved
-   --> src/flux_specs/byteorder.rs:21:29
-    |
- 21 |     #[spec(fn(buf: &[u8]{v: 2 <= v}) -> u16)]
-    |                             ^^^^^^
-    = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::icmpv6::Packet::<T>::checksum'`
-
-error[E0999]: refinement type error
    --> src/wire/icmpv6.rs:405:38
     |
 405 |         NetworkEndian::read_u16(&data[field::CHECKSUM])
@@ -850,6 +772,19 @@ note: this is the condition that cannot be proved
     |
 118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
     |                                                                             ^^^^^^^^^^^^
+    = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::icmpv6::Packet::<T>::checksum'`
+
+error[E0999]: refinement type error
+   --> src/wire/icmpv6.rs:405:9
+    |
+405 |         NetworkEndian::read_u16(&data[field::CHECKSUM])
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
+    |
+note: this is the condition that cannot be proved
+   --> src/flux_specs/byteorder.rs:21:29
+    |
+ 21 |     #[spec(fn(buf: &[u8]{v: 2 <= v}) -> u16)]
+    |                             ^^^^^^
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::icmpv6::Packet::<T>::checksum'`
 
 error[E0999]: refinement type error
@@ -931,19 +866,6 @@ note: this is the condition that cannot be proved
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::icmpv6::Packet::<T>::echo_seq_no'`
 
 error[E0999]: refinement type error
-   --> src/wire/icmpv6.rs:426:38
-    |
-426 |         NetworkEndian::read_u32(&data[field::MTU])
-    |                                      ^^^^^^^^^^^^ a precondition cannot be proved
-    |
-note: this is the condition that cannot be proved
-   --> src/flux_specs/flux_core.rs:118:57
-    |
-118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
-    |                                                         ^^^^^^^^^^^^^^^^
-    = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::icmpv6::Packet::<T>::pkt_too_big_mtu'`
-
-error[E0999]: refinement type error
    --> src/wire/icmpv6.rs:426:9
     |
 426 |         NetworkEndian::read_u32(&data[field::MTU])
@@ -963,6 +885,19 @@ error[E0999]: refinement type error
     |                                      ^^^^^^^^^^^^ a precondition cannot be proved
     |
 note: this is the condition that cannot be proved
+   --> src/flux_specs/flux_core.rs:118:57
+    |
+118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
+    |                                                         ^^^^^^^^^^^^^^^^
+    = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::icmpv6::Packet::<T>::pkt_too_big_mtu'`
+
+error[E0999]: refinement type error
+   --> src/wire/icmpv6.rs:426:38
+    |
+426 |         NetworkEndian::read_u32(&data[field::MTU])
+    |                                      ^^^^^^^^^^^^ a precondition cannot be proved
+    |
+note: this is the condition that cannot be proved
    --> src/flux_specs/flux_core.rs:118:77
     |
 118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
@@ -983,19 +918,6 @@ note: this is the condition that cannot be proved
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::icmpv6::Packet::<T>::param_problem_ptr'`
 
 error[E0999]: refinement type error
-   --> src/wire/icmpv6.rs:433:9
-    |
-433 |         NetworkEndian::read_u32(&data[field::POINTER])
-    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
-    |
-note: this is the condition that cannot be proved
-   --> src/flux_specs/byteorder.rs:33:29
-    |
- 33 |     #[spec(fn(buf: &[u8]{v: 4 <= v}) -> u32)]
-    |                             ^^^^^^
-    = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::icmpv6::Packet::<T>::param_problem_ptr'`
-
-error[E0999]: refinement type error
    --> src/wire/icmpv6.rs:433:38
     |
 433 |         NetworkEndian::read_u32(&data[field::POINTER])
@@ -1006,6 +928,19 @@ note: this is the condition that cannot be proved
     |
 118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
     |                                                                             ^^^^^^^^^^^^
+    = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::icmpv6::Packet::<T>::param_problem_ptr'`
+
+error[E0999]: refinement type error
+   --> src/wire/icmpv6.rs:433:9
+    |
+433 |         NetworkEndian::read_u32(&data[field::POINTER])
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
+    |
+note: this is the condition that cannot be proved
+   --> src/flux_specs/byteorder.rs:33:29
+    |
+ 33 |     #[spec(fn(buf: &[u8]{v: 4 <= v}) -> u32)]
+    |                             ^^^^^^
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::icmpv6::Packet::<T>::param_problem_ptr'`
 
 error[E0999]: refinement type error
@@ -1230,19 +1165,6 @@ error[E0999]: assertion might fail: possible out-of-bounds access
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::ipv4::Packet::<T>::ecn'`
 
 error[E0999]: refinement type error
-   --> src/wire/ipv4.rs:326:38
-    |
-326 |         NetworkEndian::read_u16(&data[field::IDENT])
-    |                                      ^^^^^^^^^^^^^^ a precondition cannot be proved
-    |
-note: this is the condition that cannot be proved
-   --> src/flux_specs/flux_core.rs:118:77
-    |
-118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
-    |                                                                             ^^^^^^^^^^^^
-    = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::ipv4::Packet::<T>::ident'`
-
-error[E0999]: refinement type error
    --> src/wire/ipv4.rs:326:9
     |
 326 |         NetworkEndian::read_u16(&data[field::IDENT])
@@ -1266,6 +1188,19 @@ note: this is the condition that cannot be proved
     |
 118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
     |                                                         ^^^^^^^^^^^^^^^^
+    = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::ipv4::Packet::<T>::ident'`
+
+error[E0999]: refinement type error
+   --> src/wire/ipv4.rs:326:38
+    |
+326 |         NetworkEndian::read_u16(&data[field::IDENT])
+    |                                      ^^^^^^^^^^^^^^ a precondition cannot be proved
+    |
+note: this is the condition that cannot be proved
+   --> src/flux_specs/flux_core.rs:118:77
+    |
+118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
+    |                                                                             ^^^^^^^^^^^^
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::ipv4::Packet::<T>::ident'`
 
 error[E0999]: refinement type error
@@ -1525,32 +1460,6 @@ error[E0999]: associated refinement `as_ref_reft` is missing from implementation
     |                     ^^^^^^^^^^^^^^^^^
 
 error[E0999]: refinement type error
-   --> src/wire/ipv4.rs:698:18
-    |
-698 |         &mut data[range]
-    |                  ^^^^^^^ a precondition cannot be proved
-    |
-note: this is the condition that cannot be proved
-   --> src/flux_specs/flux_core.rs:118:77
-    |
-118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
-    |                                                                             ^^^^^^^^^^^^
-    = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::ipv4::Packet::<T>::payload_mut'`
-
-error[E0999]: refinement type error
-   --> src/wire/ipv4.rs:696:21
-    |
-696 |         let range = self.header_len() as usize..self.total_len() as usize;
-    |                     ^^^^^^^^^^^^^^^^^ a precondition cannot be proved
-    |
-note: this is the condition that cannot be proved
-   --> src/wire/ipv4.rs:290:51
-    |
-290 |         fn(self: &Packet<T>[@buf]) -> u8 requires 1 <= <T as AsRef<[u8]>>::as_ref_reft(buf.buffer)
-    |                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::ipv4::Packet::<T>::payload_mut'`
-
-error[E0999]: refinement type error
    --> src/wire/ipv4.rs:696:49
     |
 696 |         let range = self.header_len() as usize..self.total_len() as usize;
@@ -1574,6 +1483,32 @@ note: this is the condition that cannot be proved
     |
 118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
     |                                                         ^^^^^^^^^^^^^^^^
+    = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::ipv4::Packet::<T>::payload_mut'`
+
+error[E0999]: refinement type error
+   --> src/wire/ipv4.rs:698:18
+    |
+698 |         &mut data[range]
+    |                  ^^^^^^^ a precondition cannot be proved
+    |
+note: this is the condition that cannot be proved
+   --> src/flux_specs/flux_core.rs:118:77
+    |
+118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
+    |                                                                             ^^^^^^^^^^^^
+    = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::ipv4::Packet::<T>::payload_mut'`
+
+error[E0999]: refinement type error
+   --> src/wire/ipv4.rs:696:21
+    |
+696 |         let range = self.header_len() as usize..self.total_len() as usize;
+    |                     ^^^^^^^^^^^^^^^^^ a precondition cannot be proved
+    |
+note: this is the condition that cannot be proved
+   --> src/wire/ipv4.rs:290:51
+    |
+290 |         fn(self: &Packet<T>[@buf]) -> u8 requires 1 <= <T as AsRef<[u8]>>::as_ref_reft(buf.buffer)
+    |                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::ipv4::Packet::<T>::payload_mut'`
 
 error[E0999]: associated refinement `as_ref_reft` is missing from implementation
@@ -1726,10 +1661,10 @@ error[E0999]: refinement type error
     |              ^^^^^^^ a precondition cannot be proved
     |
 note: this is the condition that cannot be proved
-   --> src/flux_specs/flux_core.rs:118:57
+   --> src/flux_specs/flux_core.rs:118:77
     |
 118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
-    |                                                         ^^^^^^^^^^^^^^^^
+    |                                                                             ^^^^^^^^^^^^
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::ipv6::Packet::<&'\''a T>::payload'`
 
 error[E0999]: refinement type error
@@ -1739,10 +1674,10 @@ error[E0999]: refinement type error
     |              ^^^^^^^ a precondition cannot be proved
     |
 note: this is the condition that cannot be proved
-   --> src/flux_specs/flux_core.rs:118:77
+   --> src/flux_specs/flux_core.rs:118:57
     |
 118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
-    |                                                                             ^^^^^^^^^^^^
+    |                                                         ^^^^^^^^^^^^^^^^
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::ipv6::Packet::<&'\''a T>::payload'`
 
 error[E0999]: refinement type error
@@ -1771,17 +1706,12 @@ note: this is the condition that cannot be proved
     |                                                                             ^^^^^^^^^^^^
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::ipv6::Packet::<T>::payload_mut'`
 
-error[E0999]: refinement type error
-   --> src/wire/ipv6ext_header.rs:252:14
+error[E0999]: assertion might fail: possible out-of-bounds access
+   --> src/wire/ipv6ext_header.rs:252:30
     |
 252 |         &data[field::PAYLOAD(data[field::LENGTH])]
-    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
+    |                              ^^^^^^^^^^^^^^^^^^^
     |
-note: this is the condition that cannot be proved
-   --> src/flux_specs/flux_core.rs:118:57
-    |
-118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
-    |                                                         ^^^^^^^^^^^^^^^^
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::ipv6ext_header::Header::<&'\''h T>::payload'`
 
 error[E0999]: refinement type error
@@ -1797,12 +1727,17 @@ note: this is the condition that cannot be proved
     |                                                                             ^^^^^^^^^^^^
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::ipv6ext_header::Header::<&'\''h T>::payload'`
 
-error[E0999]: assertion might fail: possible out-of-bounds access
-   --> src/wire/ipv6ext_header.rs:252:30
+error[E0999]: refinement type error
+   --> src/wire/ipv6ext_header.rs:252:14
     |
 252 |         &data[field::PAYLOAD(data[field::LENGTH])]
-    |                              ^^^^^^^^^^^^^^^^^^^
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
     |
+note: this is the condition that cannot be proved
+   --> src/flux_specs/flux_core.rs:118:57
+    |
+118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
+    |                                                         ^^^^^^^^^^^^^^^^
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::ipv6ext_header::Header::<&'\''h T>::payload'`
 
 error[E0999]: associated refinement `as_ref_reft` is missing from implementation
@@ -1855,14 +1790,6 @@ note: this is the condition that cannot be proved
     |                                                         ^^^^^^^^^^^^^^
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::ipv6hbh::Repr::<'\''a>::emit'`
 
-error[E0999]: assertion might fail: possible out-of-bounds access
-   --> src/wire/ipv6option.rs:324:19
-    |
-324 |         let len = data[field::LENGTH]; // == self.data_len()
-    |                   ^^^^^^^^^^^^^^^^^^^
-    |
-    = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::ipv6option::Ipv6Option::<&'\''a T>::data'`
-
 error[E0999]: refinement type error
    --> src/wire/ipv6option.rs:325:14
     |
@@ -1874,6 +1801,14 @@ note: this is the condition that cannot be proved
     |
 118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
     |                                                                             ^^^^^^^^^^^^
+    = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::ipv6option::Ipv6Option::<&'\''a T>::data'`
+
+error[E0999]: assertion might fail: possible out-of-bounds access
+   --> src/wire/ipv6option.rs:324:19
+    |
+324 |         let len = data[field::LENGTH]; // == self.data_len()
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::ipv6option::Ipv6Option::<&'\''a T>::data'`
 
 error[E0999]: associated refinement `as_ref_reft` is missing from implementation
@@ -1971,10 +1906,10 @@ error[E0999]: refinement type error
     |                                      ^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
     |
 note: this is the condition that cannot be proved
-   --> src/flux_specs/flux_core.rs:118:77
+   --> src/flux_specs/flux_core.rs:118:57
     |
 118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
-    |                                                                             ^^^^^^^^^^^^
+    |                                                         ^^^^^^^^^^^^^^^^
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::ndisc::<impl wire::icmpv6::Packet<T>>::dest_addr'`
 
 error[E0999]: refinement type error
@@ -1984,10 +1919,10 @@ error[E0999]: refinement type error
     |                                      ^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
     |
 note: this is the condition that cannot be proved
-   --> src/flux_specs/flux_core.rs:118:57
+   --> src/flux_specs/flux_core.rs:118:77
     |
 118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
-    |                                                         ^^^^^^^^^^^^^^^^
+    |                                                                             ^^^^^^^^^^^^
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::ndisc::<impl wire::icmpv6::Packet<T>>::dest_addr'`
 
 error[E0999]: associated refinement `as_ref_reft` is missing from implementation
@@ -2086,16 +2021,29 @@ error[E0999]: associated refinement `as_ref_reft` is missing from implementation
     |                          ^^^^^^^^^^^^^^^^^
 
 error[E0999]: refinement type error
-    --> src/wire/tcp.rs:1044:80
+    --> src/wire/tcp.rs:1043:50
      |
-1044 | ...                   let range_right = NetworkEndian::read_u32(&data[mid..right]);
-     |                                                                      ^^^^^^^^^^^^ a precondition cannot be proved
+1043 | ...                   let range_left = NetworkEndian::read_u32(&data[left..mid]);
+     |                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
      |
 note: this is the condition that cannot be proved
-    --> src/flux_specs/flux_core.rs:118:57
+    --> src/flux_specs/byteorder.rs:33:29
      |
- 118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
-     |                                                         ^^^^^^^^^^^^^^^^
+  33 |     #[spec(fn(buf: &[u8]{v: 4 <= v}) -> u32)]
+     |                             ^^^^^^
+     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::parse'`
+
+error[E0999]: refinement type error
+    --> src/wire/tcp.rs:1010:60
+     |
+1010 |                         option = TcpOption::MaxSegmentSize(NetworkEndian::read_u16(data))
+     |                                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
+     |
+note: this is the condition that cannot be proved
+    --> src/flux_specs/byteorder.rs:21:29
+     |
+  21 |     #[spec(fn(buf: &[u8]{v: 2 <= v}) -> u16)]
+     |                             ^^^^^^
      = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::parse'`
 
 error[E0999]: refinement type error
@@ -2112,6 +2060,27 @@ note: this is the condition that cannot be proved
      = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::parse'`
 
 error[E0999]: refinement type error
+    --> src/wire/tcp.rs:1044:80
+     |
+1044 | ...                   let range_right = NetworkEndian::read_u32(&data[mid..right]);
+     |                                                                      ^^^^^^^^^^^^ a precondition cannot be proved
+     |
+note: this is the condition that cannot be proved
+    --> src/flux_specs/flux_core.rs:118:57
+     |
+ 118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
+     |                                                         ^^^^^^^^^^^^^^^^
+     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::parse'`
+
+error[E0999]: assertion might fail: possible out-of-bounds access
+    --> src/wire/tcp.rs:1013:75
+     |
+1013 |                     (field::OPT_WS, 3) => option = TcpOption::WindowScale(data[0]),
+     |                                                                           ^^^^^^^
+     |
+     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::parse'`
+
+error[E0999]: refinement type error
     --> src/wire/tcp.rs:1043:79
      |
 1043 | ...                   let range_left = NetworkEndian::read_u32(&data[left..mid]);
@@ -2125,19 +2094,6 @@ note: this is the condition that cannot be proved
      = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::parse'`
 
 error[E0999]: refinement type error
-    --> src/wire/tcp.rs:1044:80
-     |
-1044 | ...                   let range_right = NetworkEndian::read_u32(&data[mid..right]);
-     |                                                                      ^^^^^^^^^^^^ a precondition cannot be proved
-     |
-note: this is the condition that cannot be proved
-    --> src/flux_specs/flux_core.rs:118:77
-     |
- 118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
-     |                                                                             ^^^^^^^^^^^^
-     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::parse'`
-
-error[E0999]: refinement type error
     --> src/wire/tcp.rs:1043:79
      |
 1043 | ...                   let range_left = NetworkEndian::read_u32(&data[left..mid]);
@@ -2150,12 +2106,17 @@ note: this is the condition that cannot be proved
      |                                                                             ^^^^^^^^^^^^
      = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::parse'`
 
-error[E0999]: assertion might fail: possible out-of-bounds access
-    --> src/wire/tcp.rs:1013:75
+error[E0999]: refinement type error
+    --> src/wire/tcp.rs:1044:80
      |
-1013 |                     (field::OPT_WS, 3) => option = TcpOption::WindowScale(data[0]),
-     |                                                                           ^^^^^^^
+1044 | ...                   let range_right = NetworkEndian::read_u32(&data[mid..right]);
+     |                                                                      ^^^^^^^^^^^^ a precondition cannot be proved
      |
+note: this is the condition that cannot be proved
+    --> src/flux_specs/flux_core.rs:118:77
+     |
+ 118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
+     |                                                                             ^^^^^^^^^^^^
      = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::parse'`
 
 error[E0999]: refinement type error
@@ -2198,30 +2159,30 @@ note: this is the condition that cannot be proved
      = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::parse'`
 
 error[E0999]: refinement type error
-    --> src/wire/tcp.rs:1043:50
+    --> src/wire/tcp.rs:1122:25
      |
-1043 | ...                   let range_left = NetworkEndian::read_u32(&data[left..mid]);
-     |                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
+1122 |                         NetworkEndian::write_u32(&mut buffer[2..], tsval);
+     |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
      |
 note: this is the condition that cannot be proved
-    --> src/flux_specs/byteorder.rs:33:29
+    --> src/flux_specs/byteorder.rs:39:33
      |
-  33 |     #[spec(fn(buf: &[u8]{v: 4 <= v}) -> u32)]
-     |                             ^^^^^^
-     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::parse'`
+  39 |     #[spec(fn(buf: &mut [u8]{v: 4 <= v}, n: u32))]
+     |                                 ^^^^^^
+     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::emit'`
 
 error[E0999]: refinement type error
-    --> src/wire/tcp.rs:1010:60
+    --> src/wire/tcp.rs:1116:69
      |
-1010 |                         option = TcpOption::MaxSegmentSize(NetworkEndian::read_u16(data))
-     |                                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
+1116 | ...                   NetworkEndian::write_u32(&mut buffer[pos..], first);
+     |                                                           ^^^^^^^ a precondition cannot be proved
      |
 note: this is the condition that cannot be proved
-    --> src/flux_specs/byteorder.rs:21:29
+    --> src/flux_specs/flux_core.rs:128:57
      |
-  21 |     #[spec(fn(buf: &[u8]{v: 2 <= v}) -> u16)]
-     |                             ^^^^^^
-     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::parse'`
+ 128 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= len })]
+     |                                                         ^^^^^^^^^^^^^^
+     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::emit'`
 
 error[E0999]: refinement type error
     --> src/wire/tcp.rs:1116:33
@@ -2250,6 +2211,14 @@ note: this is the condition that cannot be proved
      = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::emit'`
 
 error[E0999]: refinement type error
+    --> src/wire/tcp.rs:1130:25
+     |
+1130 |                         buffer[2..].copy_from_slice(provided)
+     |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
+     |
+     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::emit'`
+
+error[E0999]: refinement type error
     --> src/wire/tcp.rs:1098:25
      |
 1098 |                         NetworkEndian::write_u16(&mut buffer[2..], value)
@@ -2260,6 +2229,14 @@ note: this is the condition that cannot be proved
      |
   27 |     #[spec(fn(buf: &mut [u8]{v: 2 <= v}, n: u16))]
      |                                 ^^^^^^
+     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::emit'`
+
+error[E0999]: assertion might fail: possible out-of-bounds access
+    --> src/wire/tcp.rs:1102:25
+     |
+1102 |                         buffer[2] = value;
+     |                         ^^^^^^^^^
+     |
      = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::emit'`
 
 error[E0999]: refinement type error
@@ -2273,22 +2250,6 @@ note: this is the condition that cannot be proved
      |
   39 |     #[spec(fn(buf: &mut [u8]{v: 4 <= v}, n: u32))]
      |                                 ^^^^^^
-     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::emit'`
-
-error[E0999]: refinement type error
-    --> src/wire/tcp.rs:1130:25
-     |
-1130 |                         buffer[2..].copy_from_slice(provided)
-     |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
-     |
-     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::emit'`
-
-error[E0999]: assertion might fail: possible out-of-bounds access
-    --> src/wire/tcp.rs:1102:25
-     |
-1102 |                         buffer[2] = value;
-     |                         ^^^^^^^^^
-     |
      = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::emit'`
 
 error[E0999]: refinement type error
@@ -2317,6 +2278,14 @@ note: this is the condition that cannot be proved
      |                                                         ^^^^^^^^^^^^^^
      = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::emit'`
 
+error[E0999]: assertion might fail: possible out-of-bounds access
+    --> src/wire/tcp.rs:1089:17
+     |
+1089 |                 buffer[0] = field::OPT_NOP;
+     |                 ^^^^^^^^^
+     |
+     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::emit'`
+
 error[E0999]: refinement type error
     --> src/wire/tcp.rs:1135:20
      |
@@ -2331,45 +2300,11 @@ note: this is the condition that cannot be proved
      = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::emit'`
 
 error[E0999]: assertion might fail: possible out-of-bounds access
-    --> src/wire/tcp.rs:1089:17
-     |
-1089 |                 buffer[0] = field::OPT_NOP;
-     |                 ^^^^^^^^^
-     |
-     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::emit'`
-
-error[E0999]: assertion might fail: possible out-of-bounds access
     --> src/wire/tcp.rs:1093:17
      |
 1093 |                 buffer[1] = length as u8;
      |                 ^^^^^^^^^
      |
-     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::emit'`
-
-error[E0999]: refinement type error
-    --> src/wire/tcp.rs:1122:25
-     |
-1122 |                         NetworkEndian::write_u32(&mut buffer[2..], tsval);
-     |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
-     |
-note: this is the condition that cannot be proved
-    --> src/flux_specs/byteorder.rs:39:33
-     |
-  39 |     #[spec(fn(buf: &mut [u8]{v: 4 <= v}, n: u32))]
-     |                                 ^^^^^^
-     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::emit'`
-
-error[E0999]: refinement type error
-    --> src/wire/tcp.rs:1116:69
-     |
-1116 | ...                   NetworkEndian::write_u32(&mut buffer[pos..], first);
-     |                                                           ^^^^^^^ a precondition cannot be proved
-     |
-note: this is the condition that cannot be proved
-    --> src/flux_specs/flux_core.rs:128:57
-     |
- 128 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= len })]
-     |                                                         ^^^^^^^^^^^^^^
      = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::TcpOption::<'\''a>::emit'`
 
 error[E0999]: associated refinement `as_ref_reft` is missing from implementation
@@ -2543,19 +2478,6 @@ note: this is the condition that cannot be proved
      = note: to rerun: `cargo flux check -p xarxa --only-check='def:iface::packet::Packet::<'\''p>::emit_payload'`
 
 error[E0999]: refinement type error
-   --> src/iface/packet.rs:176:33
-    |
-176 |                     &mut payload[hbh_start..hbh_end],
-    |                                 ^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
-    |
-note: this is the condition that cannot be proved
-   --> src/flux_specs/flux_core.rs:118:57
-    |
-118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
-    |                                                         ^^^^^^^^^^^^^^^^
-    = note: to rerun: `cargo flux check -p xarxa --only-check='def:iface::packet::Packet::<'\''p>::emit_payload'`
-
-error[E0999]: refinement type error
    --> src/iface/packet.rs:181:17
     |
 181 | /                 icmpv6_repr.emit(
@@ -2571,6 +2493,19 @@ note: this is the condition that cannot be proved
     |
 979 |               && r.blen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
     |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: to rerun: `cargo flux check -p xarxa --only-check='def:iface::packet::Packet::<'\''p>::emit_payload'`
+
+error[E0999]: refinement type error
+   --> src/iface/packet.rs:176:33
+    |
+176 |                     &mut payload[hbh_start..hbh_end],
+    |                                 ^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
+    |
+note: this is the condition that cannot be proved
+   --> src/flux_specs/flux_core.rs:118:57
+    |
+118 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.start <= r.end && r.end <= len })]
+    |                                                         ^^^^^^^^^^^^^^^^
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:iface::packet::Packet::<'\''p>::emit_payload'`
 
 error[E0999]: refinement type error
@@ -2859,6 +2794,14 @@ error[E0999]: call to xarxa[d70d]::wire::mld::{impl#7}::set_mcast_addr may panic
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::mld::AddressRecordRepr::<'\''a>::emit'`
 
 error[E0999]: refinement type error
+   --> src/wire/mld.rs:682:17
+    |
+682 |                 packet.payload_mut().copy_from_slice(&data[..]);
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
+    |
+    = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::mld::Repr::<'\''a>::emit'`
+
+error[E0999]: refinement type error
    --> src/wire/mld.rs:718:21
     |
 718 |                     record.emit(&mut AddressRecord::new_unchecked(buf));
@@ -2898,14 +2841,6 @@ note: this is the condition that cannot be proved
     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::mld::Repr::<'\''a>::emit'`
 
 error[E0999]: refinement type error
-   --> src/wire/mld.rs:682:17
-    |
-682 |                 packet.payload_mut().copy_from_slice(&data[..]);
-    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
-    |
-    = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::mld::Repr::<'\''a>::emit'`
-
-error[E0999]: refinement type error
    --> src/wire/mld.rs:692:17
     |
 692 |                 packet.payload_mut().copy_from_slice(&data[..]);
@@ -2926,10 +2861,10 @@ error[E0999]: refinement type error
      |         ^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
      |
 note: this is the condition that cannot be proved
-    --> src/wire/tcp.rs:954:69
+    --> src/wire/tcp.rs:954:18
      |
  954 |         requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer) && p.hlen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
-     |                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
      = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::Repr::<'\''a>::emit'`
 
 error[E0999]: refinement type error
@@ -2939,10 +2874,10 @@ error[E0999]: refinement type error
      |                               ^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
      |
 note: this is the condition that cannot be proved
-    --> src/wire/tcp.rs:938:69
+    --> src/wire/tcp.rs:938:18
      |
  938 | ...   requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer) && 20 <= p.hlen && p.hlen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
-     |                                                                   ^^^^^^^^^^^^
+     |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
      = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::Repr::<'\''a>::emit'`
 
 error[E0999]: refinement type error
@@ -2959,29 +2894,16 @@ note: this is the condition that cannot be proved
      = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::Repr::<'\''a>::emit'`
 
 error[E0999]: refinement type error
-    --> src/wire/tcp.rs:1421:29
-     |
-1421 |         packet.payload_mut()[..self.payload.len()].copy_from_slice(self.payload);
-     |                             ^^^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
-     |
-note: this is the condition that cannot be proved
-    --> src/flux_specs/flux_core.rs:123:57
-     |
- 123 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.end <= len })]
-     |                                                         ^^^^^^^^^^^^
-     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::Repr::<'\''a>::emit'`
-
-error[E0999]: refinement type error
     --> src/wire/tcp.rs:1421:9
      |
 1421 |         packet.payload_mut()[..self.payload.len()].copy_from_slice(self.payload);
      |         ^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
      |
 note: this is the condition that cannot be proved
-    --> src/wire/tcp.rs:954:18
+    --> src/wire/tcp.rs:954:69
      |
  954 |         requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer) && p.hlen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
-     |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
      = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::Repr::<'\''a>::emit'`
 
 error[E0999]: type invariant may not hold (when place is folded)
@@ -2999,11 +2921,24 @@ error[E0999]: refinement type error
      |                               ^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
      |
 note: this is the condition that cannot be proved
-    --> src/wire/tcp.rs:938:18
+    --> src/wire/tcp.rs:938:69
      |
  938 | ...   requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer) && 20 <= p.hlen && p.hlen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
-     |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |                                                                   ^^^^^^^^^^^^
+     = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::Repr::<'\''a>::emit'`
+
+error[E0999]: refinement type error
+    --> src/wire/tcp.rs:1421:29
+     |
+1421 |         packet.payload_mut()[..self.payload.len()].copy_from_slice(self.payload);
+     |                             ^^^^^^^^^^^^^^^^^^^^^^ a precondition cannot be proved
+     |
+note: this is the condition that cannot be proved
+    --> src/flux_specs/flux_core.rs:123:57
+     |
+ 123 | #[flux::assoc(fn in_bounds(r: Self, len: int) -> bool { r.end <= len })]
+     |                                                         ^^^^^^^^^^^^
      = note: to rerun: `cargo flux check -p xarxa --only-check='def:wire::tcp::Repr::<'\''a>::emit'`
 
 warning: `xarxa` (lib) generated 43 warnings
-error: could not compile `xarxa` (lib) due to 243 previous errors; 43 warnings emitted
+error: could not compile `xarxa` (lib) due to 238 previous errors; 43 warnings emitted

@@ -361,6 +361,8 @@ impl<'p> IpPayload<'p> {
 }
 
 #[cfg(any(feature = "proto-ipv4", feature = "proto-ipv6"))]
+#[flux_rs::trusted(no, reason = "the `v <= len` is what the reply's `[0..v]` window needs")]
+#[flux_rs::sig(fn(len: usize, usize, usize) -> usize{v: v <= len})]
 pub(crate) fn icmp_reply_payload_len(len: usize, mtu: usize, header_len: usize) -> usize {
     // Send back as much of the original payload as will fit within
     // the minimum MTU required by IPv4. See RFC 1812 § 4.3.2.3 for
@@ -370,5 +372,7 @@ pub(crate) fn icmp_reply_payload_len(len: usize, mtu: usize, header_len: usize) 
     // MTU supported, the payload must not exceed the following:
     //
     // <min mtu> - IP Header Size * 2 - ICMPv4 DstUnreachable hdr size
-    len.min(mtu - header_len * 2 - 8)
+    // `cmp::min` rather than `Ord::min`: only the free function carries a refinement, and
+    // `v <= len` is what the `[0..v]` window at the two `ParamProblem` sites needs.
+    core::cmp::min(len, mtu - header_len * 2 - 8)
 }
