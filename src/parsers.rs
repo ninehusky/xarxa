@@ -147,26 +147,20 @@ impl<'a> Parser<'a> {
         Err(())
     }
 
-    /// Consume a dotted-quad and write it as two `u16`s at `*idx`, advancing `idx` by two.
+    /// Consume a dotted-quad and return it as the two `u16` groups it occupies.
     ///
-    /// The `ensures` is the whole point of the `&strg`: `idx` moves by two or not at all -- the
-    /// `?` below is the only early return and it precedes both writes -- and that is what bounds
-    /// the caller's index afterwards.
+    /// The caller does the writing. Writing here would mean indexing a `&mut [u16]` that
+    /// reached this function as an array-to-slice coercion, whose length flux does not carry
+    /// across the call; both call sites below know their index exactly, so at each of them the
+    /// two writes are at literal offsets into an array whose size is in the type.
     #[cfg(feature = "proto-ipv6")]
-    #[flux_rs::trusted(no, reason = "the index's motion is what `accept_ipv6` needs")]
-    #[flux_rs::sig(
-        fn(&mut Self, _, idx: &strg usize[@i]) -> Result<()>
-        ensures idx: usize{v: i <= v && v <= i + 2}
-    )]
-    fn accept_ipv4_mapped_ipv6_part(&mut self, parts: &mut [u16], idx: &mut usize) -> Result<()> {
+    fn accept_ipv4_mapped_ipv6_part(&mut self) -> Result<(u16, u16)> {
         let octets = self.accept_ipv4_octets()?;
 
-        parts[*idx] = ((octets[0] as u16) << 8) | (octets[1] as u16);
-        *idx += 1;
-        parts[*idx] = ((octets[2] as u16) << 8) | (octets[3] as u16);
-        *idx += 1;
-
-        Ok(())
+        Ok((
+            ((octets[0] as u16) << 8) | (octets[1] as u16),
+            ((octets[2] as u16) << 8) | (octets[3] as u16),
+        ))
     }
 
     /// Parse one `:`-delimited group of an IPv6 address, recursing on the rest.
@@ -227,10 +221,18 @@ impl<'a> Parser<'a> {
                     // does not survive a capture, so the postcondition would be lost exactly
                     // where it is needed. Same save-and-restore, same short-circuit.
                     let pos = self.pos;
-                    if self.accept_char(b':').is_err()
-                        || self.accept_ipv4_mapped_ipv6_part(head, head_idx).is_err()
-                    {
-                        self.pos = pos;
+                    let parsed = if self.accept_char(b':').is_ok() {
+                        self.accept_ipv4_mapped_ipv6_part()
+                    } else {
+                        Err(())
+                    };
+                    match parsed {
+                        Ok((a, b)) => {
+                            head[6] = a;
+                            head[7] = b;
+                            *head_idx = 8;
+                        }
+                        Err(()) => self.pos = pos,
                     }
                 }
                 Ok(())
@@ -243,10 +245,18 @@ impl<'a> Parser<'a> {
                 if *tail_idx == 1 && tail[0] == 0xffff && head[0..8] == [0, 0, 0, 0, 0, 0, 0, 0] {
                     // Open-coded for the reason given in the head arm above.
                     let pos = self.pos;
-                    if self.accept_char(b':').is_err()
-                        || self.accept_ipv4_mapped_ipv6_part(tail, tail_idx).is_err()
-                    {
-                        self.pos = pos;
+                    let parsed = if self.accept_char(b':').is_ok() {
+                        self.accept_ipv4_mapped_ipv6_part()
+                    } else {
+                        Err(())
+                    };
+                    match parsed {
+                        Ok((a, b)) => {
+                            tail[1] = a;
+                            tail[2] = b;
+                            *tail_idx = 3;
+                        }
+                        Err(()) => self.pos = pos,
                     }
                 }
                 Ok(())
@@ -558,6 +568,48 @@ mod test {
             Ok(IpAddress::Ipv4(Ipv4Address::new(1, 2, 3, 4)))
         );
         assert_eq!(IpAddress::from_str("x"), Err(()));
+    }
+
+    #[test]
+    #[cfg(all(feature = "proto-ipv6", feature = "proto-ipv4"))]
+    fn test_ipv4_mapped_ipv6() {
+        fn v6(a: [u16; 8]) -> Result<IpAddress> {
+            Ok(IpAddress::Ipv6(Ipv6Address::new(
+                a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7],
+            )))
+        }
+
+        // The tail form: "::" then ffff then a dotted quad.
+        assert_eq!(
+            IpAddress::from_str("::ffff:192.168.1.1"),
+            v6([0, 0, 0, 0, 0, 0xffff, 0xc0a8, 0x0101])
+        );
+        // The head form: six groups written out, then the quad.
+        assert_eq!(
+            IpAddress::from_str("0:0:0:0:0:ffff:192.168.1.1"),
+            v6([0, 0, 0, 0, 0, 0xffff, 0xc0a8, 0x0101])
+        );
+        assert_eq!(
+            IpAddress::from_str("::ffff:0.0.0.0"),
+            v6([0, 0, 0, 0, 0, 0xffff, 0, 0])
+        );
+        assert_eq!(
+            IpAddress::from_str("::ffff:255.255.255.255"),
+            v6([0, 0, 0, 0, 0, 0xffff, 0xffff, 0xffff])
+        );
+        // `ffff` without a quad after it is still an ordinary group.
+        assert_eq!(
+            IpAddress::from_str("::ffff"),
+            v6([0, 0, 0, 0, 0, 0, 0, 0xffff])
+        );
+        assert_eq!(
+            IpAddress::from_str("::ffff:1:2"),
+            v6([0, 0, 0, 0, 0, 0xffff, 1, 2])
+        );
+        // A truncated or out-of-range quad is not an address.
+        assert_eq!(IpAddress::from_str("::ffff:1.2.3"), Err(()));
+        assert_eq!(IpAddress::from_str("::ffff:1.2.3.256"), Err(()));
+        assert_eq!(IpAddress::from_str("::ffff:"), Err(()));
     }
 
     #[test]
