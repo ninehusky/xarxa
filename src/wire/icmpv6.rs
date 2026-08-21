@@ -11,6 +11,7 @@ use crate::wire::RplRepr;
 use crate::wire::ip::checksum;
 use crate::wire::{IPV6_HEADER_LEN, IPV6_MIN_MTU};
 use crate::wire::{IpProtocol, Ipv6Address, Ipv6Packet, Ipv6Repr};
+use crate::wire::{Ref, read_u16_at, read_u32_at};
 
 /// Error packets must not exceed min MTU
 const MAX_ERROR_PACKET_LEN: usize = IPV6_MIN_MTU - IPV6_HEADER_LEN;
@@ -312,7 +313,36 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Ensure that no accessor method will panic if called.
     /// Returns `Err(Error)` if the buffer is too short.
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(fn(self: &Packet<T>[@p]) -> Result<()>)]
+    #[flux_rs::no_panic]
     pub fn check_len(&self) -> Result<()> {
+        match self.checked_len() {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// [`check_len`](Self::check_len), returning the buffer length it validated.
+    ///
+    /// The whole of `check_len`; the public method just discards the length. `Result<()>`'s `Ok`
+    /// payload carries no refinement, so a successful check leaves a caller with nothing to show
+    /// for it. Returning the length lets the `Ok` arm say the three things the accessors want:
+    /// what the buffer's length is, that a type and a code and a checksum fit in it, and that it
+    /// reaches the end of this message type's header -- which is what
+    /// [`payload`](Packet::payload) opens its window past.
+    ///
+    /// The bound is `4 <= v`, not `8 <= v`, because the RPL arm accepts a six-octet message;
+    /// `icmpv6_header_len(p.code) <= v` is what carries the rest, and on every arm that reads a
+    /// field beyond octet 4 the match on `msg_type` has already pinned `p.code`.
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(
+        fn(self: &Packet<T>[@p])
+            -> Result<usize{v: v == <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+                             && 4 <= v && icmpv6_header_len(p.code) <= v}>
+    )]
+    #[flux_rs::no_panic]
+    pub(super) fn checked_len(&self) -> Result<usize> {
         let len = self.buffer.as_ref().len();
 
         if len < 4 {
@@ -333,7 +363,8 @@ impl<T: AsRef<[u8]>> Packet<T> {
             | Message::NeighborAdvert
             | Message::Redirect
             | Message::MldReport => {
-                if len < field::HEADER_END || len < self.header_len() {
+                // 8 is `field::HEADER_END`; flux cannot see through a `usize` const.
+                if len < 8 || len < self.header_len() {
                     return Err(Error);
                 }
             }
@@ -375,7 +406,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
             Message::Unknown(_) => return Err(Error),
         }
 
-        Ok(())
+        Ok(len)
     }
 
     /// Consume the packet, returning the underlying buffer.
@@ -392,45 +423,66 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the message code field.
+    // Literal offsets rather than `field::CODE`: flux cannot see through a `const` of struct
+    // type, and `usize` consts are opaque to it too, so the bound has to be written out. The
+    // original spelling is kept in a trailing comment. Same throughout this impl.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u8 requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn msg_code(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[field::CODE]
+        data[1] // field::CODE
     }
 
     /// Return the checksum field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u16 requires 4 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn checksum(&self) -> u16 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::CHECKSUM])
+        read_u16_at(data, 2) // field::CHECKSUM
     }
 
     /// Return the identifier field (for echo request and reply packets).
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u16 requires 6 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn echo_ident(&self) -> u16 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::ECHO_IDENT])
+        read_u16_at(data, 4) // field::ECHO_IDENT
     }
 
     /// Return the sequence number field (for echo request and reply packets).
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u16 requires 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn echo_seq_no(&self) -> u16 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::ECHO_SEQNO])
+        read_u16_at(data, 6) // field::ECHO_SEQNO
     }
 
     /// Return the MTU field (for packet too big messages).
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u32 requires 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn pkt_too_big_mtu(&self) -> u32 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u32(&data[field::MTU])
+        read_u32_at(data, 4) // field::MTU
     }
 
     /// Return the pointer field (for parameter problem messages).
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> u32 requires 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn param_problem_ptr(&self) -> u32 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u32(&data[field::POINTER])
+        read_u32_at(data, 4) // field::POINTER
     }
 
     /// Return the header length. The result depends on the value of
@@ -474,6 +526,19 @@ impl<T: AsRef<[u8]>> Packet<T> {
     ///
     /// # Fuzzing
     /// This function always returns `true` when fuzzing.
+    ///
+    /// `as_ref_reft <= 65535` is `checksum::data`'s own bound -- its `u32` accumulator cannot
+    /// take more than 65535 octets without overflowing. It is a real, satisfiable property of
+    /// every ICMPv6 buffer, which are sized from `Repr::buffer_len()` under `IPV6_MIN_MTU`, so
+    /// it is stated as a caller obligation rather than assumed here.
+    ///
+    /// No `no_panic`: `checksum::combine` and `checksum::pseudo_header_v6` carry none, so the
+    /// attribute would report their transitive obligations here rather than the bound above.
+    #[flux_rs::trusted(no, reason = "panic site: checksum::data's length bound")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p], &Ipv6Address, &Ipv6Address) -> bool
+        requires <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
+    )]
     pub fn verify_checksum(&self, src_addr: &Ipv6Address, dst_addr: &Ipv6Address) -> bool {
         if cfg!(fuzzing) {
             return true;
@@ -484,15 +549,6 @@ impl<T: AsRef<[u8]>> Packet<T> {
             checksum::pseudo_header_v6(src_addr, dst_addr, IpProtocol::Icmpv6, data.len() as u32),
             checksum::data(data),
         ]) == !0
-    }
-}
-
-impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
-    /// Return a pointer to the type-specific data.
-    #[inline]
-    pub fn payload(&self) -> &'a [u8] {
-        let data = self.buffer.as_ref();
-        &data[self.header_len()..]
     }
 }
 
@@ -827,6 +883,11 @@ pub enum Repr<'a> {
 impl<'a> Repr<'a> {
     /// Parse an Internet Control Message Protocol version 6 packet and return
     /// a high-level representation.
+    ///
+    /// A thin wrapper over [`parse_ref`](Self::parse_ref). A reference in type-parameter
+    /// position has the unit sort, so nothing about `T`'s extent is statable here; [`Ref`] is
+    /// where the buffer acquires a length, and `parse_ref` is where the accessors' windows are
+    /// proved against it. Callers already holding a `Ref` should call `parse_ref` directly.
     pub fn parse<T>(
         src_addr: &Ipv6Address,
         dst_addr: &Ipv6Address,
@@ -836,22 +897,38 @@ impl<'a> Repr<'a> {
     where
         T: AsRef<[u8]> + ?Sized,
     {
-        packet.check_len()?;
+        let packet = Packet::new_unchecked(Ref::new(packet.buffer.as_ref()));
+        Repr::parse_ref(src_addr, dst_addr, &packet, checksum_caps)
+    }
 
-        fn create_packet_from_payload<'a, T>(packet: &Packet<&'a T>) -> Result<(&'a [u8], Ipv6Repr)>
-        where
-            T: AsRef<[u8]> + ?Sized,
-        {
+    /// [`parse`](Self::parse) over a buffer whose length is in the refinement.
+    ///
+    /// `checked_len` rather than `check_len`: the same test, but its `Ok` arm names what the
+    /// accessors below need. `4 <= len` alone covers the code octet; every field past it is
+    /// read inside an arm that has already pinned `p.code`, where
+    /// `icmpv6_header_len(p.code) <= len` becomes the concrete bound that field wants.
+    pub fn parse_ref(
+        src_addr: &Ipv6Address,
+        dst_addr: &Ipv6Address,
+        packet: &Packet<Ref<'a>>,
+        checksum_caps: &ChecksumCapabilities,
+    ) -> Result<Repr<'a>> {
+        let len = packet.checked_len()?;
+
+        fn create_packet_from_payload<'a>(payload: Ref<'a>) -> Result<(&'a [u8], Ipv6Repr)> {
             // The packet must be truncated to fit the min MTU. Since we don't know the offset of
             // the ICMPv6 header in the L2 frame, we should only check whether the payload's IPv6
             // header is present, the rest is allowed to be truncated.
-            let ip_packet = if packet.payload().len() >= IPV6_HEADER_LEN {
-                Ipv6Packet::new_unchecked(packet.payload())
-            } else {
+            //
+            // 40 is `IPV6_HEADER_LEN`, and it is also what `ip_packet.header_len()` returns for
+            // every IPv6 packet -- that header is fixed width. Both are spelled as the literal
+            // because flux sees through neither a `usize` const nor `Ipv6Packet::header_len`,
+            // which carries no signature.
+            let len = payload.as_ref().len();
+            if len < 40 {
                 return Err(Error);
-            };
-
-            let payload = &packet.payload()[ip_packet.header_len()..];
+            }
+            let ip_packet = Ipv6Packet::new_unchecked(payload);
             let repr = Ipv6Repr {
                 src_addr: ip_packet.src_addr(),
                 dst_addr: ip_packet.dst_addr(),
@@ -859,7 +936,7 @@ impl<'a> Repr<'a> {
                 payload_len: ip_packet.payload_len().into(),
                 hop_limit: ip_packet.hop_limit(),
             };
-            Ok((payload, repr))
+            Ok((payload.window(40, len), repr))
         }
         // Valid checksum is expected.
         if checksum_caps.icmpv6.rx() && !packet.verify_checksum(src_addr, dst_addr) {
@@ -868,7 +945,7 @@ impl<'a> Repr<'a> {
 
         match (packet.msg_type(), packet.msg_code()) {
             (Message::DstUnreachable, code) => {
-                let (payload, repr) = create_packet_from_payload(packet)?;
+                let (payload, repr) = create_packet_from_payload(Ref::new(packet.payload()))?;
                 Ok(Repr::DstUnreachable {
                     reason: DstUnreachable::from(code),
                     header: repr,
@@ -876,7 +953,7 @@ impl<'a> Repr<'a> {
                 })
             }
             (Message::PktTooBig, 0) => {
-                let (payload, repr) = create_packet_from_payload(packet)?;
+                let (payload, repr) = create_packet_from_payload(Ref::new(packet.payload()))?;
                 Ok(Repr::PktTooBig {
                     mtu: packet.pkt_too_big_mtu(),
                     header: repr,
@@ -884,7 +961,7 @@ impl<'a> Repr<'a> {
                 })
             }
             (Message::TimeExceeded, code) => {
-                let (payload, repr) = create_packet_from_payload(packet)?;
+                let (payload, repr) = create_packet_from_payload(Ref::new(packet.payload()))?;
                 Ok(Repr::TimeExceeded {
                     reason: TimeExceeded::from(code),
                     header: repr,
@@ -892,7 +969,7 @@ impl<'a> Repr<'a> {
                 })
             }
             (Message::ParamProblem, code) => {
-                let (payload, repr) = create_packet_from_payload(packet)?;
+                let (payload, repr) = create_packet_from_payload(Ref::new(packet.payload()))?;
                 Ok(Repr::ParamProblem {
                     reason: ParamProblem::from(code),
                     pointer: packet.param_problem_ptr(),
@@ -913,8 +990,13 @@ impl<'a> Repr<'a> {
             #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
             (msg_type, 0) if msg_type.is_ndisc() => NdiscRepr::parse(packet).map(Repr::Ndisc),
             (msg_type, 0) if msg_type.is_mld() => MldRepr::parse(packet).map(Repr::Mld),
+            // `RplRepr::parse` still takes a `Packet<&'a T>`; the window goes back to a plain
+            // slice for it. It runs its own `check_len`, so nothing proved here is lost.
             #[cfg(feature = "proto-rpl")]
-            (Message::RplControl, _) => RplRepr::parse(packet).map(Repr::Rpl),
+            (Message::RplControl, _) => {
+                let packet = Packet::new_unchecked(packet.buffer.window(0, len));
+                RplRepr::parse(&packet).map(Repr::Rpl)
+            }
             _ => Err(Error),
         }
     }
@@ -1169,7 +1251,7 @@ mod test {
 
     #[test]
     fn test_echo_deconstruct() {
-        let packet = Packet::new_unchecked(&ECHO_PACKET_BYTES[..]);
+        let packet = Packet::new_unchecked(Ref::new(&ECHO_PACKET_BYTES[..]));
         assert_eq!(packet.msg_type(), Message::EchoRequest);
         assert_eq!(packet.msg_code(), 0);
         assert_eq!(packet.checksum(), 0x19b3);
@@ -1224,7 +1306,7 @@ mod test {
 
     #[test]
     fn test_too_big_deconstruct() {
-        let packet = Packet::new_unchecked(&PKT_TOO_BIG_BYTES[..]);
+        let packet = Packet::new_unchecked(Ref::new(&PKT_TOO_BIG_BYTES[..]));
         assert_eq!(packet.msg_type(), Message::PktTooBig);
         assert_eq!(packet.msg_code(), 0);
         assert_eq!(packet.checksum(), 0x0fc9);
@@ -1357,5 +1439,43 @@ mod test {
             )
             .is_err()
         );
+    }
+}
+
+impl<'a> Packet<Ref<'a>> {
+    /// [`new_checked`](Self::new_checked) over a [`Ref`], carrying its proof out.
+    ///
+    /// The generic `new_checked` cannot say this: at a reference or `dyn` self type the
+    /// `as_ref_reft` in the postcondition is unstatable. Over `Ref` the buffer's length is
+    /// `b.len`, and what `checked_len` already proves is what the accessors require.
+    #[flux_rs::trusted(no, reason = "carries `checked_len`'s proof out through the `Ok` arm")]
+    #[flux_rs::sig(
+        fn(Ref[@b]) -> Result<Packet<Ref>{p: p.buffer == b && 4 <= b.len
+                                             && icmpv6_header_len(p.code) <= b.len}>
+    )]
+    pub fn new_checked_ref(buffer: Ref<'a>) -> Result<Packet<Ref<'a>>> {
+        let packet = Packet::new_unchecked(buffer);
+        packet.checked_len()?;
+        Ok(packet)
+    }
+
+    /// Return a pointer to the type-specific data.
+    ///
+    /// The `Packet<&'a T>` twin of this cannot be proved: a reference in type-parameter position
+    /// has the unit sort, so `p.buffer` cannot be fed to `<&'a T as AsRef<[u8]>>::as_ref_reft`
+    /// and neither half of the window bound is statable. Over `Ref<'a>` the buffer's length is
+    /// `p.buffer.len`, the window is the one `payload_mut` proves, and the payload's length
+    /// survives into the caller's index. The return borrows `'a` from the buffer rather than
+    /// from `&self`, which is what `Repr::parse_ref` depends on.
+    #[flux_rs::trusted(no, reason = "panic site: opens the payload window")]
+    #[flux_rs::sig(
+        fn(&Packet<Ref>[@p]) -> &[u8][p.buffer.len - icmpv6_header_len(p.code)]
+        requires icmpv6_header_len(p.code) <= p.buffer.len
+    )]
+    #[flux_rs::no_panic]
+    #[inline]
+    pub fn payload(&self) -> &'a [u8] {
+        let len = self.buffer.as_ref().len();
+        self.buffer.window(self.header_len(), len)
     }
 }
