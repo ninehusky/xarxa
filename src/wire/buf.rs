@@ -346,3 +346,49 @@ pub fn tail(data: &[u8], at: usize) -> &[u8] {
 pub fn copy_window_at(data: &mut [u8], at: usize, len: usize, src: &[u8]) {
     data[at..at + len].copy_from_slice(src)
 }
+
+/// A shared byte-slice window whose length lives in the refinement.
+///
+/// The read-side twin of [`Buf`]. Its only job is to be a **non-reference** type: a reference in
+/// type-parameter position gets the unit sort, so `Packet<&'a [u8]>` cannot state a bound on its
+/// buffer, while `Packet<Ref<'a>>` can. Unlike `Buf` this carries no offset, so the field is
+/// refined directly and nothing here is trusted or unsafe.
+#[flux_rs::refined_by(len: int)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ref<'a> {
+    #[flux_rs::field(&[u8][len])]
+    inner: &'a [u8],
+}
+
+impl<'a> Ref<'a> {
+    #[flux_rs::sig(fn(&[u8][@n]) -> Ref[n])]
+    #[flux_rs::no_panic]
+    pub fn new(inner: &'a [u8]) -> Ref<'a> {
+        Ref { inner }
+    }
+
+    /// The window `start..end`, with the buffer's lifetime rather than `&self`'s.
+    ///
+    /// This is the whole point of the type: a shared reference keeps its index across a return
+    /// (flux-rs/flux#1714 is about `&mut`), so the window's length survives to the caller.
+    #[flux_rs::sig(
+        fn(Ref[@r], start: usize, end: usize{start <= end && end <= r.len}) -> &[u8][end - start]
+    )]
+    #[flux_rs::no_panic]
+    pub fn window(self, start: usize, end: usize) -> &'a [u8] {
+        &self.inner[start..end]
+    }
+}
+
+#[flux_rs::assoc(
+    fn as_ref_reft(source: Self) -> int {
+        source.len
+    }
+)]
+impl AsRef<[u8]> for Ref<'_> {
+    #[flux_rs::sig(fn(self: &Self[@source]) -> &[u8][Self::as_ref_reft(source)])]
+    #[flux_rs::no_panic]
+    fn as_ref(&self) -> &[u8] {
+        self.inner
+    }
+}

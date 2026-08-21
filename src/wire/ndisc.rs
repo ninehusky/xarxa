@@ -4,6 +4,8 @@ use super::{Error, Result};
 use crate::time::Duration;
 use crate::wire::Ipv6Address;
 use crate::wire::RawHardwareAddress;
+use crate::wire::Ref;
+use crate::wire::mld::read_ipv6_addr_at;
 use crate::wire::icmpv6::{Message, Packet, field};
 use crate::wire::{NdiscOption, NdiscOptionRepr};
 use crate::wire::{NdiscPrefixInformation, NdiscRedirectedHeader};
@@ -110,10 +112,16 @@ impl<T: AsRef<[u8]>> Packet<T> {
 /// [Redirect]: https://tools.ietf.org/html/rfc4861#section-4.5
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Return the target address field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> Ipv6Address
+        requires 24 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn target_addr(&self) -> Ipv6Address {
         let data = self.buffer.as_ref();
-        Ipv6Address::from_octets(data[field::TARGET_ADDR].try_into().unwrap())
+        read_ipv6_addr_at(data, 8) // field::TARGET_ADDR
     }
 }
 
@@ -141,10 +149,16 @@ impl<T: AsRef<[u8]>> Packet<T> {
 /// [RFC 4861 § 4.5]: https://tools.ietf.org/html/rfc4861#section-4.5
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Return the destination address field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> Ipv6Address
+        requires 40 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn dest_addr(&self) -> Ipv6Address {
         let data = self.buffer.as_ref();
-        Ipv6Address::from_octets(data[field::DEST_ADDR].try_into().unwrap())
+        read_ipv6_addr_at(data, 24) // field::DEST_ADDR
     }
 }
 
@@ -338,18 +352,17 @@ impl<'a> Repr<'a> {
     /// Parse an NDISC packet and return a high-level representation of the
     /// packet.
     #[allow(clippy::single_match)]
-    pub fn parse<T>(packet: &Packet<&'a T>) -> Result<Repr<'a>>
-    where
-        T: AsRef<[u8]> + ?Sized,
-    {
-        packet.check_len()?;
+    pub fn parse(packet: &Packet<Ref<'a>>) -> Result<Repr<'a>> {
+        // `checked_len` rather than `check_len`: the same test, but its `Ok` arm names the
+        // buffer's length, which is what `payload` opens its window against.
+        packet.checked_len()?;
 
         let (mut src_ll_addr, mut mtu, mut prefix_info, mut target_ll_addr, mut redirected_hdr) =
             (None, None, None, None, None);
 
         let mut offset = 0;
         while packet.payload().len() > offset {
-            let pkt = NdiscOption::new_checked(&packet.payload()[offset..])?;
+            let pkt = NdiscOption::new_checked_ref(Ref::new(&packet.payload()[offset..]))?;
 
             // If an option doesn't parse, ignore it and still parse the others.
             if let Ok(opt) = NdiscOptionRepr::parse(&pkt) {
@@ -650,7 +663,7 @@ mod test {
 
     #[test]
     fn test_router_advert_deconstruct() {
-        let packet = Packet::new_unchecked(&ROUTER_ADVERT_BYTES[..]);
+        let packet = Packet::new_unchecked(Ref::new(&ROUTER_ADVERT_BYTES[..]));
         assert_eq!(packet.msg_type(), Message::RouterAdvert);
         assert_eq!(packet.msg_code(), 0);
         assert_eq!(packet.current_hop_limit(), 64);

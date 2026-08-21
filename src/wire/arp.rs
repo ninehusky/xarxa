@@ -625,6 +625,10 @@ impl Repr {
     }
 }
 
+// A trait impl's signature is fixed, so it cannot carry the nine accessors' `requires`, and the
+// unrecognized arm below reads nine header fields out of a buffer nothing has validated. Those
+// nine obligations are undischarged on purpose: the panic is reachable on a truncated frame, so
+// it is a defect to report rather than a site to gate. See `~/research/xarxa-real-bugs.md`.
 impl<T: AsRef<[u8]>> fmt::Display for Packet<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match Repr::parse(self) {

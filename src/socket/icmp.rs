@@ -1,4 +1,5 @@
 use core::cmp;
+use crate::wire::Ref;
 #[cfg(feature = "async")]
 use core::task::Waker;
 
@@ -442,7 +443,7 @@ impl<'a> Socket<'a> {
                 &Icmpv4Repr::DstUnreachable { data, header, .. }
                 | &Icmpv4Repr::TimeExceeded { data, header, .. },
             ) if endpoint.addr.is_none() || endpoint.addr == Some(ip_repr.dst_addr.into()) => {
-                let packet = UdpPacket::new_unchecked(data);
+                let packet = UdpPacket::new_unchecked(Ref::new(data));
                 match UdpRepr::parse(
                     &packet,
                     &header.src_addr.into(),
@@ -504,7 +505,7 @@ impl<'a> Socket<'a> {
                 &Icmpv6Repr::DstUnreachable { data, header, .. }
                 | &Icmpv6Repr::TimeExceeded { data, header, .. },
             ) if endpoint.addr.is_none() || endpoint.addr == Some(ip_repr.dst_addr.into()) => {
-                let packet = UdpPacket::new_unchecked(data);
+                let packet = UdpPacket::new_unchecked(Ref::new(data));
                 match UdpRepr::parse(
                     &packet,
                     &header.src_addr.into(),
