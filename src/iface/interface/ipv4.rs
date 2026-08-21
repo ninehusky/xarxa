@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::wire::Ref;
+
 impl Interface {
     /// Process fragments that still need to be sent for IPv4 packets.
     ///
@@ -101,7 +103,11 @@ impl InterfaceInner {
         ipv4_packet: &Ipv4Packet<&'a [u8]>,
         frag: &'a mut FragmentsBuffer,
     ) -> Option<Packet<'a>> {
-        let mut ipv4_repr = check!(Ipv4Repr::parse(ipv4_packet, &self.caps.checksum));
+        // Re-check over a `Ref`, where the buffer's length is in the refinement: the caller's
+        // `Packet<&[u8]>` ran the same test and threw the answer away, and the `payload()`
+        // below needs it. The test is the one that already ran; nothing is removed.
+        let ipv4_packet = &check!(Ipv4Packet::new_checked_ref(ipv4_packet.as_window()));
+        let mut ipv4_repr = check!(Ipv4Repr::parse_ref(ipv4_packet, &self.caps.checksum));
         if !self.is_unicast_v4(ipv4_repr.src_addr) && !ipv4_repr.src_addr.is_unspecified() {
             // Discard packets with non-unicast source addresses but allow unspecified
             net_debug!("non-unicast or unspecified source address");
@@ -158,7 +164,7 @@ impl InterfaceInner {
             use crate::socket::dhcpv4::Socket as Dhcpv4Socket;
 
             if ipv4_repr.next_header == IpProtocol::Udp && matches!(self.medium, Medium::Ethernet) {
-                let udp_packet = check!(UdpPacket::new_checked(ip_payload));
+                let udp_packet = check!(UdpPacket::new_checked_ref(Ref::new(ip_payload)));
                 if let Some(dhcp_socket) = sockets
                     .items_mut()
                     .find_map(|i| Dhcpv4Socket::downcast_mut(&mut i.socket))

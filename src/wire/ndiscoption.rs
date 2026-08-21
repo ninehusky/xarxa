@@ -6,6 +6,8 @@ use crate::time::Duration;
 use crate::wire::{Ipv6Address, Ipv6AddressExt, Ipv6Packet, Ipv6Repr, MAX_HARDWARE_ADDRESS_LEN};
 
 use crate::wire::RawHardwareAddress;
+use crate::wire::Ref;
+use crate::wire::mld::read_ipv6_addr_at;
 
 enum_with_unknown! {
     /// NDISC Option Type
@@ -223,7 +225,7 @@ impl<T: AsRef<[u8]>> NdiscOption<T> {
     /// [check_len]: #method.check_len
     pub fn new_checked(buffer: T) -> Result<NdiscOption<T>> {
         let opt = Self::new_unchecked(buffer);
-        opt.check_len()?;
+        opt.checked_len()?;
 
         // A data length field of 0 is invalid.
         if opt.data_len() == 0 {
@@ -239,22 +241,52 @@ impl<T: AsRef<[u8]>> NdiscOption<T> {
     /// The result of this check is invalidated by calling [set_data_len].
     ///
     /// [set_data_len]: #method.set_data_len
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(fn(self: &NdiscOption<T>[@p]) -> Result<()>)]
     pub fn check_len(&self) -> Result<()> {
-        let data = self.buffer.as_ref();
-        let len = data.len();
+        match self.checked_len() {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
 
-        if len < field::MIN_OPT_LEN {
+    /// [`check_len`](Self::check_len), returning the buffer length it validated.
+    ///
+    /// The whole of `check_len`; the public method just discards the length. `Result<()>`'s `Ok`
+    /// payload carries no refinement, so a successful check leaves a caller with nothing to show
+    /// for it -- and every option accessor below wants something from it. Returning the length
+    /// lets the `Ok` arm say both facts: the buffer holds an option header, and the option's own
+    /// declared extent `8 * len` fits inside it. The per-type arms need no bound of their own;
+    /// `Repr::parse` tests `data_len` again for each type, and `8 * len <= v` turns that test
+    /// into the octet count that type's fields need.
+    ///
+    /// The reads are spelled out: `field::DATA` returns a `Range` and `field::MIN_OPT_LEN`,
+    /// `field::PREFIX.end` and `field::REDIR_MIN_SZ` are `usize` consts, all of which flux
+    /// treats as opaque. The literals are the values those consts have.
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(
+        fn(self: &NdiscOption<T>[@p])
+            -> Result<usize{v: v == <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+                             && 8 <= v && 8 * p.len <= v}>
+    )]
+    pub(super) fn checked_len(&self) -> Result<usize> {
+        let len = self.buffer.as_ref().len();
+
+        if len < 8 {
+            // field::MIN_OPT_LEN
             Err(Error)
         } else {
-            let data_range = field::DATA(data[field::LENGTH]);
-            if len < data_range.end {
+            // `field::DATA(data_len).end`. Read through `data_len` rather than the octet, so
+            // the ghost is what the bound below is stated over.
+            let data_end = self.data_len() as usize * 8;
+            if len < data_end {
                 Err(Error)
             } else {
                 match self.option_type() {
-                    Type::SourceLinkLayerAddr | Type::TargetLinkLayerAddr | Type::Mtu => Ok(()),
-                    Type::PrefixInformation if data_range.end >= field::PREFIX.end => Ok(()),
-                    Type::RedirectedHeader if data_range.end >= field::REDIR_MIN_SZ => Ok(()),
-                    Type::Unknown(_) => Ok(()),
+                    Type::SourceLinkLayerAddr | Type::TargetLinkLayerAddr | Type::Mtu => Ok(len),
+                    Type::PrefixInformation if data_end >= 32 => Ok(len), // field::PREFIX.end
+                    Type::RedirectedHeader if data_end >= 48 => Ok(len), // field::REDIR_MIN_SZ
+                    Type::Unknown(_) => Ok(len),
                     _ => Err(Error),
                 }
             }
@@ -316,6 +348,15 @@ impl<T: AsRef<[u8]>> NdiscOption<T> {
 /// Getter methods only relevant for Source/Target Link-layer Address options.
 impl<T: AsRef<[u8]>> NdiscOption<T> {
     /// Return the Source/Target Link-layer Address.
+    ///
+    /// Both halves of the `requires` come from `checked_len` and the `data_len >= 1` its callers
+    /// test: `1 <= len` is what keeps `8 * len - 2` from running backwards, and `8 * len` is
+    /// the far end of the window the address is read from.
+    #[flux_rs::trusted(no, reason = "panic site: opens the link-layer address window")]
+    #[flux_rs::sig(
+        fn(&NdiscOption<T>[@p]) -> RawHardwareAddress
+        requires 1 <= p.len && 8 * p.len <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
     #[inline]
     pub fn link_layer_addr(&self) -> RawHardwareAddress {
         // `core::cmp::min` rather than `usize::min`: the free function is the one xarxa
@@ -404,20 +445,58 @@ impl<T: AsRef<[u8]>> NdiscOption<T> {
     }
 
     /// Return the prefix.
+    #[flux_rs::trusted(no, reason = "panic site: reads the option at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&NdiscOption<T>[@p]) -> Ipv6Address
+        requires 32 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn prefix(&self) -> Ipv6Address {
         let data = self.buffer.as_ref();
-        Ipv6Address::from_octets(data[field::PREFIX].try_into().unwrap())
+        read_ipv6_addr_at(data, 16) // field::PREFIX
     }
 }
 
-impl<'a, T: AsRef<[u8]> + ?Sized> NdiscOption<&'a T> {
+impl<'a> NdiscOption<Ref<'a>> {
+    /// [`new_checked`](Self::new_checked) over a [`Ref`], carrying its proof out.
+    ///
+    /// The generic `new_checked` cannot say this: at a reference or `dyn` self type the
+    /// `as_ref_reft` in the postcondition is unstatable. `1 <= p.len` is the zero-length test
+    /// below, which is this constructor's and not `checked_len`'s.
+    #[flux_rs::trusted(no, reason = "carries `checked_len`'s proof out through the `Ok` arm")]
+    #[flux_rs::sig(
+        fn(Ref[@b]) -> Result<NdiscOption<Ref>{p: p.buffer == b && 8 <= b.len
+                                                  && 8 * p.len <= b.len && 1 <= p.len}>
+    )]
+    pub fn new_checked_ref(buffer: Ref<'a>) -> Result<NdiscOption<Ref<'a>>> {
+        let opt = NdiscOption::new_unchecked(buffer);
+        opt.checked_len()?;
+
+        // A data length field of 0 is invalid.
+        if opt.data_len() == 0 {
+            return Err(Error);
+        }
+
+        Ok(opt)
+    }
+
     /// Return the option data.
+    ///
+    /// The `NdiscOption<&'a T>` twin of this cannot be proved: a reference in type-parameter
+    /// position has the unit sort, so the far end of the window -- which is the ghost scaled by
+    /// eight -- has no buffer length to be compared against. Over `Ref<'a>` it does, and the
+    /// data's length survives into the caller's index.
+    #[flux_rs::trusted(no, reason = "panic site: opens the option data window")]
+    #[flux_rs::sig(
+        fn(&NdiscOption<Ref>[@p]) -> &[u8][8 * p.len - 2]
+        requires 1 <= p.len && 8 * p.len <= p.buffer.len
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn data(&self) -> &'a [u8] {
-        let len = self.data_len();
-        let data = self.buffer.as_ref();
-        &data[field::DATA(len)]
+        // `field::DATA(len)` is `2..len * 8`.
+        self.buffer.window(2, self.data_len() as usize * 8)
     }
 }
 
@@ -627,7 +706,15 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
     }
 }
 
+// The buffer arrives with no length index, and `Ref` is where it acquires one; the body is on
+// the `NdiscOption<Ref>` impl below.
 impl<T: AsRef<[u8]> + ?Sized> fmt::Display for NdiscOption<&T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Display::fmt(&NdiscOption::new_unchecked(Ref::new(self.buffer.as_ref())), f)
+    }
+}
+
+impl fmt::Display for NdiscOption<Ref<'_>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match Repr::parse(self) {
             Ok(repr) => write!(f, "{repr}"),
@@ -684,11 +771,13 @@ pub enum Repr<'a> {
 
 impl<'a> Repr<'a> {
     /// Parse an NDISC Option and return a high-level representation.
-    pub fn parse<T>(opt: &NdiscOption<&'a T>) -> Result<Repr<'a>>
-    where
-        T: AsRef<[u8]> + ?Sized,
-    {
-        opt.check_len()?;
+    ///
+    /// `checked_len` rather than `check_len`: the same test, but its `Ok` arm names the buffer's
+    /// length and the option's declared extent, and over [`Ref`] both are statable. Each arm
+    /// below already tests `data_len` for its own type; against `8 * len <= buffer.len` those
+    /// tests become the octet counts the fields need.
+    pub fn parse(opt: &NdiscOption<Ref<'a>>) -> Result<Repr<'a>> {
+        opt.checked_len()?;
 
         match opt.option_type() {
             Type::SourceLinkLayerAddr => {
@@ -725,14 +814,33 @@ impl<'a> Repr<'a> {
                 if opt.data_len() < 6 {
                     Err(Error)
                 } else {
-                    let redirected_packet = &opt.data()[field::REDIRECTED_RESERVED.len()..];
+                    // 6 is `field::REDIRECTED_RESERVED.len()`; flux cannot see through a
+                    // `Range` const, and `data` already starts at offset 2.
+                    let redirected_packet = &opt.data()[6..];
 
                     let ip_packet = Ipv6Packet::new_checked(redirected_packet)?;
                     let ip_repr = Ipv6Repr::parse(&ip_packet)?;
 
+                    // 40 is `ip_repr.buffer_len()`, which is `IPV6_HEADER_LEN` for every IPv6
+                    // packet -- that header is fixed width -- spelled as the literal because
+                    // `Ipv6Repr::buffer_len` is a `const fn` with no signature.
+                    let payload = &redirected_packet[40..];
+                    // `Ipv6Packet::check_len` tested this and returns `Result<()>`, so what it
+                    // established did not survive the call; by the time this `Err` is reachable
+                    // `new_checked` above has already returned the same one. Rung 2 on
+                    // `wire/ipv6.rs` retires it. Stated as a comparison rather than
+                    // `40 + payload_len <= len`, whose sum flux models as wrapping.
+                    // Bound once, not read twice: `Ipv6Repr` carries no refinement, so each
+                    // read of the field is a fresh unconstrained `usize` and the test would
+                    // not be about the same value as the window.
+                    let payload_len = ip_repr.payload_len;
+                    if payload_len > payload.len() {
+                        return Err(Error);
+                    }
+
                     Ok(Repr::RedirectedHeader(RedirectedHeader {
                         header: ip_repr,
-                        data: &redirected_packet[ip_repr.buffer_len()..][..ip_repr.payload_len],
+                        data: &payload[..payload_len],
                     }))
                 }
             }
@@ -975,7 +1083,9 @@ impl<T: AsRef<[u8]>> PrettyPrint for NdiscOption<T> {
         f: &mut fmt::Formatter,
         indent: &mut PrettyIndent,
     ) -> fmt::Result {
-        match NdiscOption::new_checked(buffer) {
+        // `Ref::new` off the `dyn`'s own `as_ref`: the trait signature is fixed, so the buffer
+        // arrives with no length index, and `Ref` is where it acquires one.
+        match NdiscOption::new_checked_ref(Ref::new(buffer.as_ref())) {
             Err(err) => write!(f, "{indent}({err})"),
             Ok(ndisc) => match Repr::parse(&ndisc) {
                 Err(_) => Ok(()),
@@ -994,6 +1104,7 @@ mod test {
     use super::{NdiscOption, PrefixInfoFlags, PrefixInformation, Repr, Type};
     use crate::time::Duration;
     use crate::wire::Ipv6Address;
+    use crate::wire::Ref;
 
     #[cfg(feature = "medium-ethernet")]
     use crate::wire::EthernetAddress;
@@ -1058,14 +1169,14 @@ mod test {
         let addr = EthernetAddress::from_octets([0x54, 0x52, 0x00, 0x12, 0x23, 0x34]);
         {
             assert_eq!(
-                Repr::parse(&NdiscOption::new_unchecked(&bytes)),
+                Repr::parse(&NdiscOption::new_unchecked(Ref::new(&bytes))),
                 Ok(Repr::SourceLinkLayerAddr(addr.into()))
             );
         }
         bytes[0] = 0x02;
         {
             assert_eq!(
-                Repr::parse(&NdiscOption::new_unchecked(&bytes)),
+                Repr::parse(&NdiscOption::new_unchecked(Ref::new(&bytes))),
                 Ok(Repr::TargetLinkLayerAddr(addr.into()))
             );
         }
@@ -1081,14 +1192,14 @@ mod test {
         let addr = Ieee802154Address::Extended([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
         {
             assert_eq!(
-                Repr::parse(&NdiscOption::new_unchecked(&bytes)),
+                Repr::parse(&NdiscOption::new_unchecked(Ref::new(&bytes))),
                 Ok(Repr::SourceLinkLayerAddr(addr.into()))
             );
         }
         bytes[0] = 0x02;
         {
             assert_eq!(
-                Repr::parse(&NdiscOption::new_unchecked(&bytes)),
+                Repr::parse(&NdiscOption::new_unchecked(Ref::new(&bytes))),
                 Ok(Repr::TargetLinkLayerAddr(addr.into()))
             );
         }
@@ -1104,7 +1215,7 @@ mod test {
             prefix: Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1),
         });
         assert_eq!(
-            Repr::parse(&NdiscOption::new_unchecked(&PREFIX_OPT_BYTES)),
+            Repr::parse(&NdiscOption::new_unchecked(Ref::new(&PREFIX_OPT_BYTES))),
             Ok(repr)
         );
     }
@@ -1128,7 +1239,7 @@ mod test {
     fn test_repr_parse_mtu() {
         let bytes = [0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0x05, 0xdc];
         assert_eq!(
-            Repr::parse(&NdiscOption::new_unchecked(&bytes)),
+            Repr::parse(&NdiscOption::new_unchecked(Ref::new(&bytes))),
             Ok(Repr::Mtu(1500))
         );
     }

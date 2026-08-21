@@ -5,6 +5,7 @@ use core::fmt;
 use managed::{ManagedMap, ManagedSlice};
 
 use crate::config::{FRAGMENTATION_BUFFER_SIZE, REASSEMBLY_BUFFER_COUNT, REASSEMBLY_BUFFER_SIZE};
+use crate::wire::Buf;
 use crate::storage::Assembler;
 use crate::time::{Duration, Instant};
 use crate::wire::*;
@@ -137,18 +138,33 @@ impl<K> PacketAssembler<K> {
     /// - Returns [`Error::PacketAssemblerBufferTooSmall`] when trying to add data into the buffer at a non-existing
     ///   place.
     pub(crate) fn add(&mut self, data: &[u8], offset: usize) -> Result<(), AssemblerError> {
-        #[cfg(not(feature = "alloc"))]
-        if self.buffer.len() < offset + data.len() {
-            return Err(AssemblerError);
-        }
+        let len = data.len();
 
         #[cfg(feature = "alloc")]
-        if self.buffer.len() < offset + data.len() {
-            self.buffer.resize(offset + data.len(), 0);
+        if self.buffer.len() < offset + len {
+            self.buffer.resize(offset + len, 0);
         }
 
-        let len = data.len();
-        self.buffer[offset..][..len].copy_from_slice(data);
+        // Two things here are load-bearing.
+        //
+        // The test is `offset > cap || len > cap - offset` rather than `cap < offset + len`.
+        // Under `check_overflow = "lazy"` a sum in a branch condition may wrap, so flux learns
+        // nothing from the branch being false; written without the sum, the same test discharges
+        // the write below. It is also the stronger test: the sum form lets a wrapping
+        // `offset + len` slip past and panic at the write, and `offset` comes off the wire.
+        //
+        // The write goes through `Buf` because the intermediate `&mut` of
+        // `self.buffer[offset..][..len]` loses its length (flux-rs/flux#1714). `copy_at` is the
+        // same bounds-checked write, with the window stated instead of re-derived.
+        //
+        // The test is no longer `cfg`'d: under `alloc` the resize above has already made it
+        // pass, and under both it is the condition the write needs.
+        let buffer: &mut [u8] = &mut self.buffer;
+        let cap = buffer.len();
+        if offset > cap || len > cap - offset {
+            return Err(AssemblerError);
+        }
+        Buf::new(buffer).copy_at(offset, data);
 
         net_debug!(
             "frag assembler: receiving {} octets at offset {}",
