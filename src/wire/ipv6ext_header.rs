@@ -4,6 +4,7 @@ use core::fmt;
 
 use super::IpProtocol;
 use super::{Error, Result};
+use crate::wire::Ref;
 
 mod field {
     #![allow(non_snake_case)]
@@ -155,10 +156,9 @@ impl<T: AsRef<[u8]>> Header<T> {
     /// whose extent comes from the buffer's *contents*; it is nameable only because the ghost
     /// carries the length octet, and it is exactly `payload_mut`'s second precondition.
     ///
-    /// Nothing consumes the returned length yet: `new_checked`'s caller
-    /// (`iface/interface/ipv6.rs`) instantiates `T` at a reference type, which flux gives the
-    /// unit sort. Worth wiring through the moment a reference self type can be refined; see
-    /// `wire::Buf`.
+    /// The length is nameable only where `T` is not a reference -- a reference in
+    /// type-parameter position has the unit sort. [`Ref`] is that `T`, and the two consumers are
+    /// [`new_checked_ref`](Header::new_checked_ref) and [`Repr::parse_ref`].
     #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
     #[flux_rs::sig(
         fn(self: &Header<T>[@h])
@@ -237,19 +237,40 @@ impl<T: AsRef<[u8]>> Header<T> {
     }
 }
 
-impl<'h, T: AsRef<[u8]> + ?Sized> Header<&'h T> {
+impl<'h> Header<Ref<'h>> {
+    /// [`new_checked`](Self::new_checked) over a [`Ref`], carrying its proof out.
+    ///
+    /// The generic `new_checked` cannot say this: at a reference or `dyn` self type the
+    /// `as_ref_reft` in the postcondition is unstatable. Over `Ref` the buffer's length is
+    /// `b.len`, and the two facts `checked_len` already proves are what
+    /// [`payload`](Self::payload) requires.
+    #[flux_rs::trusted(no, reason = "carries `checked_len`'s proof out through the `Ok` arm")]
+    #[flux_rs::sig(
+        fn(Ref[@b]) -> Result<Header<Ref>{h: h.buffer == b && 8 <= b.len
+                                             && 8 * h.hlen + 8 <= b.len}>
+    )]
+    pub fn new_checked_ref(buffer: Ref<'h>) -> Result<Header<Ref<'h>>> {
+        let header = Header::new_unchecked(buffer);
+        header.checked_len()?;
+        Ok(header)
+    }
+
     /// Return the payload of the IPv6 extension header.
-    //
-    // Left bounds-checked, and doubly blocked. The buffer here is `&'h T`, so the length index
-    // would have to come from core's blanket `impl<T, U> AsRef<U> for &T`, which carries no
-    // associated refinement (`as_ref_reft` is missing) -- the bound is unstatable at this self
-    // type -- and the ghost cannot stand in for it, because the ghost bounds the window's
-    // extent while it is `as_ref_reft` that bounds the buffer. `payload_mut` below is the same
-    // window at a refinable self type. Convertible once a reference self type can be refined;
-    // see `wire::Buf`.
+    ///
+    /// The `Header<&'h T>` twin of this was doubly blocked: the ghost bounds the window's
+    /// extent, but it is `as_ref_reft` that bounds the buffer, and at a reference self type
+    /// there is none to name. Over `Ref<'h>` the buffer's length is `h.buffer.len`, the far end
+    /// is the ghost scaled, and the payload's length survives into the caller's index.
+    /// `payload_mut` below is the same window on the write side.
+    #[flux_rs::trusted(no, reason = "panic site: opens the payload window")]
+    #[flux_rs::sig(
+        fn(&Header<Ref>[@h]) -> &[u8][8 * h.hlen + 6]
+        requires 8 * h.hlen + 8 <= h.buffer.len
+    )]
+    #[flux_rs::no_panic]
     pub fn payload(&self) -> &'h [u8] {
-        let data = self.buffer.as_ref();
-        &data[field::PAYLOAD(data[field::LENGTH])]
+        // `field::PAYLOAD(len)` is `2..len * 8 + 8`.
+        self.buffer.window(2, self.header_len() as usize * 8 + 8)
     }
 }
 
@@ -333,11 +354,25 @@ pub struct Repr<'a> {
 
 impl<'a> Repr<'a> {
     /// Parse an IPv6 Extension Header Header and return a high-level representation.
+    ///
+    /// A reference in type-parameter position has the unit sort, so no bound on `T`'s buffer is
+    /// statable here and neither the header reads nor the payload window would be provable. The
+    /// body lives on [`parse_ref`](Self::parse_ref), over a buffer whose length is nameable;
+    /// this re-wraps the same bytes and forwards, which repeats no work the old body did not do.
     pub fn parse<T>(header: &Header<&'a T>) -> Result<Self>
     where
         T: AsRef<[u8]> + ?Sized,
     {
-        header.check_len()?;
+        Repr::parse_ref(&Header::new_unchecked(Ref::new(header.buffer.as_ref())))
+    }
+
+    /// [`parse`](Self::parse) over a [`Ref`], where the buffer's length is in the refinement.
+    ///
+    /// `checked_len` rather than `check_len`: the same test, but its `Ok` arm names both facts
+    /// the three reads below need -- that the buffer holds the fixed header, and that the
+    /// payload window the length octet declares fits inside it.
+    pub fn parse_ref(header: &Header<Ref<'a>>) -> Result<Self> {
+        header.checked_len()?;
         Ok(Self {
             next_header: header.next_header(),
             length: header.header_len(),
@@ -420,12 +455,12 @@ mod test {
 
     #[test]
     fn test_header_deconstruct() {
-        let header = Header::new_unchecked(&REPR_PACKET_PAD4);
+        let header = Header::new_unchecked(Ref::new(&REPR_PACKET_PAD4[..]));
         assert_eq!(header.next_header(), IpProtocol::Tcp);
         assert_eq!(header.header_len(), 0);
         assert_eq!(header.payload(), &REPR_PACKET_PAD4[2..]);
 
-        let header = Header::new_unchecked(&REPR_PACKET_PAD12);
+        let header = Header::new_unchecked(Ref::new(&REPR_PACKET_PAD12[..]));
         assert_eq!(header.next_header(), IpProtocol::Tcp);
         assert_eq!(header.header_len(), 1);
         assert_eq!(header.payload(), &REPR_PACKET_PAD12[2..]);
@@ -438,7 +473,7 @@ mod test {
         bytes.push(0);
 
         assert_eq!(
-            Header::new_unchecked(&bytes).payload().len(),
+            Header::new_unchecked(Ref::new(&bytes[..])).payload().len(),
             REPR_PACKET_PAD4[2..].len()
         );
         assert_eq!(
@@ -451,7 +486,7 @@ mod test {
         bytes.push(0);
 
         assert_eq!(
-            Header::new_unchecked(&bytes).payload().len(),
+            Header::new_unchecked(Ref::new(&bytes[..])).payload().len(),
             REPR_PACKET_PAD12[2..].len()
         );
         assert_eq!(
