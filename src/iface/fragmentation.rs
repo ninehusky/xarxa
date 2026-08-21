@@ -148,7 +148,12 @@ impl<K> PacketAssembler<K> {
         }
 
         let len = data.len();
-        self.buffer[offset..][..len].copy_from_slice(data);
+        // Through `copy_window_at` rather than `self.buffer[offset..][..len]`: the intermediate
+        // `&mut` of a chained index loses its length (flux-rs/flux#1714), so the two-step window
+        // cannot be bounded at all. What is left is `copy_window_at`'s own `at + len <= n`,
+        // which the guard above establishes over `self.buffer.len()` -- a different slice
+        // coercion of the same array, and so a different length as far as flux is concerned.
+        crate::wire::copy_window_at(&mut self.buffer, offset, len, data);
 
         net_debug!(
             "frag assembler: receiving {} octets at offset {}",

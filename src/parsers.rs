@@ -195,7 +195,8 @@ impl<'a> Parser<'a> {
                 head[*head_idx] = part as u16;
                 *head_idx += 1;
 
-                if *head_idx == 6 && head[0..*head_idx] == [0, 0, 0, 0, 0, 0xffff] {
+                let filled = *head_idx;
+                if filled == 6 && head[0..filled] == [0, 0, 0, 0, 0, 0xffff] {
                     self.try_do(|p| {
                         p.accept_char(b':')?;
                         p.accept_ipv4_mapped_ipv6_part(head, head_idx)
