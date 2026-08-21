@@ -1,4 +1,3 @@
-use byteorder::{ByteOrder, NetworkEndian};
 use core::fmt;
 
 use super::{Error, Result};
