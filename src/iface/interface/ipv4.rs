@@ -158,7 +158,7 @@ impl InterfaceInner {
             use crate::socket::dhcpv4::Socket as Dhcpv4Socket;
 
             if ipv4_repr.next_header == IpProtocol::Udp && matches!(self.medium, Medium::Ethernet) {
-                let udp_packet = check!(UdpPacket::new_checked(ip_payload));
+                let udp_packet = check!(UdpPacket::new_checked_ref(Ref::new(ip_payload)));
                 if let Some(dhcp_socket) = sockets
                     .items_mut()
                     .find_map(|i| Dhcpv4Socket::downcast_mut(&mut i.socket))

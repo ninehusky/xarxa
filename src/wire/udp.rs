@@ -309,22 +309,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 }
 
-impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
-    /// Return a pointer to the payload.
-    //
-    // Left bounds-checked. The buffer here is `&'a T`, so the length index would have to come
-    // from core's blanket `impl<T, U> AsRef<U> for &T`, which carries no associated refinement
-    // (`as_ref_reft` is missing). Both halves of the bound -- `8 <= len` and
-    // `len <= as_ref_reft(buffer)` -- are therefore unstatable at this self type, not merely
-    // unproven, so the ghost does not help here and neither would routing through a helper.
-    // Convertible once a reference self type can be refined; see `wire::Buf`.
-    #[inline]
-    pub fn payload(&self) -> &'a [u8] {
-        let length = self.len();
-        let data = self.buffer.as_ref();
-        &data[field::PAYLOAD(length)]
-    }
-}
+
 
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the source port field.
@@ -488,16 +473,15 @@ pub struct Repr {
 
 impl Repr {
     /// Parse an User Datagram Protocol packet and return a high-level representation.
-    pub fn parse<T>(
-        packet: &Packet<&T>,
+    pub fn parse(
+        packet: &Packet<Ref<'_>>,
         src_addr: &IpAddress,
         dst_addr: &IpAddress,
         checksum_caps: &ChecksumCapabilities,
-    ) -> Result<Repr>
-    where
-        T: AsRef<[u8]> + ?Sized,
-    {
-        packet.check_len()?;
+    ) -> Result<Repr> {
+        // `checked_len` rather than `check_len`: same test, but its `Ok` arm names the three
+        // facts the accessors below need, and over `Ref` they are statable.
+        packet.checked_len()?;
 
         // Destination port cannot be omitted (but source port can be).
         if packet.dst_port() == 0 {
@@ -678,16 +662,25 @@ impl Repr {
     }
 }
 
-impl<T: AsRef<[u8]> + ?Sized> fmt::Display for Packet<&T> {
+
+
+// A trait impl's signature is fixed, so this cannot carry the accessors' `requires` -- which is
+// why the `Packet<&T>` twin above is unprovable. Here the check is taken inside the body instead:
+// `checked_len`'s `Ok` arm proves every bound the three accessors want, and the `Err` arm no
+// longer indexes a buffer it never validated. The twin panics on a truncated datagram.
+impl fmt::Display for Packet<Ref<'_>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // Cannot use Repr::parse because we don't have the IP addresses.
-        write!(
-            f,
-            "UDP src={} dst={} len={}",
-            self.src_port(),
-            self.dst_port(),
-            self.payload().len()
-        )
+        match self.checked_len() {
+            Err(err) => write!(f, "UDP ({err})"),
+            Ok(_) => write!(
+                f,
+                "UDP src={} dst={} len={}",
+                self.src_port(),
+                self.dst_port(),
+                self.payload().len()
+            ),
+        }
     }
 }
 
@@ -726,7 +719,9 @@ impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
         f: &mut fmt::Formatter,
         indent: &mut PrettyIndent,
     ) -> fmt::Result {
-        match Packet::new_checked(buffer) {
+        // `Ref::new` off the `dyn`'s own `as_ref`: the trait signature is fixed, so the buffer
+        // arrives with no length index, and `Ref` is where it acquires one.
+        match Packet::new_checked_ref(Ref::new(buffer.as_ref())) {
             Err(err) => write!(f, "{indent}({err})"),
             Ok(packet) => write!(f, "{indent}{packet}"),
         }
@@ -769,7 +764,7 @@ mod test {
     #[test]
     #[cfg(feature = "proto-ipv4")]
     fn test_deconstruct() {
-        let packet = Packet::new_unchecked(&PACKET_BYTES[..]);
+        let packet = Packet::new_unchecked(Ref::new(&PACKET_BYTES[..]));
         assert_eq!(packet.src_port(), 48896);
         assert_eq!(packet.dst_port(), 53);
         assert_eq!(packet.len(), 12);
@@ -835,7 +830,7 @@ mod test {
     #[test]
     #[cfg(feature = "proto-ipv4")]
     fn test_parse() {
-        let packet = Packet::new_unchecked(&PACKET_BYTES[..]);
+        let packet = Packet::new_unchecked(Ref::new(&PACKET_BYTES[..]));
         let repr = Repr::parse(
             &packet,
             &SRC_ADDR.into(),
@@ -866,7 +861,7 @@ mod test {
     #[test]
     #[cfg(feature = "proto-ipv4")]
     fn test_checksum_omitted() {
-        let packet = Packet::new_unchecked(&NO_CHECKSUM_PACKET[..]);
+        let packet = Packet::new_unchecked(Ref::new(&NO_CHECKSUM_PACKET[..]));
         let repr = Repr::parse(
             &packet,
             &SRC_ADDR.into(),
@@ -879,6 +874,22 @@ mod test {
 }
 
 impl<'a> Packet<Ref<'a>> {
+    /// [`new_checked`](Self::new_checked) over a [`Ref`], carrying its proof out.
+    ///
+    /// The generic `new_checked` cannot say this: at a reference or `dyn` self type the
+    /// `as_ref_reft` in the postcondition is unstatable, so stating it there costs an error at
+    /// `pretty_print` and buys nothing. Over `Ref` the buffer's length is `b.len`, and the three
+    /// facts `checked_len` already proves are exactly what [`payload`](Self::payload) requires.
+    #[flux_rs::trusted(no, reason = "carries `checked_len`'s proof out through the `Ok` arm")]
+    #[flux_rs::sig(
+        fn(Ref[@b]) -> Result<Packet<Ref>{p: p.buffer == b && 8 <= p.len && p.len <= b.len}>
+    )]
+    pub fn new_checked_ref(buffer: Ref<'a>) -> Result<Packet<Ref<'a>>> {
+        let packet = Packet::new_unchecked(buffer);
+        packet.checked_len()?;
+        Ok(packet)
+    }
+
     /// Return a pointer to the payload.
     ///
     /// The `Packet<&'a T>` twin of this cannot be proved: a reference in type-parameter position

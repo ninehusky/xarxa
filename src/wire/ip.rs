@@ -1,4 +1,5 @@
 use core::convert::From;
+use crate::wire::Ref;
 use core::fmt;
 
 use super::{Error, Result};
@@ -1085,7 +1086,7 @@ pub fn pretty_print_ip_payload<T: Into<Repr>>(
         }
         Protocol::Udp => {
             indent.increase(f)?;
-            match UdpPacket::<&[u8]>::new_checked(payload) {
+            match UdpPacket::new_checked_ref(Ref::new(payload)) {
                 Err(err) => write!(f, "{indent}({err})"),
                 Ok(udp_packet) => {
                     match UdpRepr::parse(
