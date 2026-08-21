@@ -150,20 +150,14 @@ impl Address {
 
     /// Convert the address to an Extended Unique Identifier (EUI-64)
     //
-    // Left indexing directly. Flux cannot see an array's length through the slice coercion, so
-    // it reports these two as unproven, but the indices are constant ranges into fixed-size
-    // arrays and rustc elides the checks. Routing them through `flux_util` would silence flux
-    // by swapping a check rustc already removed for `get_unchecked`, which is the trade those
-    // helpers exist to make and is not earned until every path here is verified.
+    // Built by destructuring rather than by two `copy_from_slice`s into slices of a `[u8; 8]`.
+    // `[T; N]` has the unit sort, so an indexed range of an array comes back with no length and
+    // `copy_from_slice`'s `src.len() == self.len()` was not provable; an irrefutable array
+    // pattern has no index to bound at all. `0x02` is the EUI-64 U/L bit, complemented.
+    #[flux_rs::no_panic]
     pub fn as_eui_64(&self) -> Option<[u8; 8]> {
-        let octets = self.octets();
-        let mut bytes = [0; 8];
-        bytes[0..3].copy_from_slice(&octets[0..3]);
-        bytes[3] = 0xFF;
-        bytes[4] = 0xFE;
-        bytes[5..8].copy_from_slice(&octets[3..6]);
-        bytes[0] ^= 1 << 1;
-        Some(bytes)
+        let [o0, o1, o2, o3, o4, o5] = self.octets();
+        Some([o0 ^ 0x02, o1, o2, 0xFF, 0xFE, o3, o4, o5])
     }
 }
 
@@ -724,5 +718,14 @@ mod layout_test {
         assert!(a.is_unicast() && !a.is_multicast());
         let m = Address::new(0x13, 0x22, 0x33, 0x44, 0x55, 0x66);
         assert!(m.is_multicast() && !m.is_unicast());
+    }
+
+    #[test]
+    fn eui_64_splits_at_the_oui_and_flips_the_ul_bit() {
+        let a = Address::new(0x11, 0x12, 0x13, 0x14, 0x15, 0x16);
+        assert_eq!(
+            a.as_eui_64(),
+            Some([0x13, 0x12, 0x13, 0xff, 0xfe, 0x14, 0x15, 0x16])
+        );
     }
 }
