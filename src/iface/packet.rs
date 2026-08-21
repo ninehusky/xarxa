@@ -112,6 +112,9 @@ impl<'p> Packet<'p> {
     /// before this signature existed.
     ///
     /// `m <= 65535` is `ip::checksum::data`'s accumulator bound, surfaced rather than assumed.
+    /// It is unconditional, not guarded by `blen != -1`: `m` is the IP payload window, so it is
+    /// the header's `payload_len`, and `plen <= 65535` is an invariant of `Ipv4Repr` and
+    /// `Ipv6Repr` alike. The ICMPv6 arms need it, and they carry no `blen`.
     #[flux_rs::trusted(no, reason = "carries the payload buffer length into each repr's emit")]
     #[flux_rs::sig(
         fn(
@@ -120,7 +123,7 @@ impl<'p> Packet<'p> {
             payload: &mut [u8][@m],
             caps: &DeviceCapabilities,
         )
-        requires (p.blen != -1 => (p.blen == m && m <= 65535)) && p.minlen <= m
+        requires (p.blen != -1 => p.blen == m) && m <= 65535 && p.minlen <= m
     )]
     pub(crate) fn emit_payload(
         &self,
@@ -333,12 +336,16 @@ pub(crate) enum IpPayload<'p> {
     #[flux_rs::variant((IgmpRepr) -> IpPayload[-1, 0])]
     Igmp(IgmpRepr),
     #[cfg(feature = "proto-ipv6")]
-    #[flux_rs::variant((Icmpv6Repr) -> IpPayload[-1, 0])]
+    // `Icmpv6Repr`'s `blen` is a floor on its `buffer_len()`, not an equality -- the `Ndisc`
+    // arm's trailing options contribute a length `NdiscOptionRepr` cannot state -- so it goes
+    // in `minlen`, not `blen`. It is what `Repr::emit`'s `r.blen <= buffer` conjunct needs.
+    #[flux_rs::variant((Icmpv6Repr[@c]) -> IpPayload[-1, c.blen])]
     Icmpv6(Icmpv6Repr<'p>),
     #[cfg(feature = "proto-ipv6")]
     // 2 is `Ipv6ExtHeaderRepr::header_len()`, which `emit_payload` writes before the
-    // hop-by-hop options. The ICMPv6 body contributes more, but not a statable amount.
-    #[flux_rs::variant((Ipv6HopByHopRepr[@h], Icmpv6Repr) -> IpPayload[-1, 2 + h.blen])]
+    // hop-by-hop options; the ICMPv6 packet then starts at `2 + h.blen`, so its own floor
+    // adds on top.
+    #[flux_rs::variant((Ipv6HopByHopRepr[@h], Icmpv6Repr[@c]) -> IpPayload[-1, 2 + h.blen + c.blen])]
     HopByHopIcmpv6(Ipv6HopByHopRepr<'p>, Icmpv6Repr<'p>),
     #[cfg(feature = "socket-raw")]
     #[flux_rs::variant((&[u8]) -> IpPayload[-1, 0])]
