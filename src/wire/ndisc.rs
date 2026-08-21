@@ -605,9 +605,14 @@ fn emit_option_at<T>(packet: &mut Packet<T>, offset: usize, opt: &NdiscOptionRep
 where
     T: AsRef<[u8]> + AsMut<[u8]>,
 {
-    let mut buf = packet.payload_buf();
-    buf.advance(offset);
-    let mut opt_pkt = NdiscOption::new_unchecked(buf);
+    // `advance` would reach `Buf::as_mut`'s `get_unchecked_mut(offset..)` without a runtime
+    // bound -- its `n <= len` is a flux `requires` with no executable counterpart, and it is
+    // not discharged at any call site here. A short buffer would become an out-of-bounds
+    // write where it used to panic. The checked reslice keeps the panic and still carries the
+    // length, since `Buf::new` has offset 0.
+    let mut window = packet.payload_buf();
+    let data = window.as_mut();
+    let mut opt_pkt = NdiscOption::new_unchecked(crate::wire::Buf::new(&mut data[offset..]));
     opt.emit(&mut opt_pkt);
 }
 
