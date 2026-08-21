@@ -7,17 +7,21 @@
 //! | module | what it holds | how to review it |
 //! | --- | --- | --- |
 //! | [`flux_core`] | verbatim copies of specs that already ship in flux-core | check the transcription |
+//! | [`array`] | flux-core's `[T; N]` `Index`/`IndexMut`, plus `as_slice`/`as_mut_slice` | check both |
 //! | [`convert`] | `AsRef`/`AsMut` associated refinements | check the claim |
 //! | [`slice`] | `copy_from_slice`, `SliceIndex for RangeFull` | check the claim |
 //! | [`cmp`] | `min` | check the claim |
 //! | [`byteorder`] | `BigEndian::{read_u16, write_u16}` | check the claim |
 //! | [`managed`] | `Vec`, `ManagedSlice` and its `Deref`/`DerefMut` impls | check the claim |
 //! | [`net`] | `Ipv6Addr::is_multicast` | check the claim |
+//! | [`range`] | `RangeInclusive::new` | check the claim |
 
+mod array;
 mod byteorder;
 mod cmp;
 mod convert;
 mod flux_core;
 mod managed;
 mod net;
+mod range;
 mod slice;
