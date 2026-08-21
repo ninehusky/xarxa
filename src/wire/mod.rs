@@ -290,6 +290,9 @@ pub use self::dhcpv4::{
     OpCode as DhcpOpCode, Packet as DhcpPacket, Repr as DhcpRepr, SERVER_PORT as DHCP_SERVER_PORT,
 };
 
+#[cfg(feature = "proto-dhcpv4")]
+pub(crate) use self::dhcpv4::SizedRepr as SizedDhcpRepr;
+
 #[cfg(feature = "proto-dns")]
 pub use self::dns::{
     Flags as DnsFlags, Opcode as DnsOpcode, Packet as DnsPacket, Question as DnsQuestion,

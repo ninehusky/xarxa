@@ -7,7 +7,7 @@ use crate::wire::dhcpv4::field as dhcpv4_field;
 use crate::wire::{
     DHCP_CLIENT_PORT, DHCP_MAX_DNS_SERVER_COUNT, DHCP_SERVER_PORT, DhcpMessageType, DhcpPacket,
     DhcpRepr, IpAddress, IpProtocol, Ipv4Address, Ipv4AddressExt, Ipv4Cidr, Ipv4Repr,
-    UDP_HEADER_LEN, UdpRepr,
+    SizedDhcpRepr, UDP_HEADER_LEN, UdpRepr,
 };
 use crate::wire::{DhcpOption, HardwareAddress};
 use heapless::Vec;
@@ -560,9 +560,19 @@ impl<'a> Socket<'a> {
         0x12345678
     }
 
+    /// The bound on `emit` is the contract `iface` builds an `IpPayload::Dhcpv4` on: the IPv4
+    /// header describes a payload of the UDP header plus what the DHCP representation emits.
+    /// It is proved, not assumed -- the three calls below are made directly from this body, so
+    /// flux checks each against the bound.
+    #[flux_rs::sig(
+        fn(self: &mut Socket, &mut Context, F) -> Result<(), E>
+        where F: FnOnce(&mut Context,
+                        (Ipv4Repr[@ipr], UdpRepr, SizedDhcpRepr{d: ipr.plen == 8 + d.blen}))
+                 -> Result<(), E>
+    )]
     pub(crate) fn dispatch<F, E>(&mut self, cx: &mut Context, emit: F) -> Result<(), E>
     where
-        F: FnOnce(&mut Context, (Ipv4Repr, UdpRepr, DhcpRepr)) -> Result<(), E>,
+        F: FnOnce(&mut Context, (Ipv4Repr, UdpRepr, SizedDhcpRepr)) -> Result<(), E>,
     {
         // note: Dhcpv4Socket is only usable in ethernet mediums, so the
         // unwrap can never fail.
@@ -629,6 +639,7 @@ impl<'a> Socket<'a> {
                     ipv4_repr.dst_addr,
                     dhcp_repr
                 );
+                let dhcp_repr = SizedDhcpRepr::new(dhcp_repr);
                 ipv4_repr.payload_len = udp_repr.header_len() + dhcp_repr.buffer_len();
                 emit(cx, (ipv4_repr, udp_repr, dhcp_repr))?;
 
@@ -657,6 +668,7 @@ impl<'a> Socket<'a> {
                     ipv4_repr.dst_addr,
                     dhcp_repr
                 );
+                let dhcp_repr = SizedDhcpRepr::new(dhcp_repr);
                 ipv4_repr.payload_len = udp_repr.header_len() + dhcp_repr.buffer_len();
                 emit(cx, (ipv4_repr, udp_repr, dhcp_repr))?;
 
@@ -694,6 +706,7 @@ impl<'a> Socket<'a> {
                 dhcp_repr.transaction_id = next_transaction_id;
 
                 net_debug!("DHCP send renew to {}: {:?}", ipv4_repr.dst_addr, dhcp_repr);
+                let dhcp_repr = SizedDhcpRepr::new(dhcp_repr);
                 ipv4_repr.payload_len = udp_repr.header_len() + dhcp_repr.buffer_len();
                 emit(cx, (ipv4_repr, udp_repr, dhcp_repr))?;
 
@@ -860,7 +873,7 @@ mod test {
                     net_trace!("      {:?}", udp_repr);
                     net_trace!("      {:?}", dhcp_repr);
 
-                    let got_repr = (ip_repr, udp_repr, dhcp_repr);
+                    let got_repr = (ip_repr, udp_repr, dhcp_repr.into_repr());
                     match reprs.get(i) {
                         Some(want_repr) => assert_eq!(want_repr, &got_repr),
                         None => panic!("Too many reprs emitted"),
