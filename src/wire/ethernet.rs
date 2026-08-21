@@ -395,7 +395,12 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
     #[flux_rs::no_panic]
     #[inline]
     pub fn payload_buf(&mut self) -> crate::wire::Buf<'_> {
-        crate::wire::Buf::with_offset(self.buffer.as_mut(), 14) // field::PAYLOAD
+        let data = self.buffer.as_mut();
+        // Same window and the same bounds check as `payload_mut`. Sliced here rather than via
+        // `Buf::with_offset`, whose `as_mut` is `get_unchecked_mut(offset..)`: that would turn a
+        // short buffer from a panic into UB, which is a change in what the program does with an
+        // input. `Buf::new` carries offset 0, so its `as_mut` is in bounds by construction.
+        crate::wire::Buf::new(&mut data[14..]) // field::PAYLOAD
     }
 
     /// Return a mutable pointer to the payload.
