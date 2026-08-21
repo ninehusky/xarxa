@@ -710,7 +710,7 @@ impl Repr {
     // unchecked form is a-okay here.
     #[allow(unsafe_code)]
     #[flux_rs::trusted(no, reason = "discharges the assert(false) licensing unreachable_unchecked")]
-    #[flux_rs::sig(fn(Address[@v], Address[v], Protocol, usize[@p], u8) -> Repr[v, if v == 0 { p } else { -1 }])]
+    #[flux_rs::sig(fn(Address[@v], Address[v], Protocol, usize[@p], u8) -> Repr[v, p])]
     pub fn new(
         src_addr: Address,
         dst_addr: Address,

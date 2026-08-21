@@ -1310,8 +1310,20 @@ impl<'a> Repr<'a> {
     ///
     /// This should be used for buffer space calculations.
     /// The TCP header length is a multiple of 4.
+    ///
+    /// A range, not the exact value: the option bytes turn on `Option::is_some` and on how many
+    /// of the three sACK slots are filled, and neither is reachable in the refinement -- an
+    /// `Option` index and an array element index are both out of reach here.
+    ///
+    /// 20 is `field::URGENT.end`, restated as a literal because flux cannot see through the
+    /// `Range` const it comes from; it is what the fixed part of the header costs. 68 is the
+    /// other end: `4 + 3 + 2 + 10` of single options, `8 * 3 + 2` of sACK, and the round up to a
+    /// multiple of four. The ceiling is what keeps the sum in `buffer_len` from reading as a
+    /// wrapping one, and what bounds the `as u8` cast in `emit`.
+    #[flux_rs::trusted(no, reason = "bounds the emitted header length")]
+    #[flux_rs::sig(fn(&Self) -> usize{v: 20 <= v && v <= 68})]
     pub fn header_len(&self) -> usize {
-        let mut length = field::URGENT.end;
+        let mut length = 20; // field::URGENT.end
         if self.max_seg_size.is_some() {
             length += 4
         }
@@ -1324,11 +1336,12 @@ impl<'a> Repr<'a> {
         if self.timestamp.is_some() {
             length += 10;
         }
-        let sack_range_len: usize = self
-            .sack_ranges
-            .iter()
-            .map(|o| o.map(|_| 8).unwrap_or(0))
-            .sum();
+        // Unrolled rather than summed over the iterator: a `.sum()` is unbounded in the
+        // refinement, and under `check_overflow = "lazy"` an unbounded addend is modelled as
+        // wrapping, which would sink even the lower bound. The array is three slots wide.
+        let sack_range_len: usize = (if self.sack_ranges[0].is_some() { 8 } else { 0 })
+            + (if self.sack_ranges[1].is_some() { 8 } else { 0 })
+            + (if self.sack_ranges[2].is_some() { 8 } else { 0 });
         if sack_range_len > 0 {
             length += sack_range_len + 2;
         }
@@ -1339,8 +1352,17 @@ impl<'a> Repr<'a> {
     }
 
     /// Return the length of a packet that will be emitted from this high-level representation.
+    ///
+    /// The same floor as [`header_len`](Self::header_len), carried through the payload: this is
+    /// what `IpPayload::Tcp`'s `minlen` rests on, and through it `Repr::emit`'s `20 <=` bound on
+    /// the buffer it is handed.
+    ///
+    /// `byte_len` rather than `.len()` so the sum carries the `isize::MAX` ceiling; without it
+    /// `check_overflow = "lazy"` models the addition as wrapping and the floor is lost.
+    #[flux_rs::trusted(no, reason = "floor on the emitted packet length")]
+    #[flux_rs::sig(fn(&Self) -> usize{v: 20 <= v})]
     pub fn buffer_len(&self) -> usize {
-        self.header_len() + self.payload.len()
+        self.header_len() + crate::flux_util::byte_len(self.payload)
     }
 
     /// Emit a high-level representation into a Transmission Control Protocol packet.
@@ -1441,6 +1463,114 @@ impl<'a> Repr<'a> {
             Control::Syn | Control::Fin | Control::Rst => false,
             Control::None | Control::Psh => true,
         }
+    }
+}
+
+/// A [`Repr`] paired with the number of octets it emits.
+///
+/// [`Repr::buffer_len`] is bounded but not exact: the option octets turn on three
+/// `Option::is_some` reads and on how many of the three sACK slots are filled, and neither is
+/// reachable through the container's refinement. Every field of `Repr` is `pub`, so a ghost
+/// accumulator would go stale on the first `repr.max_seg_size = ...` -- which `Socket::dispatch`
+/// does. Measuring once, at the point the representation is moved in, makes the total statable
+/// with nothing trusted: `blen` is the value [`Repr::buffer_len`] returned for this `repr`, and
+/// `repr` is private, so nothing can change it behind the number.
+///
+/// Same device as `dhcpv4::SizedRepr`.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+// 20 is `Repr::buffer_len`'s floor, the fixed part of the TCP header.
+#[flux_rs::refined_by(blen: int)]
+#[flux_rs::invariant(20 <= blen)]
+pub(crate) struct SizedRepr<'a> {
+    repr: Repr<'a>,
+    #[flux_rs::field(usize[blen])]
+    blen: usize,
+}
+
+impl<'a> SizedRepr<'a> {
+    /// Measure `repr` and keep the two together.
+    pub(crate) fn new(repr: Repr<'a>) -> Self {
+        let blen = repr.buffer_len();
+        Self { repr, blen }
+    }
+
+    /// The length of the packet [`Self::emit`] writes.
+    #[flux_rs::sig(fn(self: &Self[@r]) -> usize[r.blen])]
+    #[flux_rs::no_panic]
+    pub(crate) fn buffer_len(&self) -> usize {
+        self.blen
+    }
+
+    /// The header length, as [`Repr::header_len`] reports it.
+    #[flux_rs::sig(fn(&Self) -> usize{v: 20 <= v && v <= 68})]
+    pub(crate) fn header_len(&self) -> usize {
+        self.repr.header_len()
+    }
+
+    /// The advertised window.
+    #[flux_rs::no_panic]
+    pub(crate) fn window_len(&self) -> u16 {
+        self.repr.window_len
+    }
+
+    /// Set the advertised window.
+    ///
+    /// `&strg` so the caller keeps `blen`, as for the three setters below. None of these four
+    /// fields is part of what [`Repr::buffer_len`] counts, and each postcondition is proved
+    /// rather than stated -- the body writes `repr` and leaves the measured length alone.
+    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], u16) ensures self: SizedRepr[r.blen])]
+    #[flux_rs::no_panic]
+    pub(crate) fn set_window_len(&mut self, value: u16) {
+        self.repr.window_len = value;
+    }
+
+    /// Set the control flag.
+    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], Control) ensures self: SizedRepr[r.blen])]
+    #[flux_rs::no_panic]
+    pub(crate) fn set_control(&mut self, value: Control) {
+        self.repr.control = value;
+    }
+
+    /// Set the sequence number.
+    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], SeqNumber) ensures self: SizedRepr[r.blen])]
+    #[flux_rs::no_panic]
+    pub(crate) fn set_seq_number(&mut self, value: SeqNumber) {
+        self.repr.seq_number = value;
+    }
+
+    /// Set the acknowledgement number.
+    ///
+    /// The sACK option is the one whose presence turns on `ack_number`, and
+    /// [`Repr::header_len`] counts it either way, so this does not move the length.
+    #[flux_rs::sig(
+        fn(self: &strg SizedRepr[@r], Option<SeqNumber>) ensures self: SizedRepr[r.blen]
+    )]
+    #[flux_rs::no_panic]
+    pub(crate) fn set_ack_number(&mut self, value: Option<SeqNumber>) {
+        self.repr.ack_number = value;
+    }
+
+    /// The representation that was measured.
+    pub(crate) fn into_repr(self) -> Repr<'a> {
+        self.repr
+    }
+
+    /// Emit the representation into `packet`, exactly as [`Repr::emit`] would.
+    #[flux_rs::sig(
+        fn(&Self, packet: &mut Packet<T>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities)
+        requires 20 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+              && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
+    )]
+    pub(crate) fn emit<T>(
+        &self,
+        packet: &mut Packet<T>,
+        src_addr: &IpAddress,
+        dst_addr: &IpAddress,
+        checksum_caps: &ChecksumCapabilities,
+    ) where
+        T: AsRef<[u8]> + AsMut<[u8]>,
+    {
+        self.repr.emit(packet, src_addr, dst_addr, checksum_caps)
     }
 }
 

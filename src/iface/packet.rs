@@ -230,15 +230,13 @@ impl<'p> Packet<'p> {
                     max_segment_size -= tcp_repr.header_len();
 
                     let max_window_size = max_burst_size * max_segment_size;
-                    if tcp_repr.window_len as usize > max_window_size {
-                        tcp_repr.window_len = max_window_size as u16;
+                    if tcp_repr.window_len() as usize > max_window_size {
+                        tcp_repr.set_window_len(max_window_size as u16);
                     }
                 }
 
-                // Routed through `Buf` for the same reason as the Icmpv4 arm above. The bound
-                // is *stated* here and not discharged: `TcpRepr` carries no refinement, so
-                // `tcp_repr.buffer_len()` is not statable at this type and this variant is
-                // still indexed `-1`. See the note on `IpPayload`.
+                // Routed through `Buf` for the same reason as the Icmpv4 arm above: the window
+                // is `tcp_repr.buffer_len()` wide, which is this variant's index.
                 tcp_repr.emit(
                     &mut TcpPacket::new_unchecked(Buf::new(payload)),
                     &_ip_repr.src_addr(),
@@ -305,16 +303,15 @@ pub(crate) struct PacketV6<'p> {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 // `blen` is the buffer this payload will fill exactly, or `-1` where it is not tracked.
 //
-// `Icmpv4`, `Udp` and `Dhcpv4` are exact. `Udp` needs no refinement on `UdpRepr` at all: the
-// datagram is the fixed 8-octet header plus the payload slice, and the slice's length is
-// already in the refinement, so the variant states it directly. `Dhcpv4` is the same shape,
-// with `SizedDhcpRepr` supplying the body's length.
+// `Icmpv4`, `Udp`, `Dhcpv4` and `Tcp` are exact. `Udp` needs no refinement on `UdpRepr` at all:
+// the datagram is the fixed 8-octet header plus the payload slice, and the slice's length is
+// already in the refinement, so the variant states it directly. `Dhcpv4` and `Tcp` are the same
+// shape, with `SizedDhcpRepr` and `SizedTcpRepr` supplying their body's length.
 //
 // Every other repr here is unrefined -- its `buffer_len()` is not statable at this type -- so
 // they are indexed `-1`, and `emit_payload`'s precondition guards on `blen != -1`. That leaves
 // those arms owing exactly what they owed before, rather than claiming a length the code does
-// not carry. `Tcp` *states* its emitter's buffer bound without discharging it; refining
-// `TcpRepr` and `IgmpRepr` by their own `buffer_len()`, and tying `Icmpv6Repr`'s existing
+// not carry. Refining `IgmpRepr` by its own `buffer_len()`, and tying `Icmpv6Repr`'s existing
 // `blen` index to its `buffer_len()`, is what turns each remaining `-1` into a real index.
 //
 // `minlen` is separate and always statable: a *lower* bound on the octets the payload writes,
@@ -354,8 +351,9 @@ pub(crate) enum IpPayload<'p> {
     #[flux_rs::variant((UdpRepr, &[u8][@m]) -> IpPayload[8 + m, 0])]
     Udp(UdpRepr, &'p [u8]),
     #[cfg(feature = "socket-tcp")]
-    #[flux_rs::variant((TcpRepr) -> IpPayload[-1, 0])]
-    Tcp(TcpRepr<'p>),
+    // The segment is what `SizedTcpRepr` measured, and that is the whole of the IP payload.
+    #[flux_rs::variant((SizedTcpRepr[@t]) -> IpPayload[t.blen, 0])]
+    Tcp(SizedTcpRepr<'p>),
     #[cfg(feature = "socket-dhcpv4")]
     // As `Udp` above: 8 is `udp::HEADER_LEN`, and the datagram body is what the DHCP
     // representation emits, which `SizedDhcpRepr` carries.
