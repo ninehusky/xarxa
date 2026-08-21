@@ -211,9 +211,10 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// [check_len]: #method.check_len
     ///
     /// Deliberately left unrefined. `checked_len` proves `20 <= hlen <= buffer_len`, and carrying
-    /// that out through the `Ok` arm would be the natural next step -- but every caller today is
-    /// at a reference self type (`Repr::parse` below, `iface/interface/tcp.rs`), so nothing can
-    /// consume it. Worth doing the moment a reference self type can be refined; see `wire::Buf`.
+    /// that out through the `Ok` payload is
+    /// [`new_checked_ref`](Packet::new_checked_ref)'s job; stating it here instead costs an
+    /// error at every `T` for which `as_ref_reft` is unstatable, `pretty_print`'s
+    /// `&dyn AsRef<[u8]>` among them.
     pub fn new_checked(buffer: T) -> Result<Packet<T>> {
         let packet = Self::new_unchecked(buffer);
         packet.check_len()?;
@@ -1483,8 +1484,8 @@ impl<T: AsRef<[u8]> + ?Sized> fmt::Display for Packet<&T> {
 
 // A trait impl's signature is fixed, so this cannot carry the accessors' `requires`. The check
 // is taken inside the body instead: `checked_len`'s `Ok` arm proves every bound the header
-// reads and the two windows want, and the arm that fails it no longer reads a header out of a
-// buffer it never validated -- a panic on a truncated segment.
+// reads and the two windows want, and the arm that fails it reads no header at all, which is
+// what makes a truncated segment safe to print.
 impl fmt::Display for Packet<Ref<'_>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // Cannot use Repr::parse because we don't have the IP addresses.

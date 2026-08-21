@@ -771,8 +771,8 @@ impl<'a> Repr<'a> {
 
 // A trait impl's signature is fixed, so it cannot carry the `requires` the header accessors
 // want. The check is taken inside the body instead: `checked_len`'s `Ok` arm proves the bound
-// `msg_type` and `msg_code` need, and the arm that fails it no longer reads a header it never
-// validated -- a panic on a truncated message.
+// `msg_type` and `msg_code` need, and the arm that fails it reads no header at all, which is
+// what makes a truncated message safe to print.
 impl fmt::Display for Packet<Ref<'_>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match Repr::parse_ref(self, &ChecksumCapabilities::default()) {
