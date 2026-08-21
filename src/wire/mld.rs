@@ -6,6 +6,7 @@
 
 use super::{Error, Result};
 use crate::wire::Ipv6Address;
+use crate::wire::Ref;
 use crate::wire::icmpv6::{Message, Packet, field};
 use crate::wire::{read_u16_at, write_octets16_at, write_u16_at};
 
@@ -591,11 +592,10 @@ pub enum Repr<'a> {
 
 impl<'a> Repr<'a> {
     /// Parse an MLDv2 packet and return a high-level representation.
-    pub fn parse<T>(packet: &Packet<&'a T>) -> Result<Repr<'a>>
-    where
-        T: AsRef<[u8]> + ?Sized,
-    {
-        packet.check_len()?;
+    pub fn parse(packet: &Packet<Ref<'a>>) -> Result<Repr<'a>> {
+        // `checked_len` rather than `check_len`: the same test, but its `Ok` arm names the
+        // buffer's length, which is what `payload` opens its window against.
+        packet.checked_len()?;
         match packet.msg_type() {
             Message::MldQuery => Ok(Repr::Query {
                 max_resp_code: packet.max_resp_code(),
@@ -776,7 +776,7 @@ mod test {
 
     #[test]
     fn test_query_deconstruct() {
-        let packet = Packet::new_unchecked(&QUERY_PACKET_BYTES[..]);
+        let packet = Packet::new_unchecked(Ref::new(&QUERY_PACKET_BYTES[..]));
         assert_eq!(packet.msg_type(), Message::MldQuery);
         assert_eq!(packet.msg_code(), 0);
         assert_eq!(packet.checksum(), 0x7374);
@@ -814,7 +814,7 @@ mod test {
 
     #[test]
     fn test_record_deconstruct() {
-        let packet = Packet::new_unchecked(&REPORT_PACKET_BYTES[..]);
+        let packet = Packet::new_unchecked(Ref::new(&REPORT_PACKET_BYTES[..]));
         assert_eq!(packet.msg_type(), Message::MldReport);
         assert_eq!(packet.msg_code(), 0);
         assert_eq!(packet.checksum(), 0x7385);

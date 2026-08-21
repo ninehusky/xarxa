@@ -4,6 +4,7 @@ use super::{Error, Result};
 use crate::time::Duration;
 use crate::wire::Ipv6Address;
 use crate::wire::RawHardwareAddress;
+use crate::wire::Ref;
 use crate::wire::icmpv6::{Message, Packet, field};
 use crate::wire::{NdiscOption, NdiscOptionRepr};
 use crate::wire::{NdiscPrefixInformation, NdiscRedirectedHeader};
@@ -338,11 +339,10 @@ impl<'a> Repr<'a> {
     /// Parse an NDISC packet and return a high-level representation of the
     /// packet.
     #[allow(clippy::single_match)]
-    pub fn parse<T>(packet: &Packet<&'a T>) -> Result<Repr<'a>>
-    where
-        T: AsRef<[u8]> + ?Sized,
-    {
-        packet.check_len()?;
+    pub fn parse(packet: &Packet<Ref<'a>>) -> Result<Repr<'a>> {
+        // `checked_len` rather than `check_len`: the same test, but its `Ok` arm names the
+        // buffer's length, which is what `payload` opens its window against.
+        packet.checked_len()?;
 
         let (mut src_ll_addr, mut mtu, mut prefix_info, mut target_ll_addr, mut redirected_hdr) =
             (None, None, None, None, None);
@@ -650,7 +650,7 @@ mod test {
 
     #[test]
     fn test_router_advert_deconstruct() {
-        let packet = Packet::new_unchecked(&ROUTER_ADVERT_BYTES[..]);
+        let packet = Packet::new_unchecked(Ref::new(&ROUTER_ADVERT_BYTES[..]));
         assert_eq!(packet.msg_type(), Message::RouterAdvert);
         assert_eq!(packet.msg_code(), 0);
         assert_eq!(packet.current_hop_limit(), 64);
