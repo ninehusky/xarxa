@@ -1,9 +1,9 @@
-use byteorder::{ByteOrder, NetworkEndian};
 use core::fmt;
 
 use super::{Error, Result};
 use crate::phy::ChecksumCapabilities;
 use crate::wire::ip::{checksum, pretty_print_ip_payload};
+use crate::wire::Ref;
 
 pub use super::IpProtocol as Protocol;
 
@@ -186,13 +186,71 @@ impl defmt::Format for Cidr {
     }
 }
 
-/// A read/write wrapper around an Internet Protocol version 4 packet buffer.
-#[derive(Debug, PartialEq, Eq, Clone)]
+/// A ghost field: carries an integer in the refinement and nothing at runtime.
+///
+/// IPv4's payload window is `header_len..total_len`, and both ends live in the buffer's
+/// *contents* -- contents are not in the refinement, so no accessor's bound can mention them.
+/// This is the way to name them anyway. `Packet` holds two of these, and because the struct is
+/// a ZST it costs no space and `Packet<T>`'s layout is unchanged.
+///
+/// The values are anchored by [`Packet::header_len`] and [`Packet::total_len`], the trusted
+/// getters that claim the header fields equal the ghosts. Everything else is proved.
+#[flux_rs::opaque]
+#[flux_rs::refined_by(val: int)]
+#[flux_rs::invariant(0 <= val && val <= 65535)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[flux_rs::refined_by(buffer: T)]
+#[derive(PartialEq, Eq, Clone, Copy)]
+struct Ghost;
+
+impl Ghost {
+    /// A ghost whose value is unconstrained.
+    #[flux_rs::trusted(yes, reason = "opaque: the ghost carries no runtime value")]
+    #[flux_rs::sig(fn() -> Ghost{v: 0 <= v && v <= 65535})]
+    #[flux_rs::no_panic]
+    const fn unknown() -> Ghost {
+        Ghost
+    }
+
+    /// A ghost pinned to `val`.
+    #[flux_rs::trusted(yes, reason = "opaque: establishes the ghost value")]
+    #[flux_rs::sig(fn(val: u8) -> Ghost[val])]
+    #[flux_rs::no_panic]
+    const fn from_u8(_val: u8) -> Ghost {
+        Ghost
+    }
+
+    /// A ghost pinned to `val`.
+    #[flux_rs::trusted(yes, reason = "opaque: establishes the ghost value")]
+    #[flux_rs::sig(fn(val: u16) -> Ghost[val])]
+    #[flux_rs::no_panic]
+    const fn from_u16(_val: u16) -> Ghost {
+        Ghost
+    }
+}
+
+/// A read/write wrapper around an Internet Protocol version 4 packet buffer.
+#[derive(PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(buffer: T, hlen: int, tlen: int)]
+#[flux_rs::invariant(0 <= hlen && hlen <= 65535 && 0 <= tlen && tlen <= 65535)]
 pub struct Packet<T: AsRef<[u8]>> {
     #[flux_rs::field(T[buffer])]
     buffer: T,
+    #[flux_rs::field(Ghost[hlen])]
+    ghlen: Ghost,
+    #[flux_rs::field(Ghost[tlen])]
+    gtlen: Ghost,
+}
+
+// Written out rather than derived so the ghosts stay out of the output: a derive would print
+// `Packet { buffer: .., ghlen: Ghost, gtlen: Ghost }`, and a ghost is not supposed to be
+// observable. This reproduces the derived form for the one field that existed before.
+impl<T: AsRef<[u8]> + fmt::Debug> fmt::Debug for Packet<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Packet")
+            .field("buffer", &self.buffer)
+            .finish()
+    }
 }
 
 mod field {
@@ -212,12 +270,33 @@ mod field {
 
 pub const HEADER_LEN: usize = field::DST_ADDR.end;
 
+/// Read the four octets at `at`.
+///
+/// Trusted for the same reason as [`crate::wire::read_u16_at`]: the sub-slice's length is not
+/// recoverable at the call site (flux-rs/flux#1714), so the `try_into` cannot be proved to
+/// succeed there. The `at + 4 <= n` bound here is what makes it safe, and it *is* checked at
+/// every caller.
+#[flux_rs::trusted(yes, reason = "sub-slice length is not recoverable; see flux-rs/flux#1714")]
+#[flux_rs::sig(fn(&[u8][@n], at: usize) -> [u8; 4] requires at + 4 <= n)]
+#[flux_rs::no_panic]
+fn read_octets4_at(data: &[u8], at: usize) -> [u8; 4] {
+    data[at..at + 4].try_into().unwrap()
+}
+
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Imbue a raw octet buffer with IPv4 packet structure.
+    ///
+    /// The ghosts start unconstrained: this reads nothing, so it learns nothing. They are pinned
+    /// to the header fields the first time [`header_len`](Self::header_len) and
+    /// [`total_len`](Self::total_len) are called.
     #[flux_rs::trusted(no, reason = "carries the buffer length into the Packet index")]
     #[flux_rs::sig(fn (T[@buflen]) -> Packet<T>{v : v.buffer == buflen})]
     pub const fn new_unchecked(buffer: T) -> Packet<T> {
-        Packet { buffer }
+        Packet {
+            buffer,
+            ghlen: Ghost::unknown(),
+            gtlen: Ghost::unknown(),
+        }
     }
 
     /// Shorthand for a combination of [new_unchecked] and [check_len].
@@ -245,13 +324,39 @@ impl<T: AsRef<[u8]>> Packet<T> {
     ///
     /// [set_header_len]: #method.set_header_len
     /// [set_total_len]: #method.set_total_len
-    #[allow(clippy::if_same_then_else)]
     #[flux_rs::no_panic]
     #[flux_rs::sig(
         fn(self: &Packet<T>[@buf]) -> Result<()>
     )]
     #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
     pub fn check_len(&self) -> Result<()> {
+        match self.checked_len() {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// [`check_len`](Self::check_len), returning the buffer length it validated.
+    ///
+    /// The whole of `check_len`; the public method just discards the length. It exists because
+    /// `Result<()>`'s `Ok` payload is `()` and so carries no refinement, which leaves a caller
+    /// with nothing to show for a successful check. Returning the length instead lets the `Ok`
+    /// arm say something, and what it says is exactly the four facts the accessors below want:
+    /// the buffer's length is what it is and holds a header, the IHL is a legal one, the header
+    /// does not run past the total length, and the total length is not a lie about the buffer.
+    ///
+    /// Every test was already here. They are stated in the bound only because the ghosts make
+    /// `hlen` and `tlen` nameable.
+    #[allow(clippy::if_same_then_else)]
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(
+        fn(self: &Packet<T>[@p])
+            -> Result<usize{v: v == <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+                             && 20 <= v && 20 <= p.hlen && p.hlen <= p.tlen && p.tlen <= v
+                             && p.tlen <= 65535}>
+    )]
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    fn checked_len(&self) -> Result<usize> {
         let data = self.buffer.as_ref();
         let len = data.len();
         if len < 20 { // field::DST_ADDR.end is 20, but flux doesn't know that
@@ -266,7 +371,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
             } else if self.header_len() < MINIMUM_IHL_BYTES {
                 Err(Error)
             } else {
-                Ok(())
+                Ok(len)
             }
         }
     }
@@ -277,77 +382,156 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the version field.
+    // Literal bounds rather than `field::VER_IHL + 1`: flux cannot see through the arithmetic
+    // on the const, so the bound has to be written out. Same throughout this impl.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u8 requires 1 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn version(&self) -> u8 {
         let data = self.buffer.as_ref();
         data[field::VER_IHL] >> 4
     }
 
-    /// Return the header length, in octets.
+    /// The IHL nibble at offset 0 in octets, with its bound proved and no claim about its value.
     #[inline]
-    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
     #[flux_rs::sig(
         fn(self: &Packet<T>[@buf]) -> u8 requires 1 <= <T as AsRef<[u8]>>::as_ref_reft(buf.buffer)
     )]
     #[flux_rs::no_panic] // why do i need this?
-    pub fn header_len(&self) -> u8 {
+    fn header_len_field(&self) -> u8 {
         let data = self.buffer.as_ref();
         (data[field::VER_IHL] & 0x0f) * 4
     }
 
+    /// Return the header length, in octets.
+    ///
+    /// One of the two anchors for the ghost fields: the return type *claims* the scaled IHL
+    /// nibble is `hlen`. Nothing proves that -- the buffer's contents are not in the refinement
+    /// -- so it is the assumption the payload window rests on, and it is kept true by
+    /// [`set_header_len`](Self::set_header_len), the only thing that writes that nibble, which
+    /// updates the ghost in the same step.
+    ///
+    /// The read itself stays checked: the trusted body is a call, and the bound is discharged
+    /// inside [`header_len_field`](Self::header_len_field). All this assumes is the equality,
+    /// which is the part flux cannot see.
+    #[inline]
+    #[flux_rs::trusted(yes, reason = "anchors the `hlen` ghost to the IHL nibble at offset 0")]
+    #[flux_rs::sig(
+        fn(self: &Packet<T>[@buf]) -> u8[buf.hlen]
+        requires 1 <= <T as AsRef<[u8]>>::as_ref_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
+    pub fn header_len(&self) -> u8 {
+        self.header_len_field()
+    }
+
     /// Return the Differential Services Code Point field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u8 requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn dscp(&self) -> u8 {
         let data = self.buffer.as_ref();
         data[field::DSCP_ECN] >> 2
     }
 
     /// Return the Explicit Congestion Notification field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u8 requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn ecn(&self) -> u8 {
         let data = self.buffer.as_ref();
         data[field::DSCP_ECN] & 0x03
     }
 
-    /// Return the total length field.
+    /// The u16 at offset 2, with its bound proved and no claim about its value.
     #[inline]
-    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
     #[flux_rs::sig(
         fn(self: &Packet<T>[@buf]) -> u16 requires 4 <= <T as AsRef<[u8]>>::as_ref_reft(buf.buffer)
     )]
     #[flux_rs::no_panic] // why do i need this?
-    pub fn total_len(&self) -> u16 {
+    fn total_len_field(&self) -> u16 {
         let data = self.buffer.as_ref();
         crate::wire::read_u16_at(data, 2)
     }
 
+    /// Return the total length field.
+    ///
+    /// The other anchor for the ghost fields; see [`header_len`](Self::header_len). Kept true by
+    /// [`set_total_len`](Self::set_total_len), the only thing that writes those two octets.
+    #[inline]
+    #[flux_rs::trusted(yes, reason = "anchors the `tlen` ghost to the u16 at offset 2")]
+    #[flux_rs::sig(
+        fn(self: &Packet<T>[@buf]) -> u16[buf.tlen]
+        requires 4 <= <T as AsRef<[u8]>>::as_ref_reft(buf.buffer)
+    )]
+    #[flux_rs::no_panic]
+    pub fn total_len(&self) -> u16 {
+        self.total_len_field()
+    }
+
     /// Return the fragment identification field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u16 requires 6 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn ident(&self) -> u16 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::IDENT])
+        crate::wire::read_u16_at(data, 4) // field::IDENT
     }
 
     /// Return the "don't fragment" flag.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> bool requires 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn dont_frag(&self) -> bool {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::FLG_OFF]) & 0x4000 != 0
+        crate::wire::read_u16_at(data, 6) & 0x4000 != 0 // field::FLG_OFF
     }
 
     /// Return the "more fragments" flag.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> bool requires 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn more_frags(&self) -> bool {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::FLG_OFF]) & 0x2000 != 0
+        crate::wire::read_u16_at(data, 6) & 0x2000 != 0 // field::FLG_OFF
     }
 
     /// Return the fragment offset, in octets.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u16 requires 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn frag_offset(&self) -> u16 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::FLG_OFF]) << 3
+        crate::wire::read_u16_at(data, 6) << 3 // field::FLG_OFF
     }
 
     /// Return the time to live field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u8 requires 9 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn hop_limit(&self) -> u8 {
         let data = self.buffer.as_ref();
@@ -355,6 +539,11 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the next_header (protocol) field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> Protocol requires 10 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn next_header(&self) -> Protocol {
         let data = self.buffer.as_ref();
@@ -362,40 +551,71 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the header checksum field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u16 requires 12 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn checksum(&self) -> u16 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::CHECKSUM])
+        crate::wire::read_u16_at(data, 10) // field::CHECKSUM
     }
 
     /// Return the source address field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> Address requires 16 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn src_addr(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_octets(data[field::SRC_ADDR].try_into().unwrap())
+        Address::from_octets(read_octets4_at(data, 12)) // field::SRC_ADDR
     }
 
     /// Return the destination address field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> Address requires 20 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn dst_addr(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_octets(data[field::DST_ADDR].try_into().unwrap())
+        Address::from_octets(read_octets4_at(data, 16)) // field::DST_ADDR
     }
 
     /// Validate the header checksum.
     ///
     /// # Fuzzing
     /// This function always returns `true` when fuzzing.
+    //
+    // `p.hlen <= as_ref_reft` is the third of the four facts `checked_len` returns; it is what
+    // makes the `..header_len()` window safe, and `Ghost`'s own invariant is what bounds it by
+    // the 65535 `checksum::data` wants.
+    #[flux_rs::trusted(no, reason = "panic site: reads the window named by the header-length field")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> bool
+        requires 1 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+              && p.hlen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn verify_checksum(&self) -> bool {
         if cfg!(fuzzing) {
             return true;
         }
 
         let data = self.buffer.as_ref();
-        checksum::data(&data[..self.header_len() as usize]) == !0
+        checksum::data(crate::wire::prefix(data, self.header_len() as usize)) == !0
     }
 
     /// Returns the key for identifying the packet.
+    #[flux_rs::trusted(no, reason = "reads four header fields at fixed offsets")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> Key requires 20 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn get_key(&self) -> Key {
         Key {
             id: self.ident(),
@@ -407,7 +627,25 @@ impl<T: AsRef<[u8]>> Packet<T> {
 }
 
 impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
+    /// The same bytes, as a [`Ref`] whose length is in the refinement.
+    ///
+    /// The bridge onto the provable half of this module. A caller holding a `Packet<&T>` -- the
+    /// shape every entry point still hands out -- gets here a buffer it can state a bound on,
+    /// and re-runs the length check through [`new_checked_ref`](Packet::new_checked_ref) to
+    /// learn one.
+    #[flux_rs::no_panic]
+    #[inline]
+    pub fn as_window(&self) -> Ref<'a> {
+        Ref::new(self.buffer.as_ref())
+    }
+
     /// Return a pointer to the payload.
+    //
+    // Left bounds-checked. The buffer here is `&'a T`, so the length index would have to come
+    // from core's blanket `impl<T, U> AsRef<U> for &T`, which carries no associated refinement
+    // (`as_ref_reft` is missing). Neither end of the window -- `header_len()` nor `total_len()`
+    // -- is therefore statable at this self type. The provable form is
+    // `Packet<Ref>::payload`; reach it through `as_window`.
     #[inline]
     pub fn payload(&self) -> &'a [u8] {
         let range = self.header_len() as usize..self.total_len() as usize;
@@ -432,17 +670,24 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     /// Set the header length, in octets.
+    ///
+    /// Releases the ghost as well as writing the nibble. This is the whole of what keeps
+    /// [`header_len`](Self::header_len)'s claim true, so the two must not drift apart: `&strg`
+    /// rather than `&mut` because the ghost's value changes and a `&mut` cannot say that. What
+    /// the new ghost says is nothing -- the stored nibble is `value / 4` masked, which is not
+    /// an expression flux's integer sort can relate to `value` -- and nothing needs it to.
     #[inline]
     #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
     #[flux_rs::sig(
-        fn(self: &mut Packet<T>[@buf], _)
-        requires
-            0 < <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+        fn(self: &strg Packet<T>[@p], value: u8)
+        requires 0 < <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        ensures self: Packet<T>{q: q.buffer == p.buffer && q.tlen == p.tlen}
     )]
     #[flux_rs::no_panic]
     pub fn set_header_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         data[field::VER_IHL] = (data[field::VER_IHL] & !0x0f) | ((value / 4) & 0x0f);
+        self.ghlen = Ghost::unknown();
     }
 
     /// Set the Differential Services Code Point field.
@@ -472,17 +717,21 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     /// Set the total length field.
+    ///
+    /// Writes the ghost as well as the octets; see [`set_header_len`](Self::set_header_len) for
+    /// why this is `&strg`. Here the written value *is* the field, so the ghost is pinned to it.
     #[inline]
     #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
     #[flux_rs::sig(
-        fn(self: &mut Packet<T>[@buf], _)
-        requires
-            4 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer)
+        fn(self: &strg Packet<T>[@p], value: u16)
+        requires 4 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        ensures self: Packet<T>[p.buffer, p.hlen, value]
     )]
     #[flux_rs::no_panic]
     pub fn set_total_len(&mut self, value: u16) {
         let data = self.buffer.as_mut();
-        crate::wire::write_u16_at(data, 2, value)
+        crate::wire::write_u16_at(data, 2, value);
+        self.gtlen = Ghost::from_u16(value);
     }
 
     /// Set the fragment identification field.
@@ -691,6 +940,17 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     /// Return a mutable pointer to the payload.
+    //
+    // The three facts here are what `checked_len` returns; the window is the same one
+    // `Packet<Ref>::payload` proves on the read side.
+    #[flux_rs::trusted(no, reason = "panic site: reslices the window named by the two length fields")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p]) -> &mut [u8]
+        requires 4 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+              && p.hlen <= p.tlen
+              && p.tlen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn payload_mut(&mut self) -> &mut [u8] {
         let range = self.header_len() as usize..self.total_len() as usize;
@@ -735,11 +995,32 @@ pub struct Repr {
 
 impl Repr {
     /// Parse an Internet Protocol version 4 packet and return a high-level representation.
+    ///
+    /// A reference in type-parameter position has the unit sort, so no bound on `T`'s buffer is
+    /// statable here and every accessor below would be unprovable. The body therefore lives on
+    /// [`parse_ref`](Self::parse_ref), over a buffer whose length is nameable; this re-wraps the
+    /// same bytes and forwards, which repeats no work the old body did not do.
     pub fn parse<T: AsRef<[u8]> + ?Sized>(
         packet: &Packet<&T>,
         checksum_caps: &ChecksumCapabilities,
     ) -> Result<Repr> {
-        packet.check_len()?;
+        Repr::parse_ref(
+            &Packet::new_unchecked(Ref::new(packet.buffer.as_ref())),
+            checksum_caps,
+        )
+    }
+
+    /// [`parse`](Self::parse) over a [`Ref`], where the buffer's length is in the refinement.
+    ///
+    /// `checked_len` rather than `check_len`: the same test, but its `Ok` arm names the four
+    /// facts the accessors below need, and over `Ref` they are statable.
+    #[flux_rs::trusted(no, reason = "carries `checked_len`'s proof through the accessors")]
+    #[flux_rs::sig(fn(&Packet<Ref>[@p], &ChecksumCapabilities) -> Result<Repr>)]
+    pub fn parse_ref(
+        packet: &Packet<Ref<'_>>,
+        checksum_caps: &ChecksumCapabilities,
+    ) -> Result<Repr> {
+        packet.checked_len()?;
         // Version 4 is expected.
         if packet.version() != 4 {
             return Err(Error);
@@ -787,12 +1068,13 @@ impl Repr {
     #[flux_rs::sig(
         fn(
             self: &Self,
-            packet: &mut Packet<T>[@buf],
+            packet: &strg Packet<T>[@p],
             checksum_caps: &ChecksumCapabilities
         )
         requires
-            20 <= <T as AsMut<[u8]>>::as_mut_reft(buf.buffer) &&
-            20 <= <T as AsRef<[u8]>>::as_ref_reft(buf.buffer)
+            20 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer) &&
+            20 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+        ensures packet: Packet<T>{q: q.buffer == p.buffer}
     )]
     #[flux_rs::no_panic]
     pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(
@@ -826,9 +1108,24 @@ impl Repr {
     }
 }
 
+// The buffer arrives with no length index, and `Ref` is where it acquires one; the body is on
+// the `Packet<Ref>` impl below.
 impl<T: AsRef<[u8]> + ?Sized> fmt::Display for Packet<&T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match Repr::parse(self, &ChecksumCapabilities::ignored()) {
+        fmt::Display::fmt(&Packet::new_unchecked(Ref::new(self.buffer.as_ref())), f)
+    }
+}
+
+// A trait impl's signature is fixed, so this cannot carry the accessors' `requires`. The check
+// is taken inside the body instead: `checked_len`'s `Ok` arm proves every bound the accessors
+// want, and the `Err` arm no longer reads a header out of a buffer it never validated, which is
+// a panic the `Packet<&T>` twin has today on a truncated datagram.
+impl fmt::Display for Packet<Ref<'_>> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if let Err(err) = self.checked_len() {
+            return write!(f, "IPv4 ({err})");
+        }
+        match Repr::parse_ref(self, &ChecksumCapabilities::ignored()) {
             Ok(repr) => write!(f, "{repr}"),
             Err(err) => {
                 write!(f, "IPv4 ({err})")?;
@@ -1333,5 +1630,46 @@ pub(crate) mod test {
             Cidr::new(Address::new(255, 255, 255, 255), 32).network(),
             Cidr::new(Address::new(255, 255, 255, 255), 32)
         );
+    }
+}
+
+impl<'a> Packet<Ref<'a>> {
+    /// [`new_checked`](Self::new_checked) over a [`Ref`], carrying its proof out.
+    ///
+    /// The generic `new_checked` cannot say this: at a reference or `dyn` self type the
+    /// `as_ref_reft` in the postcondition is unstatable, so stating it there costs an error at
+    /// `pretty_print` and buys nothing. Over `Ref` the buffer's length is `b.len`, and the four
+    /// facts `checked_len` already proves are exactly what [`payload`](Self::payload) and
+    /// [`Repr::parse_ref`] require. `tlen <= 65535` is `Ghost`'s own invariant, restated here
+    /// because it is the *upper* bound on the payload a downstream checksum needs and nothing
+    /// below this layer can state it.
+    #[flux_rs::trusted(no, reason = "carries `checked_len`'s proof out through the `Ok` arm")]
+    #[flux_rs::sig(
+        fn(Ref[@b]) -> Result<Packet<Ref>{p: p.buffer == b && 20 <= b.len
+                                             && 20 <= p.hlen && p.hlen <= p.tlen
+                                             && p.tlen <= b.len && p.tlen <= 65535}>
+    )]
+    pub fn new_checked_ref(buffer: Ref<'a>) -> Result<Packet<Ref<'a>>> {
+        let packet = Packet::new_unchecked(buffer);
+        packet.checked_len()?;
+        Ok(packet)
+    }
+
+    /// Return a pointer to the payload.
+    ///
+    /// The `Packet<&'a T>` twin of this cannot be proved: a reference in type-parameter position
+    /// has the unit sort, so neither end of the window is statable there. Over `Ref<'a>` the
+    /// buffer's length is `p.buffer.len`, the window ends are the two ghosts, and the payload's
+    /// length survives into the caller's index.
+    #[flux_rs::trusted(no, reason = "panic site: reslices the window named by the two length fields")]
+    #[flux_rs::sig(
+        fn(&Packet<Ref>[@p]) -> &[u8][p.tlen - p.hlen]
+        requires 20 <= p.buffer.len && p.hlen <= p.tlen && p.tlen <= p.buffer.len
+    )]
+    #[flux_rs::no_panic]
+    #[inline]
+    pub fn payload(&self) -> &'a [u8] {
+        self.buffer
+            .window(self.header_len() as usize, self.total_len() as usize)
     }
 }

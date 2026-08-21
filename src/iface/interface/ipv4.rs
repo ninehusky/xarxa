@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::wire::Ref;
+
 impl Interface {
     /// Process fragments that still need to be sent for IPv4 packets.
     ///
@@ -101,7 +103,11 @@ impl InterfaceInner {
         ipv4_packet: &Ipv4Packet<&'a [u8]>,
         frag: &'a mut FragmentsBuffer,
     ) -> Option<Packet<'a>> {
-        let mut ipv4_repr = check!(Ipv4Repr::parse(ipv4_packet, &self.caps.checksum));
+        // Re-check over a `Ref`, where the buffer's length is in the refinement: the caller's
+        // `Packet<&[u8]>` ran the same test and threw the answer away, and the `payload()`
+        // below needs it. The test is the one that already ran; nothing is removed.
+        let ipv4_packet = &check!(Ipv4Packet::new_checked_ref(ipv4_packet.as_window()));
+        let mut ipv4_repr = check!(Ipv4Repr::parse_ref(ipv4_packet, &self.caps.checksum));
         if !self.is_unicast_v4(ipv4_repr.src_addr) && !ipv4_repr.src_addr.is_unspecified() {
             // Discard packets with non-unicast source addresses but allow unspecified
             net_debug!("non-unicast or unspecified source address");
