@@ -520,6 +520,12 @@ impl Repr {
     }
 
     /// Return the length of the packet header that will be emitted from this high-level representation.
+    // 8 is `field::CHECKSUM.end`, restated as a literal because flux cannot see through the
+    // `Range` const. `Socket::dispatch` needs it to relate `set_payload_len`'s argument to the
+    // payload slice it was given.
+    #[flux_rs::trusted(no, reason = "8 is the constant the udp datagram layout rests on")]
+    #[flux_rs::sig(fn(self: &Self) -> usize[8])]
+    #[flux_rs::no_panic]
     pub const fn header_len(&self) -> usize {
         HEADER_LEN
     }

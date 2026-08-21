@@ -403,12 +403,25 @@ impl<T: AsRef<[u8]> + ?Sized> fmt::Display for Ipv6Option<&T> {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
+// Indexed by the number of octets `emit` writes, which is `buffer_len()`. Every variant but
+// `Pad1` writes a two-octet type/length preamble followed by `length` octets of data; `Pad1` is
+// the single-octet special case. `Ipv6HopByHopRepr` sums these to size its own header.
+#[flux_rs::refined_by(blen: int)]
+// `Pad1` is 1 and every other variant is `2 + length` for a `u8` length.
+#[flux_rs::invariant(1 <= blen && blen <= 257)]
 pub enum Repr<'a> {
+    #[flux_rs::variant(Repr[1])]
     Pad1,
+    #[flux_rs::variant((u8[@n]) -> Repr[2 + n])]
     PadN(u8),
+    // `RouterAlert::DATA_LEN` is 2, restated as a literal for the same reason as the `field`
+    // ranges below: flux cannot see through the associated const.
+    #[flux_rs::variant((RouterAlert) -> Repr[4])]
     RouterAlert(RouterAlert),
     #[cfg(feature = "proto-rpl")]
+    #[flux_rs::variant((RplHopByHopRepr) -> Repr[2])]
     Rpl(RplHopByHopRepr),
+    #[flux_rs::variant({Type, u8[@n], &[u8]} -> Repr[2 + n])]
     Unknown {
         type_: Type,
         length: u8,
@@ -481,14 +494,19 @@ impl<'a> Repr<'a> {
     }
 
     /// Return the length of a header that will be emitted from this high-level representation.
+    // `length as usize + 2` rather than `field::DATA(length).end`: flux cannot see through the
+    // `Range` that `field::DATA` returns, so the arithmetic is restated. Same value.
+    #[flux_rs::trusted(no, reason = "ties the `blen` index to the emitted length")]
+    #[flux_rs::sig(fn(self: &Self[@r]) -> usize[r.blen])]
+    #[flux_rs::no_panic]
     pub const fn buffer_len(&self) -> usize {
         match *self {
             Repr::Pad1 => 1,
-            Repr::PadN(length) => field::DATA(length).end,
-            Repr::RouterAlert(_) => field::DATA(RouterAlert::DATA_LEN).end,
+            Repr::PadN(length) => length as usize + 2,
+            Repr::RouterAlert(_) => RouterAlert::DATA_LEN as usize + 2,
             #[cfg(feature = "proto-rpl")]
-            Repr::Rpl(opt) => field::DATA(opt.buffer_len() as u8).end,
-            Repr::Unknown { length, .. } => field::DATA(length).end,
+            Repr::Rpl(opt) => opt.buffer_len() + 2,
+            Repr::Unknown { length, .. } => length as usize + 2,
         }
     }
 
