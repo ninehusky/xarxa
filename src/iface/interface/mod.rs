@@ -1331,6 +1331,11 @@ impl InterfaceInner {
     ///
     /// Split out of `dispatch_ip`'s `emit_ip` closure so the buffer is a refined parameter
     /// rather than a returned `&mut` that has lost its length (flux-rs/flux#1714).
+    ///
+    /// `n == header + ipr.plen` rather than `header <= n`: `emit_payload` needs the payload
+    /// window bounded by 65535 even where the payload's own length is untracked, and `plen`
+    /// carries that from `IpRepr`'s invariant. `dispatch_ip` sizes the buffer from
+    /// `IpRepr::buffer_len()`, which is exactly that sum.
     #[flux_rs::trusted(no, reason = "carries the tx buffer length into IpRepr::emit")]
     #[flux_rs::sig(
         fn(
@@ -1341,8 +1346,8 @@ impl InterfaceInner {
             checksum_caps: &ChecksumCapabilities,
         )
         requires
-            (ipr.ip_ty == 0 => 20 <= n) &&
-            (ipr.ip_ty == 1 => 40 <= n) &&
+            (ipr.ip_ty == 0 => n == 20 + ipr.plen) &&
+            (ipr.ip_ty == 1 => n == 40 + ipr.plen) &&
             (p.blen != -1 => (p.blen <= 65535 &&
                 (ipr.ip_ty == 0 => 20 + p.blen == n) &&
                 (ipr.ip_ty == 1 => 40 + p.blen == n))) &&
