@@ -1340,8 +1340,18 @@ impl<'a> Repr<'a> {
     ///
     /// This should be used for buffer space calculations.
     /// The TCP header length is a multiple of 4.
+    ///
+    /// The upper bound is what `Repr::emit` needs: it narrows this to a `u8` for
+    /// [`Packet::set_header_len`](Packet::set_header_len), and `Packet`'s own invariant then
+    /// requires the ghost to stay inside a `u8`. Without a bound here the cast produces an
+    /// unconstrained value and the invariant cannot be folded back. 69 is loose on purpose --
+    /// 20 fixed, at most 19 for MSS/WS/SACK-permitted/timestamp, at most 26 for the SACK
+    /// blocks, and at most 3 of padding.
+    #[flux_rs::trusted(no, reason = "carries the emitted header length to Repr::emit")]
+    #[flux_rs::sig(fn(&Self) -> usize{v: 20 <= v && v <= 69})]
+    #[flux_rs::no_panic]
     pub fn header_len(&self) -> usize {
-        let mut length = field::URGENT.end;
+        let mut length = 20; // field::URGENT.end
         if self.max_seg_size.is_some() {
             length += 4
         }
@@ -1354,15 +1364,19 @@ impl<'a> Repr<'a> {
         if self.timestamp.is_some() {
             length += 10;
         }
-        let sack_range_len: usize = self
-            .sack_ranges
-            .iter()
-            .map(|o| o.map(|_| 8).unwrap_or(0))
-            .sum();
+        // Destructured rather than `iter().map().sum()`: `Iterator::sum` carries no bound, so
+        // the sum is an unconstrained `usize` and every bound below it is lost. Three slots,
+        // eight octets each, same value.
+        let [a, b, c] = self.sack_ranges;
+        let sack_range_len: usize = (if a.is_some() { 8 } else { 0 })
+            + (if b.is_some() { 8 } else { 0 })
+            + (if c.is_some() { 8 } else { 0 });
         if sack_range_len > 0 {
             length += sack_range_len + 2;
         }
-        if !length.is_multiple_of(4) {
+        // `length % 4 != 0` rather than `!length.is_multiple_of(4)`: that method carries no
+        // flux spec, so `no_panic` reports it as a possible panic. Same test.
+        if length % 4 != 0 {
             length += 4 - length % 4;
         }
         length
@@ -1387,11 +1401,19 @@ impl<'a> Repr<'a> {
     // The window obligations -- `options_mut`, `payload_mut` and the payload copy -- are *not*
     // discharged: they need `self.header_len()` and `self.payload.len()`, and `TcpRepr` carries
     // no refinement, so neither is statable at this type. They are left owing, not hidden.
+    //
+    // `packet` is `&strg`, not `&mut Packet<T>[@p]`. An indexed `&mut` pins every field of the
+    // index, `hlen` included, so no setter that moves the ghost can be called through it --
+    // `set_header_len` failed with `type invariant may not hold (when place is folded)`, and it
+    // failed the same way for a literal argument, so it was never about the value. A `&strg`
+    // place carries the new index out instead. This is a flux-only change: the Rust signature
+    // is still `&mut Packet<T>`. Same move as `ipv4::Repr::emit`.
     #[flux_rs::trusted(no, reason = "panic site: the header setters and the payload copy")]
     #[flux_rs::sig(
-        fn(&Self, packet: &mut Packet<T>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities)
+        fn(&Self, packet: &strg Packet<T>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities)
         requires 20 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
               && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
+        ensures packet: Packet<T>{q: q.buffer == p.buffer}
     )]
     pub fn emit<T>(
         &self,
