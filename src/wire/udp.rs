@@ -685,16 +685,21 @@ impl fmt::Display for Packet<Ref<'_>> {
 }
 
 #[cfg(feature = "defmt")]
-impl<'a, T: AsRef<[u8]> + ?Sized> defmt::Format for Packet<&'a T> {
+impl defmt::Format for Packet<Ref<'_>> {
     fn format(&self, fmt: defmt::Formatter) {
         // Cannot use Repr::parse because we don't have the IP addresses.
-        defmt::write!(
-            fmt,
-            "UDP src={} dst={} len={}",
-            self.src_port(),
-            self.dst_port(),
-            self.payload().len()
-        );
+        // The check is taken inside the body for the same reason as in `Display`: a trait impl's
+        // signature is fixed, so it cannot carry the accessors' `requires`.
+        match self.checked_len() {
+            Err(err) => defmt::write!(fmt, "UDP ({})", err),
+            Ok(_) => defmt::write!(
+                fmt,
+                "UDP src={} dst={} len={}",
+                self.src_port(),
+                self.dst_port(),
+                self.payload().len()
+            ),
+        }
     }
 }
 
