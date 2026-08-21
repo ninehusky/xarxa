@@ -13,8 +13,8 @@ pub(crate) enum EthernetPacket<'a> {
 
 #[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-// `plen` is the IP header's `payload_len` and `blen` the buffer the payload will fill; both use
-// `-1` for "not tracked", following `IpPayload` and `ip::Repr`.
+// `plen` is the IP header's `payload_len`, carried on both variants. `blen` is the buffer the
+// payload will fill, and uses `-1` for "not tracked", following `IpPayload`.
 #[flux_rs::refined_by(ip_ty: int, plen: int, blen: int)]
 #[flux_rs::invariant(ip_ty == 0 || ip_ty == 1)]
 // A tracked payload length is a v4 one, and it equals the IP header's `payload_len`. Both halves
@@ -26,7 +26,7 @@ pub(crate) enum Packet<'p> {
     #[flux_rs::variant((PacketV4[@p]) -> Packet[0, p.plen, p.blen])]
     Ipv4(PacketV4<'p>),
     #[cfg(feature = "proto-ipv6")]
-    #[flux_rs::variant((PacketV6[@p]) -> Packet[1, -1, p.blen])]
+    #[flux_rs::variant((PacketV6[@p]) -> Packet[1, p.plen, p.blen])]
     Ipv6(PacketV6<'p>),
 }
 
@@ -60,7 +60,7 @@ impl<'p> Packet<'p> {
 
     #[cfg(feature = "proto-ipv6")]
     #[flux_rs::sig(
-        fn(ip_repr: Ipv6Repr, payload: IpPayload[@b]) -> Packet[1, -1, -1]
+        fn(ip_repr: Ipv6Repr[@r], payload: IpPayload[@b]) -> Packet[1, r.plen, -1]
         requires b == -1
     )]
     #[flux_rs::no_panic]
@@ -274,11 +274,13 @@ pub(crate) struct PacketV4<'p> {
 #[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[cfg(feature = "proto-ipv6")]
-#[flux_rs::refined_by(blen: int)]
-// No payload length is tracked on the v6 side, so an `IpPayload` whose length *is* tracked
-// (today only `Icmpv4`) cannot be put in a `PacketV6`. Nothing in the crate does.
+#[flux_rs::refined_by(plen: int, blen: int)]
+// No payload *buffer* length is tracked on the v6 side, so an `IpPayload` whose length *is*
+// tracked (today only `Icmpv4`) cannot be put in a `PacketV6`. Nothing in the crate does.
+// The header's `payload_len` is carried regardless, mirroring `PacketV4`.
 #[flux_rs::invariant(blen == -1)]
 pub(crate) struct PacketV6<'p> {
+    #[flux_rs::field(Ipv6Repr[plen])]
     pub(crate) header: Ipv6Repr,
     #[cfg(feature = "proto-ipv6-hbh")]
     pub(crate) hop_by_hop: Option<Ipv6HopByHopRepr<'p>>,

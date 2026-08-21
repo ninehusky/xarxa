@@ -670,6 +670,7 @@ pub struct Repr {
     /// Protocol contained in the next header.
     pub next_header: Protocol,
     /// Length of the payload including the extension headers.
+    #[flux_rs::field(usize[plen])]
     pub payload_len: usize,
     /// The 8-bit hop limit field.
     pub hop_limit: u8,
