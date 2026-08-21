@@ -5,7 +5,7 @@ use super::{Error, Result};
 use crate::phy::ChecksumCapabilities;
 use crate::wire::ip::checksum;
 use crate::wire::{IpAddress, IpProtocol};
-use crate::wire::{read_i32_at, read_u16_at, sub, write_i32_at, write_u16_at};
+use crate::wire::{Ref, read_i32_at, read_u16_at, sub, write_i32_at, write_u16_at};
 
 /// A TCP sequence number.
 ///
@@ -592,36 +592,6 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 }
 
-// Left bounds-checked, both of them. The buffer here is `&'a T`, so a length index would have
-// to come from core's blanket `impl<T, U> AsRef<U> for &T`, which carries no associated
-// refinement (`as_ref_reft` is missing). Every bound these two windows need -- `20 <= hlen`,
-// `hlen <= buffer_len` -- is therefore *unstatable* at this self type, not merely unproven, so
-// the ghost does not help here and neither would routing through a helper. An extern spec for
-// that blanket impl does not work either: flux gives a reference self type the unit sort, so the
-// spec is ill-sorted, and it fails in the worst way -- the refinement registers as present and
-// the "missing" errors go quiet around a body that proves nothing.
-//
-// The same wall accounts for every remaining error in this file: `Repr::parse`, `Repr::emit` and
-// `Display` all take `Packet<&T>` or `Packet<&mut T>`. Convertible once a reference self type can
-// be refined; the route is routing `iface/packet.rs` through `wire::Buf`.
-impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
-    /// Return a pointer to the options.
-    #[inline]
-    pub fn options(&self) -> &'a [u8] {
-        let header_len = self.header_len();
-        let data = self.buffer.as_ref();
-        &data[field::OPTIONS(header_len)]
-    }
-
-    /// Return a pointer to the payload.
-    #[inline]
-    pub fn payload(&self) -> &'a [u8] {
-        let header_len = self.header_len() as usize;
-        let data = self.buffer.as_ref();
-        &data[header_len..]
-    }
-}
-
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the source port field.
     #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
@@ -989,10 +959,41 @@ pub enum TcpOption<'a> {
     Unknown { kind: u8, data: &'a [u8] },
 }
 
+/// One SACK block: the pair of 32-bit edges at `at`, or `None` when the option does not reach
+/// that far.
+///
+/// `at + 8 <= data.len()` rather than `at < data.len()`, which is what the caller's loop used
+/// to test: `data.len()` is the option length less two, which the caller has already made a
+/// multiple of eight, and `at` is one too, so the two conditions coincide -- and this one is
+/// the bound the two reads need.
+///
+/// RFC 2018: Each contiguous block of data queued at the data receiver is defined in the SACK
+/// option by two 32-bit unsigned integers in network byte order[...]
+#[flux_rs::sig(fn(&[u8][@n], at: usize) -> Option<(u32, u32)> requires at <= 16)]
+fn sack_block(data: &[u8], at: usize) -> Option<(u32, u32)> {
+    if at + 8 <= data.len() {
+        Some((
+            NetworkEndian::read_u32(&data[at..at + 4]),
+            NetworkEndian::read_u32(&data[at + 4..at + 8]),
+        ))
+    } else {
+        None
+    }
+}
+
 impl<'a> TcpOption<'a> {
+    /// The three `ok_or` tests are spelled out as length comparisons: `first` and `get` return
+    /// an `Option` whose `Some` says nothing about the slice inside it, so the length the check
+    /// established did not survive. Each test below rejects exactly the buffers its `Option`
+    /// counterpart did -- `get(2..length)` is `None` when `length < 2` or when it runs past the
+    /// buffer -- and what it leaves behind is `data`'s length, which is what every read in the
+    /// inner match needs.
     pub fn parse(buffer: &'a [u8]) -> Result<(&'a [u8], TcpOption<'a>)> {
         let (length, option);
-        match *buffer.first().ok_or(Error)? {
+        if buffer.is_empty() {
+            return Err(Error);
+        }
+        match buffer[0] {
             field::OPT_END => {
                 length = 1;
                 option = TcpOption::EndOfList;
@@ -1002,8 +1003,14 @@ impl<'a> TcpOption<'a> {
                 option = TcpOption::NoOperation;
             }
             kind => {
-                length = *buffer.get(1).ok_or(Error)? as usize;
-                let data = buffer.get(2..length).ok_or(Error)?;
+                if buffer.len() < 2 {
+                    return Err(Error);
+                }
+                length = buffer[1] as usize;
+                if length < 2 || buffer.len() < length {
+                    return Err(Error);
+                }
+                let data = &buffer[2..length];
                 match (kind, length) {
                     (field::OPT_END, _) | (field::OPT_NOP, _) => unreachable!(),
                     (field::OPT_MSS, 4) => {
@@ -1030,23 +1037,20 @@ impl<'a> TcpOption<'a> {
                             // maximum of 3 SACK blocks will be allowed in this case.
                             net_debug!("sACK with >3 blocks, truncating to 3");
                         }
-                        let mut sack_ranges: [Option<(u32, u32)>; 3] = [None; 3];
+                        let sack_ranges: [Option<(u32, u32)>; 3];
 
                         // RFC 2018: Each contiguous block of data queued at the data receiver is
                         // defined in the SACK option by two 32-bit unsigned integers in network
                         // byte order[...]
-                        sack_ranges.iter_mut().enumerate().for_each(|(i, nmut)| {
-                            let left = i * 8;
-                            *nmut = if left < data.len() {
-                                let mid = left + 4;
-                                let right = mid + 4;
-                                let range_left = NetworkEndian::read_u32(&data[left..mid]);
-                                let range_right = NetworkEndian::read_u32(&data[mid..right]);
-                                Some((range_left, range_right))
-                            } else {
-                                None
-                            };
-                        });
+                        // Three literal offsets rather than `iter_mut().enumerate()`:
+                        // `enumerate` hands out an unbounded `usize`, and with `i` unbounded
+                        // `i * 8 + 4` is a possible overflow -- enough to lose `left <= mid`
+                        // before any bound on `data` is considered.
+                        sack_ranges = [
+                            sack_block(data, 0),
+                            sack_block(data, 8),
+                            sack_block(data, 16),
+                        ];
                         option = TcpOption::SackRange(sack_ranges);
                     }
                     (field::OPT_TSTAMP, 10) => {
@@ -1210,6 +1214,11 @@ impl TcpTimestampRepr {
 
 impl<'a> Repr<'a> {
     /// Parse a Transmission Control Protocol packet and return a high-level representation.
+    ///
+    /// A reference in type-parameter position has the unit sort, so no bound on `T`'s buffer is
+    /// statable here and neither window below would be provable. The body therefore lives on
+    /// [`parse_ref`](Self::parse_ref), over a buffer whose length is nameable; this re-wraps the
+    /// same bytes and forwards, which repeats no work the old body did not do.
     pub fn parse<T>(
         packet: &Packet<&'a T>,
         src_addr: &IpAddress,
@@ -1219,7 +1228,27 @@ impl<'a> Repr<'a> {
     where
         T: AsRef<[u8]> + ?Sized,
     {
-        packet.check_len()?;
+        Repr::parse_ref(
+            &Packet::new_unchecked(Ref::new(packet.buffer.as_ref())),
+            src_addr,
+            dst_addr,
+            checksum_caps,
+        )
+    }
+
+    /// [`parse`](Self::parse) over a [`Ref`], where the buffer's length is in the refinement.
+    ///
+    /// `checked_len` rather than `check_len`: the same test, but its `Ok` arm names the three
+    /// facts the accessors below need -- the buffer's length, that the header-length field is
+    /// not a lie about it, and that the options window does not run backwards -- and over `Ref`
+    /// they are statable.
+    pub fn parse_ref(
+        packet: &Packet<Ref<'a>>,
+        src_addr: &IpAddress,
+        dst_addr: &IpAddress,
+        checksum_caps: &ChecksumCapabilities,
+    ) -> Result<Repr<'a>> {
+        packet.checked_len()?;
 
         // Source and destination ports must be present.
         if packet.src_port() == 0 {
@@ -1444,9 +1473,24 @@ impl<'a> Repr<'a> {
     }
 }
 
+// The buffer arrives with no length index, and `Ref` is where it acquires one; the body is on
+// the `Packet<Ref>` impl below.
 impl<T: AsRef<[u8]> + ?Sized> fmt::Display for Packet<&T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Display::fmt(&Packet::new_unchecked(Ref::new(self.buffer.as_ref())), f)
+    }
+}
+
+// A trait impl's signature is fixed, so this cannot carry the accessors' `requires`. The check
+// is taken inside the body instead: `checked_len`'s `Ok` arm proves every bound the header
+// reads and the two windows want, and the arm that fails it no longer reads a header out of a
+// buffer it never validated -- a panic on a truncated segment.
+impl fmt::Display for Packet<Ref<'_>> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // Cannot use Repr::parse because we don't have the IP addresses.
+        if let Err(err) = self.checked_len() {
+            return write!(f, "TCP ({err})");
+        }
         write!(f, "TCP src={} dst={}", self.src_port(), self.dst_port())?;
         if self.syn() {
             write!(f, " syn")?
@@ -1557,7 +1601,9 @@ impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
         f: &mut fmt::Formatter,
         indent: &mut PrettyIndent,
     ) -> fmt::Result {
-        match Packet::new_checked(buffer) {
+        // `Ref::new` off the `dyn`'s own `as_ref`: the trait signature is fixed, so the buffer
+        // arrives with no length index, and `Ref` is where it acquires one.
+        match Packet::new_checked_ref(Ref::new(buffer.as_ref())) {
             Err(err) => write!(f, "{indent}({err})"),
             Ok(packet) => write!(f, "{indent}{packet}"),
         }
@@ -1634,7 +1680,7 @@ mod test {
     #[test]
     #[cfg(feature = "proto-ipv4")]
     fn test_deconstruct() {
-        let packet = Packet::new_unchecked(&PACKET_BYTES[..]);
+        let packet = Packet::new_unchecked(Ref::new(&PACKET_BYTES[..]));
         assert_eq!(packet.src_port(), 48896);
         assert_eq!(packet.dst_port(), 80);
         assert_eq!(packet.seq_number(), SeqNumber(0x01234567));
@@ -1823,5 +1869,58 @@ mod test {
         assert_eq!(TcpOption::parse(&[0xc, 0x01]), Err(Error));
         assert_eq!(TcpOption::parse(&[0x2, 0x02]), Err(Error));
         assert_eq!(TcpOption::parse(&[0x3, 0x02]), Err(Error));
+    }
+}
+
+impl<'a> Packet<Ref<'a>> {
+    /// [`new_checked`](Self::new_checked) over a [`Ref`], carrying its proof out.
+    ///
+    /// The generic `new_checked` cannot say this: at a reference or `dyn` self type the
+    /// `as_ref_reft` in the postcondition is unstatable. Over `Ref` the buffer's length is
+    /// `b.len`, and the three facts `checked_len` already proves are exactly what
+    /// [`options`](Self::options), [`payload`](Self::payload) and [`Repr::parse_ref`] require.
+    #[flux_rs::trusted(no, reason = "carries `checked_len`'s proof out through the `Ok` arm")]
+    #[flux_rs::sig(
+        fn(Ref[@b]) -> Result<Packet<Ref>{p: p.buffer == b && 20 <= p.hlen && p.hlen <= b.len}>
+    )]
+    pub fn new_checked_ref(buffer: Ref<'a>) -> Result<Packet<Ref<'a>>> {
+        let packet = Packet::new_unchecked(buffer);
+        packet.checked_len()?;
+        Ok(packet)
+    }
+
+    /// Return a pointer to the options.
+    ///
+    /// The `Packet<&'a T>` twin of this cannot be proved: a reference in type-parameter position
+    /// has the unit sort, so neither end of the window is statable there -- not even with the
+    /// ghost, because `hlen <= buffer_len` names a length the self type does not have. Over
+    /// `Ref<'a>` the buffer's length is `p.buffer.len`, the far end is the ghost, and the
+    /// options' length survives into the caller's index.
+    #[flux_rs::trusted(no, reason = "panic site: opens the window named by the header-length field")]
+    #[flux_rs::sig(
+        fn(&Packet<Ref>[@p]) -> &[u8][p.hlen - 20]
+        requires 20 <= p.hlen && p.hlen <= p.buffer.len
+    )]
+    #[flux_rs::no_panic]
+    #[inline]
+    pub fn options(&self) -> &'a [u8] {
+        // 20 is `field::URGENT.end`, the start of `field::OPTIONS`; flux cannot see through a
+        // `Range` const.
+        self.buffer.window(20, self.header_len() as usize)
+    }
+
+    /// Return a pointer to the payload.
+    ///
+    /// See [`options`](Self::options) for why the `Packet<&'a T>` twin cannot be proved.
+    #[flux_rs::trusted(no, reason = "panic site: opens the window past the header")]
+    #[flux_rs::sig(
+        fn(&Packet<Ref>[@p]) -> &[u8][p.buffer.len - p.hlen]
+        requires 14 <= p.buffer.len && p.hlen <= p.buffer.len
+    )]
+    #[flux_rs::no_panic]
+    #[inline]
+    pub fn payload(&self) -> &'a [u8] {
+        let len = self.buffer.as_ref().len();
+        self.buffer.window(self.header_len() as usize, len)
     }
 }
