@@ -271,6 +271,19 @@ mod field {
 
 pub const HEADER_LEN: usize = field::DST_ADDR.end;
 
+/// Read the four octets at `at`.
+///
+/// Trusted for the same reason as [`crate::wire::read_u16_at`]: the sub-slice's length is not
+/// recoverable at the call site (flux-rs/flux#1714), so the `try_into` cannot be proved to
+/// succeed there. The `at + 4 <= n` bound here is what makes it safe, and it *is* checked at
+/// every caller.
+#[flux_rs::trusted(yes, reason = "sub-slice length is not recoverable; see flux-rs/flux#1714")]
+#[flux_rs::sig(fn(&[u8][@n], at: usize) -> [u8; 4] requires at + 4 <= n)]
+#[flux_rs::no_panic]
+fn read_octets4_at(data: &[u8], at: usize) -> [u8; 4] {
+    data[at..at + 4].try_into().unwrap()
+}
+
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Imbue a raw octet buffer with IPv4 packet structure.
     ///
@@ -340,7 +353,8 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[flux_rs::sig(
         fn(self: &Packet<T>[@p])
             -> Result<usize{v: v == <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
-                             && 20 <= v && 20 <= p.hlen && p.hlen <= p.tlen && p.tlen <= v}>
+                             && 20 <= v && 20 <= p.hlen && p.hlen <= p.tlen && p.tlen <= v
+                             && p.tlen <= 65535}>
     )]
     #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
     fn checked_len(&self) -> Result<usize> {
@@ -369,6 +383,13 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the version field.
+    // Literal bounds rather than `field::VER_IHL + 1`: flux cannot see through the arithmetic
+    // on the const, so the bound has to be written out. Same throughout this impl.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u8 requires 1 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn version(&self) -> u8 {
         let data = self.buffer.as_ref();
@@ -410,12 +431,22 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the Differential Services Code Point field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u8 requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn dscp(&self) -> u8 {
         let data = self.buffer.as_ref();
         data[field::DSCP_ECN] >> 2
     }
 
     /// Return the Explicit Congestion Notification field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u8 requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn ecn(&self) -> u8 {
         let data = self.buffer.as_ref();
         data[field::DSCP_ECN] & 0x03
@@ -449,34 +480,59 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the fragment identification field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u16 requires 6 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn ident(&self) -> u16 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::IDENT])
+        crate::wire::read_u16_at(data, 4) // field::IDENT
     }
 
     /// Return the "don't fragment" flag.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> bool requires 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn dont_frag(&self) -> bool {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::FLG_OFF]) & 0x4000 != 0
+        crate::wire::read_u16_at(data, 6) & 0x4000 != 0 // field::FLG_OFF
     }
 
     /// Return the "more fragments" flag.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> bool requires 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn more_frags(&self) -> bool {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::FLG_OFF]) & 0x2000 != 0
+        crate::wire::read_u16_at(data, 6) & 0x2000 != 0 // field::FLG_OFF
     }
 
     /// Return the fragment offset, in octets.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u16 requires 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn frag_offset(&self) -> u16 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::FLG_OFF]) << 3
+        crate::wire::read_u16_at(data, 6) << 3 // field::FLG_OFF
     }
 
     /// Return the time to live field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u8 requires 9 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn hop_limit(&self) -> u8 {
         let data = self.buffer.as_ref();
@@ -484,6 +540,11 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the next_header (protocol) field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> Protocol requires 10 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn next_header(&self) -> Protocol {
         let data = self.buffer.as_ref();
@@ -491,24 +552,39 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the header checksum field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u16 requires 12 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn checksum(&self) -> u16 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u16(&data[field::CHECKSUM])
+        crate::wire::read_u16_at(data, 10) // field::CHECKSUM
     }
 
     /// Return the source address field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> Address requires 16 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn src_addr(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_octets(data[field::SRC_ADDR].try_into().unwrap())
+        Address::from_octets(read_octets4_at(data, 12)) // field::SRC_ADDR
     }
 
     /// Return the destination address field.
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> Address requires 20 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn dst_addr(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_octets(data[field::DST_ADDR].try_into().unwrap())
+        Address::from_octets(read_octets4_at(data, 16)) // field::DST_ADDR
     }
 
     /// Validate the header checksum.
@@ -536,6 +612,11 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Returns the key for identifying the packet.
+    #[flux_rs::trusted(no, reason = "reads four header fields at fixed offsets")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> Key requires 20 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn get_key(&self) -> Key {
         Key {
             id: self.ident(),
@@ -1560,12 +1641,14 @@ impl<'a> Packet<Ref<'a>> {
     /// `as_ref_reft` in the postcondition is unstatable, so stating it there costs an error at
     /// `pretty_print` and buys nothing. Over `Ref` the buffer's length is `b.len`, and the four
     /// facts `checked_len` already proves are exactly what [`payload`](Self::payload) and
-    /// [`Repr::parse_ref`] require.
+    /// [`Repr::parse_ref`] require. `tlen <= 65535` is `Ghost`'s own invariant, restated here
+    /// because it is the *upper* bound on the payload a downstream checksum needs and nothing
+    /// below this layer can state it.
     #[flux_rs::trusted(no, reason = "carries `checked_len`'s proof out through the `Ok` arm")]
     #[flux_rs::sig(
         fn(Ref[@b]) -> Result<Packet<Ref>{p: p.buffer == b && 20 <= b.len
                                              && 20 <= p.hlen && p.hlen <= p.tlen
-                                             && p.tlen <= b.len}>
+                                             && p.tlen <= b.len && p.tlen <= 65535}>
     )]
     pub fn new_checked_ref(buffer: Ref<'a>) -> Result<Packet<Ref<'a>>> {
         let packet = Packet::new_unchecked(buffer);
