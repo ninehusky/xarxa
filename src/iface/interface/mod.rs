@@ -1095,7 +1095,7 @@ impl InterfaceInner {
                     frame.set_dst_addr(dst_hardware_addr);
                     frame.set_ethertype(EthernetProtocol::Arp);
 
-                    let mut packet = ArpPacket::new_unchecked(frame.payload_mut());
+                    let mut packet = ArpPacket::new_unchecked(frame.payload_buf());
                     arp_repr.emit(&mut packet);
                 })
             }
@@ -1235,7 +1235,7 @@ impl InterfaceInner {
                         frame.set_dst_addr(EthernetAddress::BROADCAST);
                         frame.set_ethertype(EthernetProtocol::Arp);
 
-                        arp_repr.emit(&mut ArpPacket::new_unchecked(frame.payload_mut()))
+                        arp_repr.emit(&mut ArpPacket::new_unchecked(frame.payload_buf()))
                     })
                 {
                     net_debug!("Failed to dispatch ARP request: {:?}", e);
@@ -1293,12 +1293,12 @@ impl InterfaceInner {
     /// Split out of `dispatch_ip`'s `emit_ethernet` closure: flux cannot infer refinement
     /// parameters at a closure call, and a closure parameter carries no length bound.
     #[cfg(feature = "medium-ethernet")]
-    // NB: the `14 <= n` bound below is currently consumed by nothing -- `set_src_addr`,
-    // `set_dst_addr` and `set_ethertype` (ethernet.rs:285/292/299) have no signatures, so they
-    // impose no obligation. Callers do prove it, so it is not wrong, but the 14-byte Ethernet
-    // write is NOT yet verified. It becomes load-bearing once `ethernet::Frame` is refined by
-    // its buffer, which is the same recipe already applied to the other wire types.
-    #[flux_rs::trusted(no, reason = "will carry the length once ethernet setters have sigs")]
+    // The frame's buffer is a `Buf` rather than the incoming `&mut [u8]`: at `T = &mut [u8]`
+    // the length index would have to come from core's blanket `impl AsMut for &mut T`, which
+    // carries no associated refinement, and that is a *spec* error -- it aborts refinement
+    // checking of this whole body, so the three header writes below stop being checked at all.
+    // `Buf`'s `AsMut` impl is local and refined, so `14 <= n` reaches the setters.
+    #[flux_rs::trusted(no, reason = "poses the three Ethernet header writes' buffer bound")]
     #[flux_rs::sig(
         fn(
             repr: &IpRepr[@ipr],
@@ -1314,7 +1314,7 @@ impl InterfaceInner {
         src_addr: EthernetAddress,
         dst_addr: EthernetAddress,
     ) {
-        let mut frame = EthernetFrame::new_unchecked(tx_buffer);
+        let mut frame = EthernetFrame::new_unchecked(Buf::new(tx_buffer));
 
         frame.set_src_addr(src_addr);
         frame.set_dst_addr(dst_addr);
