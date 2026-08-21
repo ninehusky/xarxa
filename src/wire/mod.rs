@@ -283,12 +283,17 @@ pub use self::tcp::{
     SeqNumber as TcpSeqNumber, TcpOption, TcpTimestampGenerator, TcpTimestampRepr,
 };
 
+pub(crate) use self::tcp::SizedRepr as SizedTcpRepr;
+
 #[cfg(feature = "proto-dhcpv4")]
 pub use self::dhcpv4::{
     CLIENT_PORT as DHCP_CLIENT_PORT, DhcpOption, DhcpOptionWriter, Flags as DhcpFlags,
     MAX_DNS_SERVER_COUNT as DHCP_MAX_DNS_SERVER_COUNT, MessageType as DhcpMessageType,
     OpCode as DhcpOpCode, Packet as DhcpPacket, Repr as DhcpRepr, SERVER_PORT as DHCP_SERVER_PORT,
 };
+
+#[cfg(feature = "proto-dhcpv4")]
+pub(crate) use self::dhcpv4::SizedRepr as SizedDhcpRepr;
 
 #[cfg(feature = "proto-dns")]
 pub use self::dns::{

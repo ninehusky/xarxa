@@ -1589,9 +1589,9 @@ fn test_join_ipv6_multicast_group(#[case] medium: Medium) {
         let hbh_header = Ipv6HopByHopHeader::new_checked(&ip_payload[..8]).unwrap();
         let hbh_repr = Ipv6HopByHopRepr::parse(&hbh_header).unwrap();
 
-        assert_eq!(hbh_repr.options.len(), 3);
+        assert_eq!(hbh_repr.options().len(), 3);
         assert_eq!(
-            hbh_repr.options[0],
+            hbh_repr.options()[0],
             Ipv6OptionRepr::Unknown {
                 type_: Ipv6OptionType::Unknown(IpProtocol::Icmpv6.into()),
                 length: 0,
@@ -1599,10 +1599,10 @@ fn test_join_ipv6_multicast_group(#[case] medium: Medium) {
             }
         );
         assert_eq!(
-            hbh_repr.options[1],
+            hbh_repr.options()[1],
             Ipv6OptionRepr::RouterAlert(Ipv6OptionRouterAlert::MulticastListenerDiscovery)
         );
-        assert_eq!(hbh_repr.options[2], Ipv6OptionRepr::PadN(0));
+        assert_eq!(hbh_repr.options()[2], Ipv6OptionRepr::PadN(0));
 
         let icmpv6_packet =
             Icmpv6Packet::new_checked(&ip_payload[hbh_repr.buffer_len()..]).unwrap();
@@ -1767,9 +1767,9 @@ fn test_handle_valid_multicast_query(#[case] medium: Medium) {
         let hbh_header = Ipv6HopByHopHeader::new_checked(&ip_payload[..8]).unwrap();
         let hbh_repr = Ipv6HopByHopRepr::parse(&hbh_header).unwrap();
 
-        assert_eq!(hbh_repr.options.len(), 3);
+        assert_eq!(hbh_repr.options().len(), 3);
         assert_eq!(
-            hbh_repr.options[0],
+            hbh_repr.options()[0],
             Ipv6OptionRepr::Unknown {
                 type_: Ipv6OptionType::Unknown(IpProtocol::Icmpv6.into()),
                 length: 0,
@@ -1777,10 +1777,10 @@ fn test_handle_valid_multicast_query(#[case] medium: Medium) {
             }
         );
         assert_eq!(
-            hbh_repr.options[1],
+            hbh_repr.options()[1],
             Ipv6OptionRepr::RouterAlert(Ipv6OptionRouterAlert::MulticastListenerDiscovery)
         );
-        assert_eq!(hbh_repr.options[2], Ipv6OptionRepr::PadN(0));
+        assert_eq!(hbh_repr.options()[2], Ipv6OptionRepr::PadN(0));
 
         let icmpv6_packet =
             Icmpv6Packet::new_checked(&ip_payload[hbh_repr.buffer_len()..]).unwrap();

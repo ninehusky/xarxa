@@ -25,26 +25,15 @@
 //! `opaque` struct. Both fields are private and this file has no submodules, so the three
 //! constructors below are the complete set of ways a `Buf` comes into existence:
 //!
-//! * `new(inner)`        -- `offset = 0 <= inner.len()`, and `len = inner.len()`.
-//! * `with_offset(i, o)` -- `requires o <= n`. Discharged at the two sites in `dispatch_ip`,
-//!                          which is `trusted(no)` and carries a local
-//!                          `check_overflow = "strict"` for exactly this reason. **Not yet
-//!                          discharged** at `iface/packet.rs:132` (needs `emit_payload`'s
-//!                          `&mut [u8]` refined -- the known L2 blocker) or at
-//!                          `wire/mld.rs:688` (needs `mld::Repr::emit`'s `28 <= buffer`
-//!                          strengthened to `8 + 20 * records.len() <= buffer`, which no
-//!                          caller owes today). A fifth site, `wire/ipv4.rs:561` in
-//!                          `dispatch_ipv4_frag`, is `cfg`'d out of the firmware config and
-//!                          will hit the identical `tx_len = ip_len + eth_len` wall when it
-//!                          is not.
-//!
-//!                          Both undischarged bounds are *true* -- `packet.rs:132` is guarded
-//!                          by the checked `&mut payload[hbh_start..hbh_end]` two lines above,
-//!                          and `mld.rs:688` holds by induction on the record loop, since
-//!                          iteration k-1's `set_record_type` indexes checked and would have
-//!                          panicked first. They are proof debt, not defects. But until they
-//!                          are discharged, this invariant rests on them, and so does
-//!                          `as_ref`/`as_mut`'s unchecked slicing.
+//! * `new(inner)` -- `offset = 0 <= inner.len()`, and `len = inner.len()`.
+//! * `with_offset(i, o)` -- `requires o <= n`, and that bound is **discharged at every call
+//!   site** the crate has: the three in `dispatch_ip`, which is `trusted(no)` and carries a
+//!   local `check_overflow = "strict"` for exactly this reason; `iface/packet.rs`'s
+//!   hop-by-hop arm, via the `minlen` floor `IpPayload` carries; `wire/icmpv6.rs`'s
+//!   `payload_buf`; and `wire/mld.rs`'s record loop, whose offsets are written in closed form
+//!   so they relate to `Repr`'s `8 + 20 * k` index. A further site in `dispatch_ipv4_frag` is
+//!   `cfg`'d out of the firmware config and will hit the identical
+//!   `tx_len = ip_len + eth_len` wall when it is not.
 //! * `reborrow(&mut self)` -- copies both fields verbatim, so it preserves whatever held before.
 //!
 //! Each establishes the stronger equality `inner.len() - offset == len`. Exactly one method

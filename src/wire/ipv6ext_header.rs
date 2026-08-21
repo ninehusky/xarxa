@@ -382,6 +382,12 @@ impl<'a> Repr<'a> {
 
     /// Return the length, in bytes, of a header that will be emitted from this high-level
     /// representation.
+    // The 2 is `field::MIN_HEADER_SIZE`; stated as an index so callers can relate the octets
+    // this writes to the buffer they were handed. `iface::packet`'s hop-by-hop arm needs it to
+    // place the options that follow.
+    #[flux_rs::trusted(no, reason = "2 is the constant the hop-by-hop layout rests on")]
+    #[flux_rs::sig(fn(self: &Self) -> usize[2])]
+    #[flux_rs::no_panic]
     pub const fn header_len(&self) -> usize {
         2
     }

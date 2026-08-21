@@ -981,9 +981,13 @@ impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
 // Indexed by `payload_len`, which is what `ip::Repr::buffer_len()` adds the 20-byte header to
 // and therefore what a caller sizes a transmit buffer from.
 #[flux_rs::refined_by(plen: int)]
-// `payload_len` is a `usize`; stated because the index alone does not carry it, and
-// `ip::Repr::buffer_len`'s `20 <= n` conjunct needs it.
+// `payload_len` is a `usize`; stated because the index alone does not carry it.
 #[flux_rs::invariant(0 <= plen)]
+// IPv4 total-length is a `u16`, so the payload it describes fits in one too. Without a ceiling
+// the sum in `ip::Repr::buffer_len` may wrap, which leaves `n == 20 + plen` underivable -- and
+// under `check_overflow = "strict"` leaves `buffer_len() + eth_len` reported as an overflow.
+// 65535 is also what `ip::checksum::data` asks of its accumulator.
+#[flux_rs::invariant(plen <= 65535)]
 pub struct Repr {
     pub src_addr: Address,
     pub dst_addr: Address,
