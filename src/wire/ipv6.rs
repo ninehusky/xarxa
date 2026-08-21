@@ -6,7 +6,7 @@ use core::fmt;
 use super::{Error, Result};
 use crate::wire::HardwareAddress;
 use crate::wire::ip::pretty_print_ip_payload;
-use crate::wire::{read_u16_at, Ref};
+use crate::wire::{read_u16_at, read_u32_at, Ref};
 
 pub use super::IpProtocol as Protocol;
 
@@ -533,24 +533,47 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the version field.
+    // Literal offsets rather than the `field::` consts: flux cannot see through a `Range` const,
+    // so the bound has to be written out. Same for the two below.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u8
+        requires 0 < <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn version(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[field::VER_TC_FLOW.start] >> 4
+        data[0] >> 4 // field::VER_TC_FLOW.start
     }
 
     /// Return the traffic class.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u8
+        requires 2 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn traffic_class(&self) -> u8 {
         let data = self.buffer.as_ref();
-        ((NetworkEndian::read_u16(&data[0..2]) & 0x0ff0) >> 4) as u8
+        ((read_u16_at(data, 0) & 0x0ff0) >> 4) as u8
     }
 
     /// Return the flow label field.
+    ///
+    /// Read as the `u32` at offset 0 rather than the `u24` at offset 1: the mask keeps only the
+    /// low twenty bits either way, and of the two only the four-octet read has a refined helper.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u32
+        requires 4 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn flow_label(&self) -> u32 {
         let data = self.buffer.as_ref();
-        NetworkEndian::read_u24(&data[1..4]) & 0x000fffff
+        read_u32_at(data, 0) & 0x000fffff
     }
 
     /// Return the payload length field.
@@ -820,8 +843,12 @@ pub struct Repr {
 impl Repr {
     /// Parse an Internet Protocol version 6 packet and return a high-level representation.
     pub fn parse<T: AsRef<[u8]> + ?Sized>(packet: &Packet<&T>) -> Result<Repr> {
-        // Ensure basic accessors will work
-        packet.check_len()?;
+        // Re-wrapped as a `Ref` rather than read through `&T`: at a reference self type the
+        // buffer's length is unstatable, so `version`'s bound could not be discharged here.
+        // `Ref::new` gives the same bytes an index and `new_checked_ref` runs the test
+        // `check_len` ran, so its `Ok` arm proves it. The five accessors below keep their
+        // unrefined signatures -- see `plen_field`.
+        let packet = &Packet::new_checked_ref(Ref::new(packet.buffer.as_ref()))?;
         if packet.version() != 6 {
             return Err(Error);
         }
