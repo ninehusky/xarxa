@@ -1,7 +1,7 @@
 use super::{Error, Result};
 use core::fmt;
 
-use crate::wire::{read_u16_at, read_u32_at, write_u16_at, write_u32_at};
+use crate::wire::{read_u16_at, read_u32_at, write_u16_at, write_u32_at, Ref};
 
 /// A read/write wrapper around an IPv6 Fragment Header.
 #[derive(Debug, PartialEq, Eq)]
@@ -36,6 +36,9 @@ mod field {
 
 impl<T: AsRef<[u8]>> Header<T> {
     /// Create a raw octet buffer with an IPv6 Fragment Header structure.
+    #[flux_rs::trusted(no, reason = "carries the buffer length into the Header index")]
+    #[flux_rs::sig(fn(T[@buflen]) -> Header<T>{v: v.buffer == buflen})]
+    #[flux_rs::no_panic]
     pub const fn new_unchecked(buffer: T) -> Header<T> {
         Header { buffer }
     }
@@ -73,8 +76,7 @@ impl<T: AsRef<[u8]>> Header<T> {
     /// single test is the whole precondition of the file -- there is no window whose extent
     /// depends on buffer *contents*, and hence no ghost field as in `arp`, `udp` and `tcp`.
     ///
-    /// Nothing consumes the length yet: `Repr::parse` below instantiates `T` at a reference
-    /// type, which flux gives the unit sort, so it cannot name `as_ref_reft` at all.
+    /// [`Repr::parse_ref`](Repr::parse_ref) is what consumes it.
     #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
     #[flux_rs::sig(
         fn(self: &Header<T>[@h])
@@ -229,11 +231,29 @@ pub struct Repr {
 
 impl Repr {
     /// Parse an IPv6 Fragment Header and return a high-level representation.
+    ///
+    /// A reference in type-parameter position has the unit sort, so `<&T as AsRef<[u8]>>` has no
+    /// associated refinement here and no bound on the buffer is statable -- which aborted
+    /// refinement checking of this body and left all three accessor bounds unchecked. The body
+    /// therefore lives on [`parse_ref`](Self::parse_ref), over a buffer whose length is
+    /// nameable; this re-wraps the same bytes and forwards, repeating no work the old body did
+    /// not do.
     pub fn parse<T>(header: &Header<&T>) -> Result<Repr>
     where
         T: AsRef<[u8]> + ?Sized,
     {
-        header.check_len()?;
+        Repr::parse_ref(&Header::new_unchecked(Ref::new(header.buffer.as_ref())))
+    }
+
+    /// [`parse`](Self::parse) over a [`Ref`], where the buffer's length is in the refinement.
+    ///
+    /// `checked_len` rather than `check_len`: the same runtime test, but its `Ok` arm names the
+    /// length it validated, and over `Ref` that is enough to discharge all three accessors.
+    #[flux_rs::trusted(no, reason = "carries `checked_len`'s proof through the accessors")]
+    #[flux_rs::sig(fn(&Header<Ref>) -> Result<Repr>)]
+    #[flux_rs::no_panic]
+    pub fn parse_ref(header: &Header<Ref<'_>>) -> Result<Repr> {
+        header.checked_len()?;
         Ok(Repr {
             frag_offset: header.frag_offset(),
             more_frags: header.more_frags(),
@@ -248,7 +268,23 @@ impl Repr {
     }
 
     /// Emit a high-level representation into an IPv6 Fragment Header.
-    pub fn emit<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized>(&self, header: &mut Header<&mut T>) {
+    //
+    // `Header<T>` with `T: Sized`, not `Header<&mut T>` with `T: ?Sized`. The old shape
+    // instantiated core's blanket `impl<T, U> AsMut<U> for &mut T`, which carries no associated
+    // refinement, so `associated refinement 'as_mut_reft' is missing` aborted refinement
+    // checking of this whole body and every setter bound below went unchecked. `&mut T` is
+    // `Sized` and still satisfies the bounds, so every existing caller still resolves; the same
+    // move was made for `udp::Repr::emit_header` and `icmpv4::Repr::emit`.
+    //
+    // A plain `&mut` rather than `&strg`: `Header`'s index is the buffer alone and no setter
+    // here moves it, so the place folds back at its original index.
+    #[flux_rs::trusted(no, reason = "panic site: the four header setters")]
+    #[flux_rs::sig(
+        fn(&Self, header: &mut Header<T>[@h])
+        requires 6 <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+    )]
+    #[flux_rs::no_panic]
+    pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, header: &mut Header<T>) {
         header.clear_reserved();
         header.set_frag_offset(self.frag_offset);
         header.set_more_frags(self.more_frags);
