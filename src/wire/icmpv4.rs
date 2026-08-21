@@ -4,7 +4,7 @@ use super::{Error, Result};
 use crate::phy::ChecksumCapabilities;
 use crate::wire::ip::checksum;
 use crate::flux_util::byte_len;
-use crate::wire::{Buf, Ipv4Packet, Ipv4Repr, read_u16_at, write_u16_at};
+use crate::wire::{Buf, Ipv4Packet, Ipv4Repr, Ref, read_u16_at, write_u16_at};
 
 enum_with_unknown! {
     /// Internet protocol control message type.
@@ -202,6 +202,12 @@ impl<T: AsRef<[u8]>> Packet<T> {
     ///
     /// [new_unchecked]: #method.new_unchecked
     /// [check_len]: #method.check_len
+    ///
+    /// Deliberately left unrefined. `checked_len` proves `8 <= as_ref_reft(buffer)`, and
+    /// carrying that out through the `Ok` payload is
+    /// [`new_checked_ref`](Packet::new_checked_ref)'s job; stating it here instead costs an
+    /// error at every `T` for which `as_ref_reft` is unstatable, `pretty_print`'s
+    /// `&dyn AsRef<[u8]>` among them.
     pub fn new_checked(buffer: T) -> Result<Packet<T>> {
         let packet = Self::new_unchecked(buffer);
         packet.check_len()?;
@@ -232,9 +238,10 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// `msg_type` has the same value on all four arms -- so no window's extent depends on buffer
     /// *contents* and there is no ghost field as in `arp`, `udp` and `tcp`.
     ///
-    /// Nothing consumes the returned length yet: `new_checked`'s callers instantiate `T` at a
-    /// reference type, which flux gives the unit sort, so none of them can name `as_ref_reft`.
-    /// Worth wiring through the moment a reference self type can be refined; see `wire::Buf`.
+    /// The length is nameable only where `T` is not a reference -- a reference in
+    /// type-parameter position has the unit sort. [`Ref`] is that `T`, and the three consumers
+    /// are [`new_checked_ref`](Packet::new_checked_ref), [`Repr::parse_ref`] and the `Display`
+    /// impl, which take the check inside their own bodies.
     #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
     #[flux_rs::sig(
         fn(self: &Packet<T>[@p])
@@ -324,18 +331,15 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// `icmpv6::Packet::header_len` needs. The arms are kept as they are -- the dispatch is the
     /// code, and a future message type could give it a second value.
     ///
-    /// This carries no `requires`, and so keeps one error: `msg_type`'s `1 <= as_ref_reft` is
-    /// undischarged here. Stating it would silence `data` instead of proving anything --
-    /// `data`'s self type is `Packet<&'a T>`, and naming `as_ref_reft` in a callee's signature
-    /// at a reference `T` aborts the *caller's* body with `associated refinement is missing`,
-    /// hiding the real out-of-bounds obligation on `&data[self.header_len()..]`. One reported
-    /// error is worth more than one masked one.
-    ///
-    /// It carries no `no_panic` for the same reason: with that precondition open the body can
-    /// panic on an empty buffer, and flux would accept the attribute anyway -- it reports an
-    /// undischarged precondition as a refinement error, not as a panic.
+    /// The `requires` is `msg_type`'s, forwarded: the dispatch reads octet 0, so a caller owes
+    /// a buffer that has one. Both callers hold far more -- `data` has `8 <= p.buffer.len` from
+    /// `checked_len`, `data_mut` has it from `Repr::emit`'s allocation.
     #[flux_rs::trusted(no, reason = "carries the header length to data/data_mut")]
-    #[flux_rs::sig(fn(&Packet<T>[@p]) -> usize[8])]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> usize[8]
+        requires 1 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn header_len(&self) -> usize {
         match self.msg_type() {
             Message::EchoRequest => 8,    // field::ECHO_SEQNO.end
@@ -364,22 +368,6 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
         let data = self.buffer.as_ref();
         checksum::data(data) == !0
-    }
-}
-
-impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
-    /// Return a pointer to the type-specific data.
-    ///
-    /// Carries no buffer bound and keeps its one out-of-bounds site. The self type is
-    /// `Packet<&'a T>`; a reference self type gets the unit sort, so `p.buffer` cannot be fed to
-    /// `<&'a T as AsRef<[u8]>>::as_ref_reft` -- core's blanket `impl AsRef<U> for &T` has no
-    /// associated refinement and one cannot be written for it. Unlike `data_mut` below this
-    /// cannot be moved into the `T: Sized` impl: the return borrows `'a` from the buffer rather
-    /// than from `&self`, and `Repr::parse` depends on that.
-    #[inline]
-    pub fn data(&self) -> &'a [u8] {
-        let data = self.buffer.as_ref();
-        &data[self.header_len()..]
     }
 }
 
@@ -469,17 +457,20 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// unit sort, so on `Packet<&mut T>` there is no `as_mut_reft` to name. The move is strictly
     /// widening -- `&mut T` is `Sized` and satisfies `AsRef<[u8]> + AsMut<[u8]>` through core's
     /// blanket impls whenever `T` does, so every existing `Packet<&mut T>` caller still resolves,
-    /// and `Packet<Vec<u8>>` now resolves too. `data` above cannot follow, for the reason given
-    /// there.
+    /// and `Packet<Vec<u8>>` now resolves too. [`data`](Packet::data) cannot follow, because its
+    /// return borrows the buffer's own lifetime rather than `&self`'s; it lives on
+    /// `Packet<Ref<'a>>` instead.
     ///
-    /// No `no_panic`, because `header_len` carries none: with `msg_type`'s `1 <= as_ref_reft`
-    /// left open there, that function really can panic on an empty buffer. The window this
-    /// opens is proved regardless -- the `requires` discharges the slice bound.
+    /// The `as_ref_reft` conjunct is `header_len`'s; the `as_mut_reft` one is the window's.
+    /// They are separate facts about the same buffer because `T` is generic here -- at the
+    /// `Buf` every caller instantiates, both project to the same field.
     #[flux_rs::trusted(no, reason = "panic site: opens the payload window")]
     #[flux_rs::sig(
         fn(&mut Packet<T>[@p]) -> &mut [u8][<T as AsMut<[u8]>>::as_mut_reft(p.buffer) - 8]
         requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+             && 1 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
     )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn data_mut(&mut self) -> &mut [u8] {
         let range = self.header_len()..;
@@ -544,9 +535,55 @@ pub enum Repr<'a> {
     },
 }
 
+/// The returned datagram carried by an ICMPv4 error message: the IPv4 header it quotes, and the
+/// bytes that follow it.
+///
+/// Shared by the `DstUnreachable` and `TimeExceeded` arms of [`Repr::parse_ref`], which differ
+/// only in how the code is read.
+///
+/// The two length tests are `Ipv4Packet::check_len`'s own, run a second time. That method returns
+/// `Result<()>`, so what it established does not survive the call, and the split below needs it
+/// stated; by the time either `Err` here is reachable `new_checked` has already returned the same
+/// one. Both go away once `wire/ipv4.rs`'s check carries its length out.
+#[flux_rs::sig(fn(Ref[@r]) -> Result<(Ipv4Repr, &[u8])>)]
+fn returned_datagram<'a>(data: Ref<'a>) -> Result<(Ipv4Repr, &'a [u8])> {
+    let len = data.as_ref().len();
+    // 20 is `ipv4::field::DST_ADDR.end`, the minimum `Ipv4Packet::check_len` enforces; flux
+    // cannot see through the `Range` const.
+    if len < 20 {
+        return Err(Error);
+    }
+    let ip_packet = Ipv4Packet::new_checked(data)?;
+    let header_len = ip_packet.header_len() as usize;
+    if header_len > len {
+        return Err(Error);
+    }
+    let payload = data.window(header_len, len);
+    // RFC 792 requires exactly eight bytes to be returned.
+    // We allow more, since there isn't a reason not to, but require at least eight.
+    if payload.len() < 8 {
+        return Err(Error);
+    }
+    Ok((
+        Ipv4Repr {
+            src_addr: ip_packet.src_addr(),
+            dst_addr: ip_packet.dst_addr(),
+            next_header: ip_packet.next_header(),
+            payload_len: payload.len(),
+            hop_limit: ip_packet.hop_limit(),
+        },
+        payload,
+    ))
+}
+
 impl<'a> Repr<'a> {
     /// Parse an Internet Control Message Protocol version 4 packet and return
     /// a high-level representation.
+    ///
+    /// A thin wrapper over [`parse_ref`](Self::parse_ref). A reference in type-parameter
+    /// position has the unit sort, so nothing about `T`'s extent is statable here; [`Ref`] is
+    /// where the buffer acquires a length, and `parse_ref` is where the accessors' windows are
+    /// proved against it. Callers already holding a `Ref` should call `parse_ref` directly.
     pub fn parse<T>(
         packet: &Packet<&'a T>,
         checksum_caps: &ChecksumCapabilities,
@@ -554,7 +591,20 @@ impl<'a> Repr<'a> {
     where
         T: AsRef<[u8]> + ?Sized,
     {
-        packet.check_len()?;
+        let packet = Packet::new_unchecked(Ref::new(packet.buffer.as_ref()));
+        Repr::parse_ref(&packet, checksum_caps)
+    }
+
+    /// [`parse`](Self::parse) over a buffer whose length is in the refinement.
+    ///
+    /// `checked_len` rather than `check_len`: the same test, but its `Ok` arm names what the
+    /// accessors below need -- the buffer's length, and that it reaches the end of the fixed
+    /// header.
+    pub fn parse_ref(
+        packet: &Packet<Ref<'a>>,
+        checksum_caps: &ChecksumCapabilities,
+    ) -> Result<Repr<'a>> {
+        packet.checked_len()?;
 
         // Valid checksum is expected.
         if checksum_caps.icmpv4.rx() && !packet.verify_checksum() {
@@ -575,48 +625,20 @@ impl<'a> Repr<'a> {
             }),
 
             (Message::DstUnreachable, code) => {
-                let ip_packet = Ipv4Packet::new_checked(packet.data())?;
-
-                let payload = &packet.data()[ip_packet.header_len() as usize..];
-                // RFC 792 requires exactly eight bytes to be returned.
-                // We allow more, since there isn't a reason not to, but require at least eight.
-                if payload.len() < 8 {
-                    return Err(Error);
-                }
-
+                let (header, data) = returned_datagram(Ref::new(packet.data()))?;
                 Ok(Repr::DstUnreachable {
                     reason: DstUnreachable::from(code),
-                    header: Ipv4Repr {
-                        src_addr: ip_packet.src_addr(),
-                        dst_addr: ip_packet.dst_addr(),
-                        next_header: ip_packet.next_header(),
-                        payload_len: payload.len(),
-                        hop_limit: ip_packet.hop_limit(),
-                    },
-                    data: payload,
+                    header,
+                    data,
                 })
             }
 
             (Message::TimeExceeded, code) => {
-                let ip_packet = Ipv4Packet::new_checked(packet.data())?;
-
-                let payload = &packet.data()[ip_packet.header_len() as usize..];
-                // RFC 792 requires exactly eight bytes to be returned.
-                // We allow more, since there isn't a reason not to, but require at least eight.
-                if payload.len() < 8 {
-                    return Err(Error);
-                }
-
+                let (header, data) = returned_datagram(Ref::new(packet.data()))?;
                 Ok(Repr::TimeExceeded {
                     reason: TimeExceeded::from(code),
-                    header: Ipv4Repr {
-                        src_addr: ip_packet.src_addr(),
-                        dst_addr: ip_packet.dst_addr(),
-                        next_header: ip_packet.next_header(),
-                        payload_len: payload.len(),
-                        hop_limit: ip_packet.hop_limit(),
-                    },
-                    data: payload,
+                    header,
+                    data,
                 })
             }
 
@@ -663,6 +685,7 @@ impl<'a> Repr<'a> {
     #[flux_rs::sig(
         fn(self: &Self[@r], packet: &mut Packet<T>[@p], &ChecksumCapabilities)
         requires <T as AsMut<[u8]>>::as_mut_reft(p.buffer) == r.blen
+              && 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
               && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
     )]
     pub fn emit<T>(&self, packet: &mut Packet<T>, checksum_caps: &ChecksumCapabilities)
@@ -746,21 +769,31 @@ impl<'a> Repr<'a> {
     }
 }
 
-impl<T: AsRef<[u8]> + ?Sized> fmt::Display for Packet<&T> {
+// A trait impl's signature is fixed, so it cannot carry the `requires` the header accessors
+// want. The check is taken inside the body instead: `checked_len`'s `Ok` arm proves the bound
+// `msg_type` and `msg_code` need, and the arm that fails it no longer reads a header it never
+// validated -- a panic on a truncated message.
+impl fmt::Display for Packet<Ref<'_>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match Repr::parse(self, &ChecksumCapabilities::default()) {
+        match Repr::parse_ref(self, &ChecksumCapabilities::default()) {
             Ok(repr) => write!(f, "{repr}"),
             Err(err) => {
                 write!(f, "ICMPv4 ({err})")?;
-                write!(f, " type={:?}", self.msg_type())?;
-                match self.msg_type() {
-                    Message::DstUnreachable => {
-                        write!(f, " code={:?}", DstUnreachable::from(self.msg_code()))
+                match self.checked_len() {
+                    // Too short to hold a type or a code; that is what `parse_ref` rejected.
+                    Err(_) => Ok(()),
+                    Ok(_) => {
+                        write!(f, " type={:?}", self.msg_type())?;
+                        match self.msg_type() {
+                            Message::DstUnreachable => {
+                                write!(f, " code={:?}", DstUnreachable::from(self.msg_code()))
+                            }
+                            Message::TimeExceeded => {
+                                write!(f, " code={:?}", TimeExceeded::from(self.msg_code()))
+                            }
+                            _ => write!(f, " code={}", self.msg_code()),
+                        }
                     }
-                    Message::TimeExceeded => {
-                        write!(f, " code={:?}", TimeExceeded::from(self.msg_code()))
-                    }
-                    _ => write!(f, " code={}", self.msg_code()),
                 }
             }
         }
@@ -811,7 +844,9 @@ impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
         f: &mut fmt::Formatter,
         indent: &mut PrettyIndent,
     ) -> fmt::Result {
-        let packet = match Packet::new_checked(buffer) {
+        // `Ref::new` off the `dyn`'s own `as_ref`: the trait signature is fixed, so the buffer
+        // arrives with no length index, and `Ref` is where it acquires one.
+        let packet = match Packet::new_checked_ref(Ref::new(buffer.as_ref())) {
             Err(err) => return write!(f, "{indent}({err})"),
             Ok(packet) => packet,
         };
@@ -839,7 +874,7 @@ mod test {
 
     #[test]
     fn test_echo_deconstruct() {
-        let packet = Packet::new_unchecked(&ECHO_PACKET_BYTES[..]);
+        let packet = Packet::new_unchecked(Ref::new(&ECHO_PACKET_BYTES[..]));
         assert_eq!(packet.msg_type(), Message::EchoRequest);
         assert_eq!(packet.msg_code(), 0);
         assert_eq!(packet.checksum(), 0x8efe);
@@ -872,8 +907,8 @@ mod test {
 
     #[test]
     fn test_echo_parse() {
-        let packet = Packet::new_unchecked(&ECHO_PACKET_BYTES[..]);
-        let repr = Repr::parse(&packet, &ChecksumCapabilities::default()).unwrap();
+        let packet = Packet::new_unchecked(Ref::new(&ECHO_PACKET_BYTES[..]));
+        let repr = Repr::parse_ref(&packet, &ChecksumCapabilities::default()).unwrap();
         assert_eq!(repr, echo_packet_repr());
     }
 
@@ -892,5 +927,41 @@ mod test {
         assert_eq!(Packet::new_checked(&[]), Err(Error));
         assert_eq!(Packet::new_checked(&bytes[..4]), Err(Error));
         assert!(Packet::new_checked(&bytes[..]).is_ok());
+    }
+}
+
+impl<'a> Packet<Ref<'a>> {
+    /// [`new_checked`](Self::new_checked) over a [`Ref`], carrying its proof out.
+    ///
+    /// The generic `new_checked` cannot say this: at a reference or `dyn` self type the
+    /// `as_ref_reft` in the postcondition is unstatable, so stating it there costs an error at
+    /// `pretty_print` and buys nothing. Over `Ref` the buffer's length is `b.len`, and what
+    /// `checked_len` already proves is what every accessor in this module requires.
+    #[flux_rs::trusted(no, reason = "carries `checked_len`'s proof out through the `Ok` arm")]
+    #[flux_rs::sig(fn(Ref[@b]) -> Result<Packet<Ref>{p: p.buffer == b && 8 <= b.len}>)]
+    pub fn new_checked_ref(buffer: Ref<'a>) -> Result<Packet<Ref<'a>>> {
+        let packet = Packet::new_unchecked(buffer);
+        packet.checked_len()?;
+        Ok(packet)
+    }
+
+    /// Return a pointer to the type-specific data.
+    ///
+    /// The `Packet<&'a T>` twin of this cannot be proved: a reference in type-parameter position
+    /// has the unit sort, so `p.buffer` cannot be fed to `<&'a T as AsRef<[u8]>>::as_ref_reft`
+    /// and neither half of the window bound is statable. Over `Ref<'a>` the buffer's length is
+    /// `p.buffer.len`, and the payload's length survives into the caller's index. The return
+    /// borrows `'a` from the buffer rather than from `&self`, which is what `Repr::parse_ref`
+    /// depends on.
+    ///
+    #[flux_rs::trusted(no, reason = "panic site: opens the payload window")]
+    #[flux_rs::sig(
+        fn(&Packet<Ref>[@p]) -> &[u8][p.buffer.len - 8] requires 8 <= p.buffer.len
+    )]
+    #[flux_rs::no_panic]
+    #[inline]
+    pub fn data(&self) -> &'a [u8] {
+        let len = self.buffer.as_ref().len();
+        self.buffer.window(self.header_len(), len)
     }
 }
