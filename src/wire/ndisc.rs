@@ -646,6 +646,38 @@ mod test {
         })
     }
 
+    /// A short buffer must panic, not write out of bounds.
+    ///
+    /// `NdiscOptionRepr::buffer_len` rounds `2 + len` up to a multiple of 8 while
+    /// `emit_link_layer_addr` writes only `data[2..2 + len]`, so a link-layer address shorter
+    /// than 6 octets leaves a gap the preceding emit does not bounds-check. Reaching the option
+    /// window through `Buf::advance` -- whose `n <= len` is a flux `requires` with no executable
+    /// counterpart -- turned that into an out-of-bounds write via `as_mut`'s
+    /// `get_unchecked_mut`. This pins the checked behaviour.
+    #[test]
+    #[should_panic]
+    fn test_short_buffer_panics_rather_than_writing_out_of_bounds() {
+        let repr = Icmpv6Repr::Ndisc(Repr::RouterAdvert {
+            hop_limit: 64,
+            flags: RouterFlags::MANAGED,
+            router_lifetime: Duration::from_secs(900),
+            reachable_time: Duration::from_millis(900),
+            retrans_time: Duration::from_millis(900),
+            lladdr: Some(RawHardwareAddress::from_bytes(&[1, 2, 3])),
+            mtu: Some(1500),
+            prefix_info: None,
+        });
+
+        let mut bytes = [0u8; 21];
+        let mut packet = crate::wire::Icmpv6Packet::new_unchecked(&mut bytes[..]);
+        repr.emit(
+            &MOCK_IP_ADDR_1,
+            &MOCK_IP_ADDR_2,
+            &mut packet,
+            &ChecksumCapabilities::default(),
+        );
+    }
+
     #[test]
     fn test_router_advert_deconstruct() {
         let packet = Packet::new_unchecked(&ROUTER_ADVERT_BYTES[..]);
