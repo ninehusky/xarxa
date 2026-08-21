@@ -309,12 +309,36 @@ impl<T: AsRef<[u8]>> AddressRecord<T> {
 
     /// Ensure that no accessor method will panic if called.
     /// Returns `Err(Error::Truncated)` if the buffer is too short.
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(fn(self: &AddressRecord<T>[@r]) -> Result<()>)]
+    #[flux_rs::no_panic]
     pub fn check_len(&self) -> Result<()> {
+        match self.checked_len() {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// [`check_len`](Self::check_len), returning the buffer length it validated.
+    ///
+    /// The whole of `check_len`; the public method just discards the length. `Result<()>`'s `Ok`
+    /// payload carries no refinement, so a successful check leaves a caller with nothing to show
+    /// for it. Returning the length lets the `Ok` arm say both things the accessors want: what
+    /// the buffer's length is, and that it reaches the end of the fixed part of the record --
+    /// which is where [`payload`](AddressRecord::payload) opens its window.
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(
+        fn(self: &AddressRecord<T>[@r])
+            -> Result<usize{v: v == <T as AsRef<[u8]>>::as_ref_reft(r.buffer) && 20 <= v}>
+    )]
+    #[flux_rs::no_panic]
+    pub(super) fn checked_len(&self) -> Result<usize> {
         let len = self.buffer.as_ref().len();
-        if len < field::RECORD_MCAST_ADDR.end {
+        // 20 is `field::RECORD_MCAST_ADDR.end`; flux cannot see through a `Range` const.
+        if len < 20 {
             Err(Error)
         } else {
-            Ok(())
+            Ok(len)
         }
     }
 
@@ -382,18 +406,32 @@ impl<T: AsRef<[u8]>> AddressRecord<T> {
     }
 }
 
-impl<'a, T: AsRef<[u8]> + ?Sized> AddressRecord<&'a T> {
+impl<'a> AddressRecord<Ref<'a>> {
+    /// [`new_checked`](Self::new_checked) over a [`Ref`], carrying its proof out.
+    #[flux_rs::trusted(no, reason = "carries `checked_len`'s proof out through the `Ok` arm")]
+    #[flux_rs::sig(fn(Ref[@b]) -> Result<AddressRecord<Ref>{r: r.buffer == b && 20 <= b.len}>)]
+    pub fn new_checked_ref(buffer: Ref<'a>) -> Result<AddressRecord<Ref<'a>>> {
+        let record = AddressRecord::new_unchecked(buffer);
+        record.checked_len()?;
+        Ok(record)
+    }
+
     /// Return a pointer to the address records.
-    //
-    // No signature: the receiver is `AddressRecord<&'a T>`, so the buffer index has the unit
-    // sort (a reference self type carries no associated refinement -- core's blanket
-    // `impl AsRef<U> for &T` has none), and `<&'a T as AsRef<[u8]>>::as_ref_reft` cannot be
-    // named. Stating the `20 <= len` bound here needs the same `T: Sized` reshaping C1 did to
-    // `Packet`, applied to `AddressRecordRepr::parse`'s parameter.
+    ///
+    /// The `AddressRecord<&'a T>` twin of this cannot be proved: a reference in type-parameter
+    /// position has the unit sort, so `<&'a T as AsRef<[u8]>>::as_ref_reft` cannot be named and
+    /// the `20 <= len` bound is unstatable, not merely unproven. Over `Ref<'a>` the buffer's
+    /// length is `r.buffer.len` and the payload's length survives into the caller's index.
+    #[flux_rs::trusted(no, reason = "panic site: opens the window past the fixed part")]
+    #[flux_rs::sig(
+        fn(&AddressRecord<Ref>[@r]) -> &[u8][r.buffer.len - 20] requires 20 <= r.buffer.len
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn payload(&self) -> &'a [u8] {
-        let data = self.buffer.as_ref();
-        &data[field::RECORD_MCAST_ADDR.end..]
+        // 20 is `field::RECORD_MCAST_ADDR.end`.
+        let len = self.buffer.as_ref().len();
+        self.buffer.window(20, len)
     }
 }
 
@@ -516,10 +554,29 @@ impl<'a> AddressRecordRepr<'a> {
     }
 
     /// Parse an MLDv2 address record and return a high-level representation.
+    ///
+    /// A reference in type-parameter position has the unit sort, so no bound on `T`'s buffer is
+    /// statable here and none of the five reads below would be provable. The body therefore
+    /// lives on [`parse_ref`](Self::parse_ref), over a buffer whose length is nameable; this
+    /// re-wraps the same bytes and forwards, which repeats no work the old body did not do.
     pub fn parse<T>(record: &AddressRecord<&'a T>) -> Result<Self>
     where
         T: AsRef<[u8]> + ?Sized,
     {
+        Self::parse_ref(&AddressRecord::new_unchecked(Ref::new(
+            record.buffer.as_ref(),
+        )))
+    }
+
+    /// [`parse`](Self::parse) over a [`Ref`], where the buffer's length is in the refinement.
+    ///
+    /// The `requires` is the whole precondition of this record type: every field sits below
+    /// offset 20 and the payload starts there. It is what
+    /// [`AddressRecord::checked_len`](AddressRecord::checked_len) tests and what
+    /// [`new_checked_ref`](AddressRecord::new_checked_ref) carries out; `parse` above cannot
+    /// state it, so the obligation surfaces there.
+    #[flux_rs::sig(fn(&AddressRecord<Ref>[@r]) -> Result<Self> requires 20 <= r.buffer.len)]
+    pub fn parse_ref(record: &AddressRecord<Ref<'a>>) -> Result<Self> {
         Ok(Self {
             num_srcs: record.num_srcs(),
             mcast_addr: record.mcast_addr(),
@@ -821,7 +878,7 @@ mod test {
         assert_eq!(packet.msg_code(), 0);
         assert_eq!(packet.checksum(), 0x7385);
         assert_eq!(packet.nr_mcast_addr_rcrds(), 0x01);
-        let addr_rcrd = AddressRecord::new_unchecked(packet.payload());
+        let addr_rcrd = AddressRecord::new_unchecked(Ref::new(packet.payload()));
         assert_eq!(addr_rcrd.record_type(), RecordType::ModeIsInclude);
         assert_eq!(addr_rcrd.aux_data_len(), 0x00);
         assert_eq!(addr_rcrd.num_srcs(), 0x01);
