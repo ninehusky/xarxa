@@ -1,7 +1,7 @@
 use core::fmt;
 
 use super::{Error, Result};
-use crate::wire::{read_u16_at, write_u16_at};
+use crate::wire::{read_u16_at, write_u16_at, Ref};
 
 enum_with_unknown! {
     /// Ethernet protocol type.
@@ -218,6 +218,8 @@ pub const HEADER_LEN: usize = field::PAYLOAD.start;
 
 impl<T: AsRef<[u8]>> Frame<T> {
     /// Imbue a raw octet buffer with Ethernet frame structure.
+    #[flux_rs::sig(fn(T[@b]) -> Frame<T>[b])]
+    #[flux_rs::no_panic]
     pub const fn new_unchecked(buffer: T) -> Frame<T> {
         Frame { buffer }
     }
@@ -226,6 +228,11 @@ impl<T: AsRef<[u8]>> Frame<T> {
     ///
     /// [new_unchecked]: #method.new_unchecked
     /// [check_len]: #method.check_len
+    ///
+    /// Deliberately left unrefined. `checked_len` proves `14 <= buffer_len`, but at a reference
+    /// or `dyn` self type the `as_ref_reft` that postcondition needs is unstatable, so stating it
+    /// here costs an error at [`PrettyPrint::pretty_print`] and buys nothing. The `Ref` buffer is
+    /// where the proof can be carried out; see [`new_checked_ref`](Frame::new_checked_ref).
     pub fn new_checked(buffer: T) -> Result<Frame<T>> {
         let packet = Self::new_unchecked(buffer);
         packet.check_len()?;
@@ -234,9 +241,40 @@ impl<T: AsRef<[u8]>> Frame<T> {
 
     /// Ensure that no accessor method will panic if called.
     /// Returns `Err(Error)` if the buffer is too short.
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked_ref` is correct")]
+    #[flux_rs::sig(fn(self: &Frame<T>[@f]) -> Result<()>)]
+    #[flux_rs::no_panic]
     pub fn check_len(&self) -> Result<()> {
+        match self.checked_len() {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// [`check_len`](Self::check_len), returning the buffer length it validated.
+    ///
+    /// The whole of `check_len`; the public method just discards the length. It exists because
+    /// `Result<()>`'s `Ok` payload is `()` and so carries no refinement, which leaves a caller
+    /// with nothing to show for a successful check. Returning the length instead lets the `Ok`
+    /// arm say what the test established: the buffer is at least a header long, and that length
+    /// is the buffer's own. Both are what the accessors below require.
+    ///
+    /// The test itself is unchanged. Literal `14` rather than `HEADER_LEN`
+    /// (= `field::PAYLOAD.start`): flux cannot see through the `Rest`/`Range` const.
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked_ref` is correct")]
+    #[flux_rs::sig(
+        fn(self: &Frame<T>[@f])
+            -> Result<usize{v: v == <T as AsRef<[u8]>>::as_ref_reft(f.buffer) && 14 <= v}>
+    )]
+    #[flux_rs::no_panic]
+    fn checked_len(&self) -> Result<usize> {
         let len = self.buffer.as_ref().len();
-        if len < HEADER_LEN { Err(Error) } else { Ok(()) }
+        if len < 14 {
+            // HEADER_LEN
+            Err(Error)
+        } else {
+            Ok(len)
+        }
     }
 
     /// Consumes the frame, returning the underlying buffer.
@@ -322,11 +360,45 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Frame<&'a T> {
     // core's blanket `impl<T, U> AsRef<U> for &T`, which carries no associated refinement
     // (`as_ref_reft` is missing). The bound `14 <= len` is therefore unstatable at this self
     // type, and routing through the unchecked `suffix` without stating it would trade a panic
-    // for UB. Convertible once a reference self type can be refined; see `wire::Buf`.
+    // for UB. The provable twin is on `Frame<Ref<'a>>` below; this one is still here because
+    // `InterfaceInner::process_arp` takes a `Frame<&[u8]>`.
     #[inline]
     pub fn payload(&self) -> &'a [u8] {
         let data = self.buffer.as_ref();
         &data[field::PAYLOAD]
+    }
+}
+
+impl<'a> Frame<Ref<'a>> {
+    /// [`new_checked`](Self::new_checked) over a [`Ref`], carrying its proof out.
+    ///
+    /// Over `Ref` the buffer's length is `b.len`, so `checked_len`'s `Ok` arm is statable in the
+    /// return type, and what it states is exactly what every accessor on `Frame` requires.
+    #[flux_rs::trusted(no, reason = "carries `checked_len`'s proof out through the `Ok` arm")]
+    #[flux_rs::sig(
+        fn(Ref[@b]) -> Result<Frame<Ref>{f: f.buffer == b && 14 <= b.len}>
+    )]
+    pub fn new_checked_ref(buffer: Ref<'a>) -> Result<Frame<Ref<'a>>> {
+        let frame = Frame::new_unchecked(buffer);
+        frame.checked_len()?;
+        Ok(frame)
+    }
+
+    /// Return a pointer to the payload, without checking for 802.1Q.
+    ///
+    /// The `Frame<&'a T>` twin of this cannot be proved: a reference in type-parameter position
+    /// has the unit sort, so the window bound is unstatable there. Over `Ref<'a>` the buffer's
+    /// length is `f.buffer.len`, and the payload's length survives into the caller's index.
+    #[flux_rs::trusted(no, reason = "panic site: reslices past the fixed 14-octet header")]
+    #[flux_rs::sig(
+        fn(&Frame<Ref>[@f]) -> &[u8][f.buffer.len - 14]
+        requires 14 <= f.buffer.len
+    )]
+    #[flux_rs::no_panic]
+    #[inline]
+    pub fn payload(&self) -> &'a [u8] {
+        let len = self.buffer.as_ref().len();
+        self.buffer.window(14, len) // field::PAYLOAD
     }
 }
 
@@ -415,15 +487,21 @@ impl<T: AsRef<[u8]>> AsRef<[u8]> for Frame<T> {
     }
 }
 
+// A trait impl's signature is fixed, so this cannot carry the accessors' `requires`. The check
+// is taken inside the body instead: `checked_len`'s `Ok` arm proves the bound all three
+// accessors want, and the `Err` arm no longer reads a header it never validated.
 impl<T: AsRef<[u8]>> fmt::Display for Frame<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "EthernetII src={} dst={} type={}",
-            self.src_addr(),
-            self.dst_addr(),
-            self.ethertype()
-        )
+        match self.checked_len() {
+            Err(err) => write!(f, "EthernetII ({err})"),
+            Ok(_) => write!(
+                f,
+                "EthernetII src={} dst={} type={}",
+                self.src_addr(),
+                self.dst_addr(),
+                self.ethertype()
+            ),
+        }
     }
 }
 
@@ -436,7 +514,9 @@ impl<T: AsRef<[u8]>> PrettyPrint for Frame<T> {
         f: &mut fmt::Formatter,
         indent: &mut PrettyIndent,
     ) -> fmt::Result {
-        let frame = match Frame::new_checked(buffer) {
+        // `Ref::new` off the `dyn`'s own `as_ref`: the trait signature is fixed, so the buffer
+        // arrives with no length index, and `Ref` is where it acquires one.
+        let frame = match Frame::new_checked_ref(Ref::new(buffer.as_ref())) {
             Err(err) => return write!(f, "{indent}({err})"),
             Ok(frame) => frame,
         };
@@ -474,8 +554,10 @@ pub struct Repr {
 
 impl Repr {
     /// Parse an Ethernet II frame and return a high-level representation.
-    pub fn parse<T: AsRef<[u8]> + ?Sized>(frame: &Frame<&T>) -> Result<Repr> {
-        frame.check_len()?;
+    pub fn parse(frame: &Frame<Ref<'_>>) -> Result<Repr> {
+        // `checked_len` rather than `check_len`: same test, but its `Ok` arm names the fact the
+        // three accessors below need, and over `Ref` it is statable.
+        frame.checked_len()?;
         Ok(Repr {
             src_addr: frame.src_addr(),
             dst_addr: frame.dst_addr(),
