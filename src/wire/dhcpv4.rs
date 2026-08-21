@@ -212,22 +212,36 @@ fn client_id_octets(addr: &EthernetAddress) -> [u8; 7] {
 
 /// The DNS-server option's octets, and how many of them are filled.
 ///
-/// Lifted out of [`Repr::emit`] for the reason given on [`client_id_octets`]. Unlike that one
-/// this does not verify: `i` comes from `enumerate` over a `heapless::Vec`, and flux relates it
-/// neither to the vector's length nor to its capacity, so `(i + 1) * 4 <= 12` is not provable.
-/// It is left here erroring rather than left inside `Repr::emit` erroring silently.
+/// Lifted out of [`Repr::emit`] for the reason given on [`client_id_octets`].
+///
+/// The windows are written out rather than computed from an index. `(i + 1) * 4 <= 12` is true
+/// -- the vector's capacity is `MAX_DNS_SERVER_COUNT` -- but flux bounds neither `enumerate`'s
+/// index nor the induction variable of a `for i in 0..MAX_DNS_SERVER_COUNT`, so no form that
+/// derives the offset from a counter is provable, with or without a length-versus-capacity spec
+/// for `heapless::Vec`. Literal offsets are. The `const` assert below is what keeps this honest
+/// if the count is ever reconfigured: it becomes a compile error rather than a dropped server.
 #[flux_rs::trusted(no, reason = "panic site: writes a window per element")]
 fn dns_server_octets(servers: &Vec<Ipv4Address, MAX_DNS_SERVER_COUNT>) -> ([u8; 12], usize) {
     const IP_SIZE: usize = core::mem::size_of::<u32>();
+    const _: () = assert!(MAX_DNS_SERVER_COUNT == 3);
+
     let mut octets = [0; MAX_DNS_SERVER_COUNT * IP_SIZE];
-    let len = servers
-        .iter()
-        .enumerate()
-        .inspect(|(i, ip)| {
-            octets[(i * IP_SIZE)..((i + 1) * IP_SIZE)].copy_from_slice(&ip.octets());
-        })
-        .count()
-        * IP_SIZE;
+    let mut len = 0;
+    let mut servers = servers.iter();
+
+    if let Some(ip) = servers.next() {
+        octets[0..4].copy_from_slice(&ip.octets()[..]);
+        len += IP_SIZE;
+    }
+    if let Some(ip) = servers.next() {
+        octets[4..8].copy_from_slice(&ip.octets()[..]);
+        len += IP_SIZE;
+    }
+    if let Some(ip) = servers.next() {
+        octets[8..12].copy_from_slice(&ip.octets()[..]);
+        len += IP_SIZE;
+    }
+
     (octets, len)
 }
 
