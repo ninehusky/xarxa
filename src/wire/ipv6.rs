@@ -6,7 +6,7 @@ use core::fmt;
 use super::{Error, Result};
 use crate::wire::HardwareAddress;
 use crate::wire::ip::pretty_print_ip_payload;
-use crate::wire::{copy_window_at, read_u16_at, read_u32_at, Ref};
+use crate::wire::{copy_window_at, read_u16_at, read_u32_at, sub, Ref};
 
 pub use super::IpProtocol as Protocol;
 
@@ -528,16 +528,18 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Return the header length.
+    // Literal rather than `field::DST_ADDR.end`: flux cannot see through the `Range` const.
     #[inline]
+    #[flux_rs::trusted(no, reason = "40 is what the payload window arithmetic needs")]
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> usize[40])]
+    #[flux_rs::no_panic]
     pub const fn header_len(&self) -> usize {
         // This is not a strictly necessary function, but it makes
         // code more readable.
-        field::DST_ADDR.end
+        40
     }
 
     /// Return the version field.
-    // Literal offsets rather than the `field::` consts: flux cannot see through a `Range` const,
-    // so the bound has to be written out. Same for the two below.
     #[inline]
     #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
     #[flux_rs::sig(
@@ -566,7 +568,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// Return the flow label field.
     ///
     /// Read as the `u32` at offset 0 rather than the `u24` at offset 1: the mask keeps only the
-    /// low twenty bits either way, and of the two only the four-octet read has a refined helper.
+    /// low twenty bits either way, and only the four-octet read has a refined helper.
     #[inline]
     #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
     #[flux_rs::sig(
@@ -581,42 +583,76 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the payload length field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "the read's bound is discharged inside `plen_field`")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u16[p.plen]
+        requires 6 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn payload_len(&self) -> u16 {
         self.plen_field()
     }
 
     /// Return the payload length added to the known header length.
     #[inline]
+    #[flux_rs::trusted(no, reason = "the 40 is what the payload window arithmetic needs")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> usize[40 + p.plen]
+        requires 6 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn total_len(&self) -> usize {
         self.header_len() + self.payload_len() as usize
     }
 
     /// Return the next header field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> Protocol
+        requires 6 < <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn next_header(&self) -> Protocol {
         let data = self.buffer.as_ref();
-        Protocol::from(data[field::NXT_HDR])
+        Protocol::from(data[6]) // field::NXT_HDR
     }
 
     /// Return the hop limit field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u8
+        requires 7 < <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn hop_limit(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[field::HOP_LIMIT]
+        data[7] // field::HOP_LIMIT
     }
 
     /// Return the source address field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> Address
+        requires 24 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
     pub fn src_addr(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_octets(data[field::SRC_ADDR].try_into().unwrap())
+        Address::from_octets(sub(data, 8, 16).try_into().unwrap()) // field::SRC_ADDR
     }
 
     /// Return the destination address field.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> Address
+        requires 40 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
     pub fn dst_addr(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_octets(data[field::DST_ADDR].try_into().unwrap())
+        Address::from_octets(sub(data, 24, 16).try_into().unwrap()) // field::DST_ADDR
     }
 }
 
@@ -627,12 +663,16 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
     // core's blanket `impl<T, U> AsRef<U> for &T`, which carries no associated refinement
     // (`as_ref_reft` is missing), and the window's end is a property of the buffer's contents
     // besides. The provable twin is on `Packet<Ref<'a>>` below; this one is still here because
-    // `socket::raw` and `wire::ip` hold their packets at `Packet<&[u8]>`.
+    // `socket::raw` and `iface::interface::ipv6` hold their packets at `Packet<&[u8]>`.
+    //
+    // The window is read out here rather than through `total_len`: that accessor's `requires`
+    // is stated over `as_ref_reft`, which is what this self type cannot phrase, so calling it
+    // would replace an unproven bound with an unstatable one.
     #[inline]
     pub fn payload(&self) -> &'a [u8] {
         let data = self.buffer.as_ref();
-        let range = self.header_len()..self.total_len();
-        &data[range]
+        let total = 40 + read_u16_at(data, 4) as usize; // field::DST_ADDR.end, field::LENGTH
+        &data[40..total]
     }
 }
 
@@ -795,11 +835,22 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 
     /// Return a mutable pointer to the payload.
+    ///
+    /// Two bounds, because the window's end comes from the buffer's contents and its extent
+    /// from the buffer itself: `total_len` reads the length field, and the window it names has
+    /// to fit. Literal `40` rather than `field::DST_ADDR.end` for the usual reason.
     #[inline]
+    #[flux_rs::trusted(no, reason = "panic site: reslices the window named by the length field")]
+    #[flux_rs::sig(
+        fn(&mut Packet<T>[@p]) -> &mut [u8]
+        requires 6 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+              && 40 + p.plen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn payload_mut(&mut self) -> &mut [u8] {
-        let range = self.header_len()..self.total_len();
+        let total = self.total_len();
         let data = self.buffer.as_mut();
-        &mut data[range]
+        &mut data[40..total]
     }
 }
 
@@ -847,10 +898,9 @@ impl Repr {
     /// Parse an Internet Protocol version 6 packet and return a high-level representation.
     pub fn parse<T: AsRef<[u8]> + ?Sized>(packet: &Packet<&T>) -> Result<Repr> {
         // Re-wrapped as a `Ref` rather than read through `&T`: at a reference self type the
-        // buffer's length is unstatable, so `version`'s bound could not be discharged here.
-        // `Ref::new` gives the same bytes an index and `new_checked_ref` runs the test
-        // `check_len` ran, so its `Ok` arm proves it. The five accessors below keep their
-        // unrefined signatures -- see `plen_field`.
+        // buffer's length is unstatable, so nothing the accessors require can be discharged.
+        // `Ref::new` gives the same bytes an index and `new_checked_ref` runs the same test
+        // `check_len` ran, so its `Ok` arm proves every accessor's bound below.
         let packet = &Packet::new_checked_ref(Ref::new(packet.buffer.as_ref()))?;
         if packet.version() != 6 {
             return Err(Error);
