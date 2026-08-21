@@ -147,7 +147,17 @@ impl<'a> Parser<'a> {
         Err(())
     }
 
+    /// Consume a dotted-quad and write it as two `u16`s at `*idx`, advancing `idx` by two.
+    ///
+    /// The `ensures` is the whole point of the `&strg`: `idx` moves by two or not at all -- the
+    /// `?` below is the only early return and it precedes both writes -- and that is what bounds
+    /// the caller's index afterwards.
     #[cfg(feature = "proto-ipv6")]
+    #[flux_rs::trusted(no, reason = "the index's motion is what `accept_ipv6` needs")]
+    #[flux_rs::sig(
+        fn(&mut Self, _, idx: &strg usize[@i]) -> Result<()>
+        ensures idx: usize{v: i <= v && v <= i + 2}
+    )]
     fn accept_ipv4_mapped_ipv6_part(&mut self, parts: &mut [u16], idx: &mut usize) -> Result<()> {
         let octets = self.accept_ipv4_octets()?;
 
@@ -159,11 +169,27 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// Parse one `:`-delimited group of an IPv6 address, recursing on the rest.
+    ///
+    /// The two indices are separate `&strg` parameters rather than a `(&mut usize, &mut usize)`
+    /// tuple: a `&mut` inside a tuple pattern carries no postcondition, so `accept_ipv6`'s
+    /// `tail[..tail_idx]` had nothing to bound it. What the `ensures` states is what the two
+    /// guards below already enforce -- `head` holds eight groups and `tail` six, and neither
+    /// index is advanced past its array.
     #[cfg(feature = "proto-ipv6")]
+    #[flux_rs::trusted(no, reason = "the indices' bounds are what `accept_ipv6` needs")]
+    #[flux_rs::sig(
+        fn(&mut Self, _, _, head_idx: &strg usize[@h], tail_idx: &strg usize[@t], bool)
+            -> Result<()>
+        requires h <= 8 && t <= 6
+        ensures head_idx: usize{v: v <= 8}, tail_idx: usize{v: v <= 6}
+    )]
     fn accept_ipv6_part(
         &mut self,
-        (head, tail): (&mut [u16; 8], &mut [u16; 6]),
-        (head_idx, tail_idx): (&mut usize, &mut usize),
+        head: &mut [u16; 8],
+        tail: &mut [u16; 6],
+        head_idx: &mut usize,
+        tail_idx: &mut usize,
         mut use_tail: bool,
     ) -> Result<()> {
         let double_colon = match self.try_do(|p| p.accept_str(b"::")) {
@@ -197,10 +223,15 @@ impl<'a> Parser<'a> {
 
                 let filled = *head_idx;
                 if filled == 6 && head[0..filled] == [0, 0, 0, 0, 0, 0xffff] {
-                    self.try_do(|p| {
-                        p.accept_char(b':')?;
-                        p.accept_ipv4_mapped_ipv6_part(head, head_idx)
-                    });
+                    // `try_do` open-coded: its closure would capture `head_idx`, and a `&strg`
+                    // does not survive a capture, so the postcondition would be lost exactly
+                    // where it is needed. Same save-and-restore, same short-circuit.
+                    let pos = self.pos;
+                    if self.accept_char(b':').is_err()
+                        || self.accept_ipv4_mapped_ipv6_part(head, head_idx).is_err()
+                    {
+                        self.pos = pos;
+                    }
                 }
                 Ok(())
             }
@@ -210,10 +241,13 @@ impl<'a> Parser<'a> {
                 *tail_idx += 1;
 
                 if *tail_idx == 1 && tail[0] == 0xffff && head[0..8] == [0, 0, 0, 0, 0, 0, 0, 0] {
-                    self.try_do(|p| {
-                        p.accept_char(b':')?;
-                        p.accept_ipv4_mapped_ipv6_part(tail, tail_idx)
-                    });
+                    // Open-coded for the reason given in the head arm above.
+                    let pos = self.pos;
+                    if self.accept_char(b':').is_err()
+                        || self.accept_ipv4_mapped_ipv6_part(tail, tail_idx).is_err()
+                    {
+                        self.pos = pos;
+                    }
                 }
                 Ok(())
             }
@@ -242,7 +276,7 @@ impl<'a> Parser<'a> {
             Ok(())
         } else {
             // Continue recursing
-            self.accept_ipv6_part((head, tail), (head_idx, tail_idx), use_tail)
+            self.accept_ipv6_part(head, tail, head_idx, tail_idx, use_tail)
         }
     }
 
@@ -268,11 +302,7 @@ impl<'a> Parser<'a> {
         let (mut addr, mut tail) = ([0u16; 8], [0u16; 6]);
         let (mut head_idx, mut tail_idx) = (0, 0);
 
-        self.accept_ipv6_part(
-            (&mut addr, &mut tail),
-            (&mut head_idx, &mut tail_idx),
-            false,
-        )?;
+        self.accept_ipv6_part(&mut addr, &mut tail, &mut head_idx, &mut tail_idx, false)?;
 
         // We need to copy the tail portion (the portion following the "::") to the
         // end of the address.
