@@ -283,6 +283,8 @@ pub use self::tcp::{
     SeqNumber as TcpSeqNumber, TcpOption, TcpTimestampGenerator, TcpTimestampRepr,
 };
 
+pub(crate) use self::tcp::SizedRepr as SizedTcpRepr;
+
 #[cfg(feature = "proto-dhcpv4")]
 pub use self::dhcpv4::{
     CLIENT_PORT as DHCP_CLIENT_PORT, DhcpOption, DhcpOptionWriter, Flags as DhcpFlags,

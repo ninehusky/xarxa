@@ -1466,6 +1466,114 @@ impl<'a> Repr<'a> {
     }
 }
 
+/// A [`Repr`] paired with the number of octets it emits.
+///
+/// [`Repr::buffer_len`] is bounded but not exact: the option octets turn on three
+/// `Option::is_some` reads and on how many of the three sACK slots are filled, and neither is
+/// reachable through the container's refinement. Every field of `Repr` is `pub`, so a ghost
+/// accumulator would go stale on the first `repr.max_seg_size = ...` -- which `Socket::dispatch`
+/// does. Measuring once, at the point the representation is moved in, makes the total statable
+/// with nothing trusted: `blen` is the value [`Repr::buffer_len`] returned for this `repr`, and
+/// `repr` is private, so nothing can change it behind the number.
+///
+/// Same device as `dhcpv4::SizedRepr`.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+// 20 is `Repr::buffer_len`'s floor, the fixed part of the TCP header.
+#[flux_rs::refined_by(blen: int)]
+#[flux_rs::invariant(20 <= blen)]
+pub(crate) struct SizedRepr<'a> {
+    repr: Repr<'a>,
+    #[flux_rs::field(usize[blen])]
+    blen: usize,
+}
+
+impl<'a> SizedRepr<'a> {
+    /// Measure `repr` and keep the two together.
+    pub(crate) fn new(repr: Repr<'a>) -> Self {
+        let blen = repr.buffer_len();
+        Self { repr, blen }
+    }
+
+    /// The length of the packet [`Self::emit`] writes.
+    #[flux_rs::sig(fn(self: &Self[@r]) -> usize[r.blen])]
+    #[flux_rs::no_panic]
+    pub(crate) fn buffer_len(&self) -> usize {
+        self.blen
+    }
+
+    /// The header length, as [`Repr::header_len`] reports it.
+    #[flux_rs::sig(fn(&Self) -> usize{v: 20 <= v && v <= 68})]
+    pub(crate) fn header_len(&self) -> usize {
+        self.repr.header_len()
+    }
+
+    /// The advertised window.
+    #[flux_rs::no_panic]
+    pub(crate) fn window_len(&self) -> u16 {
+        self.repr.window_len
+    }
+
+    /// Set the advertised window.
+    ///
+    /// `&strg` so the caller keeps `blen`, as for the three setters below. None of these four
+    /// fields is part of what [`Repr::buffer_len`] counts, and each postcondition is proved
+    /// rather than stated -- the body writes `repr` and leaves the measured length alone.
+    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], u16) ensures self: SizedRepr[r.blen])]
+    #[flux_rs::no_panic]
+    pub(crate) fn set_window_len(&mut self, value: u16) {
+        self.repr.window_len = value;
+    }
+
+    /// Set the control flag.
+    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], Control) ensures self: SizedRepr[r.blen])]
+    #[flux_rs::no_panic]
+    pub(crate) fn set_control(&mut self, value: Control) {
+        self.repr.control = value;
+    }
+
+    /// Set the sequence number.
+    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], SeqNumber) ensures self: SizedRepr[r.blen])]
+    #[flux_rs::no_panic]
+    pub(crate) fn set_seq_number(&mut self, value: SeqNumber) {
+        self.repr.seq_number = value;
+    }
+
+    /// Set the acknowledgement number.
+    ///
+    /// The sACK option is the one whose presence turns on `ack_number`, and
+    /// [`Repr::header_len`] counts it either way, so this does not move the length.
+    #[flux_rs::sig(
+        fn(self: &strg SizedRepr[@r], Option<SeqNumber>) ensures self: SizedRepr[r.blen]
+    )]
+    #[flux_rs::no_panic]
+    pub(crate) fn set_ack_number(&mut self, value: Option<SeqNumber>) {
+        self.repr.ack_number = value;
+    }
+
+    /// The representation that was measured.
+    pub(crate) fn into_repr(self) -> Repr<'a> {
+        self.repr
+    }
+
+    /// Emit the representation into `packet`, exactly as [`Repr::emit`] would.
+    #[flux_rs::sig(
+        fn(&Self, packet: &mut Packet<T>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities)
+        requires 20 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+              && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
+    )]
+    pub(crate) fn emit<T>(
+        &self,
+        packet: &mut Packet<T>,
+        src_addr: &IpAddress,
+        dst_addr: &IpAddress,
+        checksum_caps: &ChecksumCapabilities,
+    ) where
+        T: AsRef<[u8]> + AsMut<[u8]>,
+    {
+        self.repr.emit(packet, src_addr, dst_addr, checksum_caps)
+    }
+}
+
 impl<T: AsRef<[u8]> + ?Sized> fmt::Display for Packet<&T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // Cannot use Repr::parse because we don't have the IP addresses.

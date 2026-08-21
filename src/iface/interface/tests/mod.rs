@@ -205,7 +205,7 @@ pub fn tcp_not_accepted() {
                 payload_len: tcp.buffer_len(),
                 hop_limit: 64,
             },
-            IpPayload::Tcp(TcpRepr {
+            IpPayload::Tcp(SizedTcpRepr::new(TcpRepr {
                 src_port: 4243,
                 dst_port: 4242,
                 control: TcpControl::Rst,
@@ -218,7 +218,7 @@ pub fn tcp_not_accepted() {
                 sack_ranges: [None, None, None],
                 timestamp: None,
                 payload: &[],
-            })
+            }))
         ))
     );
     // Unspecified destination address.

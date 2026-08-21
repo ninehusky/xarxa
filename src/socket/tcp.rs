@@ -13,7 +13,8 @@ use crate::socket::{Context, PollAt};
 use crate::storage::{Assembler, RingBuffer};
 use crate::time::{Duration, Instant};
 use crate::wire::{
-    IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, TCP_HEADER_LEN, TcpControl,
+    IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, SizedTcpRepr, TCP_HEADER_LEN,
+    TcpControl,
     TcpRepr, TcpSeqNumber, TcpTimestampGenerator, TcpTimestampRepr,
 };
 
@@ -1441,8 +1442,11 @@ impl<'a> Socket<'a> {
         }
     }
 
+    /// The IP header describes exactly what the segment emits. The measurement happens first
+    /// so that `IpRepr::new` is handed `SizedTcpRepr::buffer_len`, which is exact in the
+    /// refinement, rather than a second `Repr::buffer_len` call flux cannot equate with it.
     #[flux_rs::trusted(no, reason = "calls IpRepr::new")]
-    pub(crate) fn reply(ip_repr: &IpRepr, repr: &TcpRepr) -> (IpRepr, TcpRepr<'static>) {
+    pub(crate) fn reply(ip_repr: &IpRepr, repr: &TcpRepr) -> Reply<'static> {
         let reply_repr = TcpRepr {
             src_port: repr.dst_port,
             dst_port: repr.src_port,
@@ -1457,6 +1461,7 @@ impl<'a> Socket<'a> {
             timestamp: None,
             payload: &[],
         };
+        let reply_repr = SizedTcpRepr::new(reply_repr);
         let ip_reply_repr = IpRepr::new(
             ip_repr.dst_addr(),
             ip_repr.src_addr(),
@@ -1464,29 +1469,46 @@ impl<'a> Socket<'a> {
             reply_repr.buffer_len(),
             64,
         );
-        (ip_reply_repr, reply_repr)
+        Reply {
+            ip_repr: ip_reply_repr,
+            repr: reply_repr,
+        }
     }
 
+    /// Carries [`Self::reply`]'s length equality through: none of the three fields set below
+    /// is one [`TcpRepr::buffer_len`] counts, which is why the setters can keep `blen`.
     #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
-    pub(crate) fn rst_reply(ip_repr: &IpRepr, repr: &TcpRepr) -> (IpRepr, TcpRepr<'static>) {
+    pub(crate) fn rst_reply(ip_repr: &IpRepr, repr: &TcpRepr) -> Reply<'static> {
         debug_assert!(repr.control != TcpControl::Rst);
 
-        let (ip_reply_repr, mut reply_repr) = Self::reply(ip_repr, repr);
+        let Reply {
+            ip_repr: ip_reply_repr,
+            repr: mut reply_repr,
+        } = Self::reply(ip_repr, repr);
 
         // See https://www.snellman.net/blog/archive/2016-02-01-tcp-rst/ for explanation
         // of why we sometimes send an RST and sometimes an RST|ACK
-        reply_repr.control = TcpControl::Rst;
-        reply_repr.seq_number = repr.ack_number.unwrap_or_default();
+        reply_repr.set_control(TcpControl::Rst);
+        reply_repr.set_seq_number(repr.ack_number.unwrap_or_default());
         if repr.control == TcpControl::Syn && repr.ack_number.is_none() {
-            reply_repr.ack_number = Some(repr.seq_number + repr.segment_len());
+            reply_repr.set_ack_number(Some(repr.seq_number + repr.segment_len()));
         }
 
-        (ip_reply_repr, reply_repr)
+        Reply {
+            ip_repr: ip_reply_repr,
+            repr: reply_repr,
+        }
     }
 
     #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
-    fn ack_reply(&mut self, ip_repr: &IpRepr, repr: &TcpRepr) -> (IpRepr, TcpRepr<'static>) {
-        let (mut ip_reply_repr, mut reply_repr) = Self::reply(ip_repr, repr);
+    fn ack_reply(&mut self, ip_repr: &IpRepr, repr: &TcpRepr) -> Reply<'static> {
+        let Reply {
+            ip_repr: mut ip_reply_repr,
+            repr: reply_repr,
+        } = Self::reply(ip_repr, repr);
+        // Back to a plain `Repr`: the sACK slots below are part of what `buffer_len` counts,
+        // so the measurement has to be redone once they are set.
+        let mut reply_repr = reply_repr.into_repr();
         reply_repr.timestamp = repr
             .timestamp
             .and_then(|tcp_ts| tcp_ts.generate_reply(self.tsval_generator));
@@ -1545,8 +1567,13 @@ impl<'a> Socket<'a> {
         }
 
         // Since the sACK option may have changed the length of the payload, update that.
+        // Measured first so `set_payload_len` is handed the exact index, as in `reply`.
+        let reply_repr = SizedTcpRepr::new(reply_repr);
         ip_reply_repr.set_payload_len(reply_repr.buffer_len());
-        (ip_reply_repr, reply_repr)
+        Reply {
+            ip_repr: ip_reply_repr,
+            repr: reply_repr,
+        }
     }
 
     #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
@@ -1555,7 +1582,7 @@ impl<'a> Socket<'a> {
         cx: &mut Context,
         ip_repr: &IpRepr,
         repr: &TcpRepr,
-    ) -> Option<(IpRepr, TcpRepr<'static>)> {
+    ) -> Option<Reply<'static>> {
         if cx.now() < self.challenge_ack_timer {
             return None;
         }
@@ -1606,7 +1633,7 @@ impl<'a> Socket<'a> {
         cx: &mut Context,
         ip_repr: &IpRepr,
         repr: &TcpRepr,
-    ) -> Option<(IpRepr, TcpRepr<'static>)> {
+    ) -> Option<Reply<'static>> {
         debug_assert!(self.accepts(cx, ip_repr, repr));
 
         // Consider how much the sequence number space differs from the transmit buffer space.
@@ -2484,10 +2511,20 @@ impl<'a> Socket<'a> {
 
     // FIXME(flux): same fixpoint blowup as `process` above (~680KB constraint, fixpoint
     // reaches 7GB RSS without terminating). Trusted until it is split up.
+    //
+    // The `Fn` bound is not assumed on that account. It is *created and consumed* inside
+    // [`set_len_and_emit`], which is checked: this body never sets a payload length and never
+    // calls `emit`, it only hands both to the shim. Nothing about the length crosses the
+    // trusted boundary.
     #[flux_rs::trusted]
+    #[flux_rs::sig(
+        fn(self: &mut Socket, &mut Context, F) -> Result<(), E>
+        where F: FnOnce(&mut Context, (IpRepr[@ipr], SizedTcpRepr{t: ipr.plen == t.blen}))
+                 -> Result<(), E>
+    )]
     pub(crate) fn dispatch<F, E>(&mut self, cx: &mut Context, emit: F) -> Result<(), E>
     where
-        F: FnOnce(&mut Context, (IpRepr, TcpRepr)) -> Result<(), E>,
+        F: FnOnce(&mut Context, (IpRepr, SizedTcpRepr)) -> Result<(), E>,
     {
         if self.tuple.is_none() {
             return Ok(());
@@ -2790,8 +2827,7 @@ impl<'a> Socket<'a> {
         // Bailing out if the packet isn't placed in the device buffer allows us
         // to not waste time waiting for the retransmit timer on packets that we know
         // for sure will not be successfully transmitted.
-        ip_repr.set_payload_len(repr.buffer_len());
-        emit(cx, (ip_repr, repr))?;
+        set_len_and_emit(cx, ip_repr, SizedTcpRepr::new(repr), emit)?;
 
         // We've sent something, whether useful data or a keep-alive packet, so rewind
         // the keep-alive timer.
@@ -2902,6 +2938,56 @@ impl<'a> Socket<'a> {
                 .unwrap_or(&PollAt::Ingress)
         }
     }
+}
+
+/// Sets the IP payload length to what the segment emits, then calls `emit`.
+///
+/// A verification shim, not an abstraction, and the analogue of `udp::call_emit`. Two things
+/// have to happen in a body flux checks. `emit` is called against
+/// [`Socket::dispatch`]'s refined `Fn` bound, and flux checks such a call in a *function* body
+/// but not in a closure's (flux-rs/flux#23). And the fact that bound states --
+/// `ipr.plen == t.blen` -- is *made* by the `set_payload_len` on the line above, so hoisting
+/// only the call would leave the fact behind in `dispatch`, which is trusted. Moving both
+/// lines here makes `dispatch`'s contract proved rather than asserted, without fixpoint ever
+/// seeing that 372-line body.
+///
+/// `length <= 65535` is [`IpRepr::set_payload_len`]'s obligation and is left owing here rather
+/// than pushed back to `dispatch` as a `requires`, which `dispatch` could not discharge: a
+/// `Repr` whose payload exceeds 65515 octets sets a length the IPv4 total-length field
+/// truncates. Same family as the UDP defect at `udp.rs:557`.
+#[flux_rs::trusted(no, reason = "makes and checks Socket::dispatch's payload-length contract")]
+#[flux_rs::sig(
+    fn(&mut Context, IpRepr, SizedTcpRepr, F) -> R
+    where
+        F: FnOnce(&mut Context, (IpRepr[@i], SizedTcpRepr{t: i.plen == t.blen})) -> R
+)]
+fn set_len_and_emit<'a, R, F>(
+    cx: &mut Context,
+    mut ip_repr: IpRepr,
+    repr: SizedTcpRepr<'a>,
+    emit: F,
+) -> R
+where
+    F: FnOnce(&mut Context, (IpRepr, SizedTcpRepr<'a>)) -> R,
+{
+    ip_repr.set_payload_len(repr.buffer_len());
+    emit(cx, (ip_repr, repr))
+}
+
+/// An `IpRepr` and the segment it describes.
+///
+/// A struct rather than the `(IpRepr, SizedTcpRepr)` tuple these functions used to return: the
+/// point of it is that both fields are indexed by the same `blen`, so "the IP header describes
+/// exactly what this segment emits" is structural and is proved wherever a `Reply` is built. A
+/// tuple cannot carry that -- flux rejects an `@` binder in return position, so the second
+/// component has no way to name the first.
+#[derive(Debug)]
+#[flux_rs::refined_by(ip_ty: int, blen: int)]
+pub(crate) struct Reply<'a> {
+    #[flux_rs::field(IpRepr[ip_ty, blen])]
+    pub(crate) ip_repr: IpRepr,
+    #[flux_rs::field(SizedTcpRepr[blen])]
+    pub(crate) repr: SizedTcpRepr<'a>,
 }
 
 impl<'a> fmt::Write for Socket<'a> {
@@ -3070,7 +3156,8 @@ mod test {
         assert!(socket.socket.accepts(&mut socket.cx, &ip_repr, repr));
 
         match socket.socket.process(&mut socket.cx, &ip_repr, repr) {
-            Some((_ip_repr, repr)) => {
+            Some(reply) => {
+                let repr = reply.repr.into_repr();
                 net_trace!("recv: {}", repr);
                 Some(repr)
             }
@@ -3094,6 +3181,7 @@ mod test {
                 assert_eq!(ip_repr.dst_addr(), REMOTE_ADDR.into());
                 assert_eq!(ip_repr.payload_len(), tcp_repr.buffer_len());
 
+                let tcp_repr = tcp_repr.into_repr();
                 net_trace!("recv: {}", tcp_repr);
                 sent += 1;
                 Ok(f(Ok(tcp_repr)))

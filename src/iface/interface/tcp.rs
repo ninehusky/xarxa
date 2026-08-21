@@ -37,7 +37,7 @@ impl InterfaceInner {
             if tcp_socket.accepts(self, &ip_repr, &tcp_repr) {
                 return tcp_socket
                     .process(self, &ip_repr, &tcp_repr)
-                    .map(|(ip, tcp)| Packet::new(ip, IpPayload::Tcp(tcp)));
+                    .map(|reply| Packet::new(reply.ip_repr, IpPayload::Tcp(reply.repr)));
             }
         }
 
@@ -52,8 +52,8 @@ impl InterfaceInner {
             None
         } else {
             // The packet wasn't handled by a socket, send a TCP RST packet.
-            let (ip, tcp) = tcp::Socket::rst_reply(&ip_repr, &tcp_repr);
-            Some(Packet::new(ip, IpPayload::Tcp(tcp)))
+            let reply = tcp::Socket::rst_reply(&ip_repr, &tcp_repr);
+            Some(Packet::new(reply.ip_repr, IpPayload::Tcp(reply.repr)))
         }
     }
 }
