@@ -1310,8 +1310,20 @@ impl<'a> Repr<'a> {
     ///
     /// This should be used for buffer space calculations.
     /// The TCP header length is a multiple of 4.
+    ///
+    /// A range, not the exact value: the option bytes turn on `Option::is_some` and on how many
+    /// of the three sACK slots are filled, and neither is reachable in the refinement -- an
+    /// `Option` index and an array element index are both out of reach here.
+    ///
+    /// 20 is `field::URGENT.end`, restated as a literal because flux cannot see through the
+    /// `Range` const it comes from; it is what the fixed part of the header costs. 68 is the
+    /// other end: `4 + 3 + 2 + 10` of single options, `8 * 3 + 2` of sACK, and the round up to a
+    /// multiple of four. The ceiling is what keeps the sum in `buffer_len` from reading as a
+    /// wrapping one, and what bounds the `as u8` cast in `emit`.
+    #[flux_rs::trusted(no, reason = "bounds the emitted header length")]
+    #[flux_rs::sig(fn(&Self) -> usize{v: 20 <= v && v <= 68})]
     pub fn header_len(&self) -> usize {
-        let mut length = field::URGENT.end;
+        let mut length = 20; // field::URGENT.end
         if self.max_seg_size.is_some() {
             length += 4
         }
@@ -1324,11 +1336,12 @@ impl<'a> Repr<'a> {
         if self.timestamp.is_some() {
             length += 10;
         }
-        let sack_range_len: usize = self
-            .sack_ranges
-            .iter()
-            .map(|o| o.map(|_| 8).unwrap_or(0))
-            .sum();
+        // Unrolled rather than summed over the iterator: a `.sum()` is unbounded in the
+        // refinement, and under `check_overflow = "lazy"` an unbounded addend is modelled as
+        // wrapping, which would sink even the lower bound. The array is three slots wide.
+        let sack_range_len: usize = (if self.sack_ranges[0].is_some() { 8 } else { 0 })
+            + (if self.sack_ranges[1].is_some() { 8 } else { 0 })
+            + (if self.sack_ranges[2].is_some() { 8 } else { 0 });
         if sack_range_len > 0 {
             length += sack_range_len + 2;
         }
@@ -1339,8 +1352,17 @@ impl<'a> Repr<'a> {
     }
 
     /// Return the length of a packet that will be emitted from this high-level representation.
+    ///
+    /// The same floor as [`header_len`](Self::header_len), carried through the payload: this is
+    /// what `IpPayload::Tcp`'s `minlen` rests on, and through it `Repr::emit`'s `20 <=` bound on
+    /// the buffer it is handed.
+    ///
+    /// `byte_len` rather than `.len()` so the sum carries the `isize::MAX` ceiling; without it
+    /// `check_overflow = "lazy"` models the addition as wrapping and the floor is lost.
+    #[flux_rs::trusted(no, reason = "floor on the emitted packet length")]
+    #[flux_rs::sig(fn(&Self) -> usize{v: 20 <= v})]
     pub fn buffer_len(&self) -> usize {
-        self.header_len() + self.payload.len()
+        self.header_len() + crate::flux_util::byte_len(self.payload)
     }
 
     /// Emit a high-level representation into a Transmission Control Protocol packet.
