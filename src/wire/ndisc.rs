@@ -362,33 +362,10 @@ impl<'a> Repr<'a> {
 
         let mut offset = 0;
         while packet.payload().len() > offset {
-            let window = &packet.payload()[offset..];
-            // `NdiscOption::check_len`'s own minimum, restated. That method returns
-            // `Result<()>`, so the length it validated does not survive the call, and
-            // `data_len` below reads octet 1; this `Err` is the one `new_checked` returns for
-            // the same buffer. 8 is `ndiscoption::field::MIN_OPT_LEN`, which flux cannot see
-            // through.
-            if window.len() < 8 {
-                return Err(Error);
-            }
-            // `new_unchecked` plus the two tests `new_checked` runs, rather than `new_checked`
-            // itself: that method carries no signature, so the window's length does not survive
-            // the call and `data_len` below has nothing to stand on. Rung 2 on
-            // `wire/ndiscoption.rs` retires the spelling-out.
-            let pkt = NdiscOption::new_unchecked(Ref::new(window));
-            pkt.check_len()?;
-            // A data length field of 0 is invalid.
-            if pkt.data_len() == 0 {
-                return Err(Error);
-            }
-            // `NdiscOptionRepr::parse` takes an `NdiscOption<&'a T>`, whose buffer index has the
-            // unit sort; `data_len` below needs one that does not, so the option is wrapped
-            // twice over the same octets. `new_unchecked`, because the check has just run on
-            // them.
-            let opt_pkt = NdiscOption::new_unchecked(window);
+            let pkt = NdiscOption::new_checked_ref(Ref::new(&packet.payload()[offset..]))?;
 
             // If an option doesn't parse, ignore it and still parse the others.
-            if let Ok(opt) = NdiscOptionRepr::parse(&opt_pkt) {
+            if let Ok(opt) = NdiscOptionRepr::parse(&pkt) {
                 match opt {
                     NdiscOptionRepr::SourceLinkLayerAddr(addr) => src_ll_addr = Some(addr),
                     NdiscOptionRepr::TargetLinkLayerAddr(addr) => target_ll_addr = Some(addr),
