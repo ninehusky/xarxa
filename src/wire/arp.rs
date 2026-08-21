@@ -625,31 +625,38 @@ impl Repr {
     }
 }
 
+// A trait impl's signature is fixed, so this cannot carry the nine accessors' `requires`. The
+// check is taken inside the body instead: `checked_len`'s `Ok` arm proves
+// `8 + 2 * hlen + 2 * plen <= buffer`, which is every bound the field dump below wants, and the
+// `Err` arm no longer indexes a buffer it never validated.
 impl<T: AsRef<[u8]>> fmt::Display for Packet<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match Repr::parse(self) {
             Ok(repr) => write!(f, "{repr}"),
-            _ => {
-                write!(f, "ARP (unrecognized)")?;
-                write!(
-                    f,
-                    " htype={:?} ptype={:?} hlen={:?} plen={:?} op={:?}",
-                    self.hardware_type(),
-                    self.protocol_type(),
-                    self.hardware_len(),
-                    self.protocol_len(),
-                    self.operation()
-                )?;
-                write!(
-                    f,
-                    " sha={:?} spa={:?} tha={:?} tpa={:?}",
-                    self.source_hardware_addr(),
-                    self.source_protocol_addr(),
-                    self.target_hardware_addr(),
-                    self.target_protocol_addr()
-                )?;
-                Ok(())
-            }
+            _ => match self.checked_len() {
+                Err(err) => write!(f, "ARP ({err})"),
+                Ok(_) => {
+                    write!(f, "ARP (unrecognized)")?;
+                    write!(
+                        f,
+                        " htype={:?} ptype={:?} hlen={:?} plen={:?} op={:?}",
+                        self.hardware_type(),
+                        self.protocol_type(),
+                        self.hardware_len(),
+                        self.protocol_len(),
+                        self.operation()
+                    )?;
+                    write!(
+                        f,
+                        " sha={:?} spa={:?} tha={:?} tpa={:?}",
+                        self.source_hardware_addr(),
+                        self.source_protocol_addr(),
+                        self.target_hardware_addr(),
+                        self.target_protocol_addr()
+                    )?;
+                    Ok(())
+                }
+            },
         }
     }
 }
