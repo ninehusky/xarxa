@@ -42,3 +42,20 @@ where
     #[sig(fn(&mut Self, {I[@idx] | <[T] as Index<I>>::in_bounds(N, idx)}) -> &mut <[T; N] as Index<I>>::Output{out: <[T] as Index<I>>::output_pred(N, idx, out)})]
     fn index_mut(&mut self, index: I) -> &mut <[T; N] as Index<I>>::Output;
 }
+
+/// xarxa's own, not a flux-core copy. These are the way to get an array's length into the
+/// refinement: an implicit array-to-slice coercion gets a fresh, unconstrained length every
+/// time it happens, so a bound measured through one coercion says nothing about a slice
+/// obtained through another. `as_slice`/`as_mut_slice` name `N`, so a measurement and a use
+/// agree. Both are a pointer cast, hence `no_panic`.
+/// <https://doc.rust-lang.org/1.89.0/src/core/array/mod.rs.html#640>
+#[extern_spec(core::array)]
+impl<T, const N: usize> [T; N] {
+    #[no_panic]
+    #[spec(fn(&Self) -> &[T][N])]
+    fn as_slice(&self) -> &[T];
+
+    #[no_panic]
+    #[spec(fn(&mut Self) -> &mut [T][N])]
+    fn as_mut_slice(&mut self) -> &mut [T];
+}

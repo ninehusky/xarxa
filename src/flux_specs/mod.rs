@@ -7,7 +7,7 @@
 //! | module | what it holds | how to review it |
 //! | --- | --- | --- |
 //! | [`flux_core`] | verbatim copies of specs that already ship in flux-core | check the transcription |
-//! | [`array`] | verbatim copies of flux-core's `[T; N]` `Index`/`IndexMut` | check the transcription |
+//! | [`array`] | flux-core's `[T; N]` `Index`/`IndexMut`, plus `as_slice`/`as_mut_slice` | check both |
 //! | [`convert`] | `AsRef`/`AsMut` associated refinements | check the claim |
 //! | [`slice`] | `copy_from_slice`, `SliceIndex for RangeFull` | check the claim |
 //! | [`cmp`] | `min` | check the claim |

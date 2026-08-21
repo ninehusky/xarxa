@@ -6,7 +6,7 @@ use core::fmt;
 use super::{Error, Result};
 use crate::wire::HardwareAddress;
 use crate::wire::ip::pretty_print_ip_payload;
-use crate::wire::{read_u16_at, read_u32_at, Ref};
+use crate::wire::{copy_window_at, read_u16_at, read_u32_at, Ref};
 
 pub use super::IpProtocol as Protocol;
 
@@ -171,11 +171,14 @@ impl AddressExt for Address {
         let idx = (mask as usize) / 8;
         let modulus = (mask as usize) % 8;
         let octets = self.octets();
-        let (first, second) = octets.split_at(idx);
-        bytes[0..idx].copy_from_slice(first);
+        // `as_slice`/`as_mut_slice` rather than `split_at` and an implicit coercion: they name
+        // the arrays' length, so the `idx <= 16` that `assert!(mask <= 128)` establishes bounds
+        // both windows. The write goes through `copy_window_at` because a `&mut` sub-slice of
+        // `bytes` would lose its length before `copy_from_slice` could compare the two.
+        copy_window_at(bytes.as_mut_slice(), 0, idx, &octets.as_slice()[0..idx]);
         if idx < ADDR_SIZE {
-            let part = second[0];
-            bytes[idx] = part & (!(0xff >> modulus) as u8);
+            let part = octets.as_slice()[idx];
+            bytes.as_mut_slice()[idx] = part & (!(0xff >> modulus) as u8);
         }
         bytes
     }
