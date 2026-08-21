@@ -3,6 +3,7 @@ use super::{Error, Result};
 use super::{RplHopByHopPacket, RplHopByHopRepr};
 
 use byteorder::{ByteOrder, NetworkEndian};
+use crate::wire::Ref;
 use core::fmt;
 
 enum_with_unknown! {
@@ -223,29 +224,77 @@ impl<T: AsRef<[u8]>> Ipv6Option<T> {
     /// The result of this check is invalidated by calling [set_data_len].
     ///
     /// [set_data_len]: #method.set_data_len
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(fn(self: &Ipv6Option<T>[@o]) -> Result<()>)]
     pub fn check_len(&self) -> Result<()> {
-        let data = self.buffer.as_ref();
-        let len = data.len();
+        match self.checked_len() {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
 
-        if len < field::LENGTH {
+    /// [`check_len`](Self::check_len), returning the buffer length it validated.
+    ///
+    /// The whole of `check_len`; the public method just discards the length. What the `Ok` arm
+    /// can say is only `1 <= v`, because a `Pad1` option is one octet long and short-circuits
+    /// before the data window is looked at. The stronger fact the window needs is
+    /// [`checked_data_len`](Self::checked_data_len)'s, which is the rest of this test.
+    ///
+    /// The reads are spelled out: `field::LENGTH` is a `usize` const and `field::DATA` returns
+    /// a `Range`, both opaque to flux. The literals are the values they have.
+    #[flux_rs::trusted(no, reason = "spec needed to prove `new_checked` is correct")]
+    #[flux_rs::sig(
+        fn(self: &Ipv6Option<T>[@o])
+            -> Result<usize{v: v == <T as AsRef<[u8]>>::as_ref_reft(o.buffer) && 1 <= v}>
+    )]
+    pub(super) fn checked_len(&self) -> Result<usize> {
+        let len = self.buffer.as_ref().len();
+
+        if len < 1 {
+            // field::LENGTH
             return Err(Error);
         }
 
         if self.option_type() == Type::Pad1 {
-            return Ok(());
+            return Ok(len);
         }
 
-        if len == field::LENGTH {
+        if len == 1 {
+            // field::LENGTH
             return Err(Error);
         }
 
-        let df = field::DATA(data[field::LENGTH]);
-
-        if len < df.end {
+        // `field::DATA(data_len).end`. Read through `data_len` rather than the octet, so the
+        // ghost is what the bound is stated over.
+        if len < self.data_len() as usize + 2 {
             return Err(Error);
         }
 
-        Ok(())
+        Ok(len)
+    }
+
+    /// The data length of a non-`Pad1` option, with the window it names proved to fit.
+    ///
+    /// The tail of [`check_len`](Self::check_len), which every non-`Pad1` option has already
+    /// been through: `Result<()>` carried none of it out, so the `Err` here is the one that
+    /// method has already returned for the same buffer. A `Pad1` option has no data window and
+    /// is rejected, which is what [`data`](Ipv6Option::data) documents as its panic.
+    #[flux_rs::trusted(no, reason = "spec needed to prove the data window fits")]
+    #[flux_rs::sig(
+        fn(self: &Ipv6Option<T>[@o])
+            -> Result<usize{v: v == o.data_len
+                             && 2 + o.data_len <= <T as AsRef<[u8]>>::as_ref_reft(o.buffer)}>
+    )]
+    pub(super) fn checked_data_len(&self) -> Result<usize> {
+        let len = self.buffer.as_ref().len();
+        if len < 2 {
+            return Err(Error);
+        }
+        let data_len = self.data_len() as usize;
+        if len < data_len + 2 {
+            return Err(Error);
+        }
+        Ok(data_len)
     }
 
     /// Consume the ipv6 option, returning the underlying buffer.
@@ -304,25 +353,42 @@ impl<T: AsRef<[u8]>> Ipv6Option<T> {
     }
 }
 
-impl<'a, T: AsRef<[u8]> + ?Sized> Ipv6Option<&'a T> {
+impl<'a> Ipv6Option<Ref<'a>> {
+    /// [`new_checked`](Self::new_checked) over a [`Ref`], carrying its proof out.
+    ///
+    /// Only `1 <= b.len`, because that is all `checked_len` can say for a `Pad1` option; the
+    /// data window's bound is `checked_data_len`'s and is taken per option type in
+    /// [`Repr::parse`].
+    #[flux_rs::trusted(no, reason = "carries `checked_len`'s proof out through the `Ok` arm")]
+    #[flux_rs::sig(fn(Ref[@b]) -> Result<Ipv6Option<Ref>{o: o.buffer == b && 1 <= b.len}>)]
+    pub fn new_checked_ref(buffer: Ref<'a>) -> Result<Ipv6Option<Ref<'a>>> {
+        let opt = Ipv6Option::new_unchecked(buffer);
+        opt.checked_len()?;
+        Ok(opt)
+    }
+
     /// Return the option data.
     ///
     /// # Panics
     /// This function panics if this is an 1-byte padding option.
-    //
-    // The window is written out rather than taken from `field::DATA`, which is a `const fn`
-    // flux cannot see through -- with the range opaque, neither `start <= end` nor
-    // `end <= len` was provable; written out, `2 <= len + 2` is.
-    //
-    // `2 + data_len <= len` is left as a reported obligation, and it is unstatable rather than
-    // merely unproven: the buffer here is `&'a T`, so its length index would have to come from
-    // core's blanket `impl<T, U> AsRef<U> for &T`, which carries no associated refinement.
-    // Convertible once a reference self type can be refined; see `wire::Buf`.
+    ///
+    /// The `Ipv6Option<&'a T>` twin of this cannot be proved: a reference in type-parameter
+    /// position has the unit sort, so `2 + data_len <= buffer_len` is unstatable there rather
+    /// than merely unproven. Over `Ref<'a>` it is the bound `checked_data_len` returns, and the
+    /// data's length survives into the caller's index.
+    ///
+    /// The window is written out rather than taken from `field::DATA`, which is a `const fn`
+    /// flux cannot see through.
+    #[flux_rs::trusted(no, reason = "panic site: opens the option data window")]
+    #[flux_rs::sig(
+        fn(&Ipv6Option<Ref>[@o]) -> &[u8][o.data_len]
+        requires 2 + o.data_len <= o.buffer.len
+    )]
+    #[flux_rs::no_panic]
     #[inline]
     pub fn data(&self) -> &'a [u8] {
-        let data = self.buffer.as_ref();
-        let len = data[field::LENGTH]; // == self.data_len()
-        &data[2..len as usize + 2] // field::DATA(len)
+        // `field::DATA(len)` is `2..len + 2`.
+        self.buffer.window(2, self.data_len() as usize + 2)
     }
 }
 
@@ -387,7 +453,15 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Ipv6Option<T> {
     }
 }
 
+// The buffer arrives with no length index, and `Ref` is where it acquires one; the body is on
+// the `Ipv6Option<Ref>` impl below.
 impl<T: AsRef<[u8]> + ?Sized> fmt::Display for Ipv6Option<&T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Display::fmt(&Ipv6Option::new_unchecked(Ref::new(self.buffer.as_ref())), f)
+    }
+}
+
+impl fmt::Display for Ipv6Option<Ref<'_>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match Repr::parse(self) {
             Ok(repr) => write!(f, "{repr}"),
@@ -418,14 +492,11 @@ pub enum Repr<'a> {
 
 /// Read the two Router Alert octets out of an option's data window.
 ///
-/// Lifted out of [`Repr::parse`] so this obligation stays reported. `parse` takes
-/// `&Ipv6Option<&T>`, so its first accessor call aborts the body with `associated refinement
-/// 'as_ref_reft' is missing`, and every obligation inside an aborted body stops being checked
-/// *and stops being reported*. This one has nothing to do with that abort: it is about the
-/// length of the slice `Ipv6Option::data` returns, which is not in the refinement because
-/// `data`'s self type is a reference and so cannot reach the `data_len` ghost.
+/// Lifted out of [`Repr::parse`] so the bound is stated once. Over `Ipv6Option<Ref>` the window
+/// carries its length, and the arm that calls this has tested that length is two.
 #[flux_rs::trusted(no, reason = "panic site: byteorder needs two readable octets")]
-#[flux_rs::sig(fn(&[u8]) -> u16)]
+#[flux_rs::sig(fn(&[u8][@n]) -> u16 requires 2 <= n)]
+#[flux_rs::no_panic]
 fn read_router_alert(data: &[u8]) -> u16 {
     NetworkEndian::read_u16(data)
 }
@@ -445,16 +516,22 @@ fn unknown_data(data: &[u8], length: u8) -> &[u8] {
 
 impl<'a> Repr<'a> {
     /// Parse an IPv6 Extension Header Option and return a high-level representation.
-    pub fn parse<T>(opt: &Ipv6Option<&'a T>) -> Result<Repr<'a>>
-    where
-        T: AsRef<[u8]> + ?Sized,
-    {
-        opt.check_len()?;
+    ///
+    /// `checked_len` rather than `check_len`, and `checked_data_len` in every arm that reads
+    /// past the type octet: the same tests, but their `Ok` arms name the buffer's length and
+    /// the data window's far end, and over [`Ref`] both are statable. `Pad1` is the one option
+    /// with no data window, which is why the second test is per-arm rather than up front.
+    pub fn parse(opt: &Ipv6Option<Ref<'a>>) -> Result<Repr<'a>> {
+        opt.checked_len()?;
         match opt.option_type() {
             Type::Pad1 => Ok(Repr::Pad1),
-            Type::PadN => Ok(Repr::PadN(opt.data_len())),
+            Type::PadN => {
+                opt.checked_data_len()?;
+                Ok(Repr::PadN(opt.data_len()))
+            }
             Type::RouterAlert => {
-                if opt.data_len() == RouterAlert::DATA_LEN {
+                // 2 is `RouterAlert::DATA_LEN`; flux cannot see through a `const`.
+                if opt.checked_data_len()? == 2 {
                     let raw = read_router_alert(opt.data());
                     Ok(Repr::RouterAlert(RouterAlert::from(raw)))
                 } else {
@@ -462,21 +539,30 @@ impl<'a> Repr<'a> {
                 }
             }
             #[cfg(feature = "proto-rpl")]
-            Type::Rpl => Ok(Repr::Rpl(RplHopByHopRepr::parse(
-                &RplHopByHopPacket::new_checked(opt.data())?,
-            ))),
+            Type::Rpl => {
+                opt.checked_data_len()?;
+                Ok(Repr::Rpl(RplHopByHopRepr::parse(
+                    &RplHopByHopPacket::new_checked(opt.data())?,
+                )))
+            }
             #[cfg(not(feature = "proto-rpl"))]
-            Type::Rpl => Ok(Repr::Unknown {
-                type_: Type::Rpl,
-                length: opt.data_len(),
-                data: opt.data(),
-            }),
+            Type::Rpl => {
+                opt.checked_data_len()?;
+                Ok(Repr::Unknown {
+                    type_: Type::Rpl,
+                    length: opt.data_len(),
+                    data: opt.data(),
+                })
+            }
 
-            unknown_type @ Type::Unknown(_) => Ok(Repr::Unknown {
-                type_: unknown_type,
-                length: opt.data_len(),
-                data: opt.data(),
-            }),
+            unknown_type @ Type::Unknown(_) => {
+                opt.checked_data_len()?;
+                Ok(Repr::Unknown {
+                    type_: unknown_type,
+                    length: opt.data_len(),
+                    data: opt.data(),
+                })
+            }
         }
     }
 
@@ -575,7 +661,7 @@ impl<'a> Iterator for Ipv6OptionsIterator<'a> {
         if pos < self.length && !self.hit_error {
             // If we still have data to parse and we have not previously
             // hit an error, attempt to parse the next option.
-            match Ipv6Option::new_checked(&self.data[pos..]) {
+            match Ipv6Option::new_checked_ref(Ref::new(&self.data[pos..])) {
                 Ok(hdr) => match Repr::parse(&hdr) {
                     Ok(repr) => {
                         self.pos += repr.buffer_len();
@@ -690,44 +776,44 @@ mod test {
     #[test]
     #[should_panic(expected = "index out of bounds")]
     fn test_data_len() {
-        let opt = Ipv6Option::new_unchecked(&IPV6OPTION_BYTES_PAD1);
+        let opt = Ipv6Option::new_unchecked(Ref::new(&IPV6OPTION_BYTES_PAD1));
         opt.data_len();
     }
 
     #[test]
     fn test_option_deconstruct() {
         // one octet of padding
-        let opt = Ipv6Option::new_unchecked(&IPV6OPTION_BYTES_PAD1);
+        let opt = Ipv6Option::new_unchecked(Ref::new(&IPV6OPTION_BYTES_PAD1));
         assert_eq!(opt.option_type(), Type::Pad1);
 
         // two octets of padding
         let bytes: [u8; 2] = [0x1, 0x0];
-        let opt = Ipv6Option::new_unchecked(&bytes);
+        let opt = Ipv6Option::new_unchecked(Ref::new(&bytes));
         assert_eq!(opt.option_type(), Type::PadN);
         assert_eq!(opt.data_len(), 0);
 
         // three octets of padding
-        let opt = Ipv6Option::new_unchecked(&IPV6OPTION_BYTES_PADN);
+        let opt = Ipv6Option::new_unchecked(Ref::new(&IPV6OPTION_BYTES_PADN));
         assert_eq!(opt.option_type(), Type::PadN);
         assert_eq!(opt.data_len(), 1);
         assert_eq!(opt.data(), &[0]);
 
         // extra bytes in buffer
         let bytes: [u8; 10] = [0x1, 0x7, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xff];
-        let opt = Ipv6Option::new_unchecked(&bytes);
+        let opt = Ipv6Option::new_unchecked(Ref::new(&bytes));
         assert_eq!(opt.option_type(), Type::PadN);
         assert_eq!(opt.data_len(), 7);
         assert_eq!(opt.data(), &[0, 0, 0, 0, 0, 0, 0]);
 
         // router alert
-        let opt = Ipv6Option::new_unchecked(&IPV6OPTION_BYTES_ROUTER_ALERT_MLD);
+        let opt = Ipv6Option::new_unchecked(Ref::new(&IPV6OPTION_BYTES_ROUTER_ALERT_MLD));
         assert_eq!(opt.option_type(), Type::RouterAlert);
         assert_eq!(opt.data_len(), 2);
         assert_eq!(opt.data(), &[0, 0]);
 
         // unrecognized option
         let bytes: [u8; 1] = [0xff];
-        let opt = Ipv6Option::new_unchecked(&bytes);
+        let opt = Ipv6Option::new_unchecked(Ref::new(&bytes));
         assert_eq!(opt.option_type(), Type::Unknown(255));
 
         // unrecognized option without length and data
@@ -735,7 +821,7 @@ mod test {
 
         #[cfg(feature = "proto-rpl")]
         {
-            let opt = Ipv6Option::new_unchecked(&IPV6OPTION_BYTES_RPL);
+            let opt = Ipv6Option::new_unchecked(Ref::new(&IPV6OPTION_BYTES_RPL));
             assert_eq!(opt.option_type(), Type::Rpl);
             assert_eq!(opt.data_len(), 4);
             assert_eq!(opt.data(), &[0x00, 0x1e, 0x08, 0x00]);
@@ -745,19 +831,19 @@ mod test {
     #[test]
     fn test_option_parse() {
         // one octet of padding
-        let opt = Ipv6Option::new_unchecked(&IPV6OPTION_BYTES_PAD1);
+        let opt = Ipv6Option::new_unchecked(Ref::new(&IPV6OPTION_BYTES_PAD1));
         let pad1 = Repr::parse(&opt).unwrap();
         assert_eq!(pad1, Repr::Pad1);
         assert_eq!(pad1.buffer_len(), 1);
 
         // two or more octets of padding
-        let opt = Ipv6Option::new_unchecked(&IPV6OPTION_BYTES_PADN);
+        let opt = Ipv6Option::new_unchecked(Ref::new(&IPV6OPTION_BYTES_PADN));
         let padn = Repr::parse(&opt).unwrap();
         assert_eq!(padn, Repr::PadN(1));
         assert_eq!(padn.buffer_len(), 3);
 
         // router alert (MLD)
-        let opt = Ipv6Option::new_unchecked(&IPV6OPTION_BYTES_ROUTER_ALERT_MLD);
+        let opt = Ipv6Option::new_unchecked(Ref::new(&IPV6OPTION_BYTES_ROUTER_ALERT_MLD));
         let alert = Repr::parse(&opt).unwrap();
         assert_eq!(
             alert,
@@ -766,31 +852,31 @@ mod test {
         assert_eq!(alert.buffer_len(), 4);
 
         // router alert (RSVP)
-        let opt = Ipv6Option::new_unchecked(&IPV6OPTION_BYTES_ROUTER_ALERT_RSVP);
+        let opt = Ipv6Option::new_unchecked(Ref::new(&IPV6OPTION_BYTES_ROUTER_ALERT_RSVP));
         let alert = Repr::parse(&opt).unwrap();
         assert_eq!(alert, Repr::RouterAlert(RouterAlert::Rsvp));
         assert_eq!(alert.buffer_len(), 4);
 
         // router alert (active networks)
-        let opt = Ipv6Option::new_unchecked(&IPV6OPTION_BYTES_ROUTER_ALERT_ACTIVE_NETWORKS);
+        let opt = Ipv6Option::new_unchecked(Ref::new(&IPV6OPTION_BYTES_ROUTER_ALERT_ACTIVE_NETWORKS));
         let alert = Repr::parse(&opt).unwrap();
         assert_eq!(alert, Repr::RouterAlert(RouterAlert::ActiveNetworks));
         assert_eq!(alert.buffer_len(), 4);
 
         // router alert (unknown)
-        let opt = Ipv6Option::new_unchecked(&IPV6OPTION_BYTES_ROUTER_ALERT_UNKNOWN);
+        let opt = Ipv6Option::new_unchecked(Ref::new(&IPV6OPTION_BYTES_ROUTER_ALERT_UNKNOWN));
         let alert = Repr::parse(&opt).unwrap();
         assert_eq!(alert, Repr::RouterAlert(RouterAlert::Unknown(0xbeef)));
         assert_eq!(alert.buffer_len(), 4);
 
         // router alert (incorrect data length)
-        let opt = Ipv6Option::new_unchecked(&[0x05, 0x03, 0x00, 0x00, 0x00]);
+        let opt = Ipv6Option::new_unchecked(Ref::new(&[0x05, 0x03, 0x00, 0x00, 0x00]));
         let alert = Repr::parse(&opt);
         assert_eq!(alert, Err(Error));
 
         // unrecognized option type
         let data = [0u8; 3];
-        let opt = Ipv6Option::new_unchecked(&IPV6OPTION_BYTES_UNKNOWN);
+        let opt = Ipv6Option::new_unchecked(Ref::new(&IPV6OPTION_BYTES_UNKNOWN));
         let unknown = Repr::parse(&opt).unwrap();
         assert_eq!(
             unknown,
@@ -803,7 +889,7 @@ mod test {
 
         #[cfg(feature = "proto-rpl")]
         {
-            let opt = Ipv6Option::new_unchecked(&IPV6OPTION_BYTES_RPL);
+            let opt = Ipv6Option::new_unchecked(Ref::new(&IPV6OPTION_BYTES_RPL));
             let rpl = Repr::parse(&opt).unwrap();
 
             assert_eq!(
@@ -852,7 +938,7 @@ mod test {
 
         #[cfg(feature = "proto-rpl")]
         {
-            let opt = Ipv6Option::new_unchecked(&IPV6OPTION_BYTES_RPL);
+            let opt = Ipv6Option::new_unchecked(Ref::new(&IPV6OPTION_BYTES_RPL));
             let rpl = Repr::parse(&opt).unwrap();
             let mut bytes = [0u8; 6];
             rpl.emit(&mut Ipv6Option::new_unchecked(&mut bytes));
@@ -891,7 +977,7 @@ mod test {
 
     #[test]
     fn test_ghost_field_is_not_observable() {
-        let opt = Ipv6Option::new_unchecked(&IPV6OPTION_BYTES_PADN[..]);
+        let opt = Ipv6Option::new_unchecked(Ref::new(&IPV6OPTION_BYTES_PADN[..]));
         assert!(!format!("{opt:?}").contains("data_len"));
     }
 
