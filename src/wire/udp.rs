@@ -677,16 +677,13 @@ impl Repr {
 impl fmt::Display for Packet<Ref<'_>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // Cannot use Repr::parse because we don't have the IP addresses.
-        match self.checked_len() {
-            Err(err) => write!(f, "UDP ({err})"),
-            Ok(_) => write!(
-                f,
-                "UDP src={} dst={} len={}",
-                self.src_port(),
-                self.dst_port(),
-                self.payload().len()
-            ),
-        }
+        write!(
+            f,
+            "UDP src={} dst={} len={}",
+            self.src_port(),
+            self.dst_port(),
+            self.payload().len()
+        )
     }
 }
 
@@ -696,16 +693,13 @@ impl defmt::Format for Packet<Ref<'_>> {
         // Cannot use Repr::parse because we don't have the IP addresses.
         // The check is taken inside the body for the same reason as in `Display`: a trait impl's
         // signature is fixed, so it cannot carry the accessors' `requires`.
-        match self.checked_len() {
-            Err(err) => defmt::write!(fmt, "UDP ({})", err),
-            Ok(_) => defmt::write!(
-                fmt,
-                "UDP src={} dst={} len={}",
-                self.src_port(),
-                self.dst_port(),
-                self.payload().len()
-            ),
-        }
+        defmt::write!(
+            fmt,
+            "UDP src={} dst={} len={}",
+            self.src_port(),
+            self.dst_port(),
+            self.payload().len()
+        )
     }
 }
 

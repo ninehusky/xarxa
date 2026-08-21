@@ -779,10 +779,8 @@ impl fmt::Display for Packet<Ref<'_>> {
             Ok(repr) => write!(f, "{repr}"),
             Err(err) => {
                 write!(f, "ICMPv4 ({err})")?;
-                match self.checked_len() {
-                    // Too short to hold a type or a code; that is what `parse_ref` rejected.
-                    Err(_) => Ok(()),
-                    Ok(_) => {
+                {
+                    {
                         write!(f, " type={:?}", self.msg_type())?;
                         match self.msg_type() {
                             Message::DstUnreachable => {

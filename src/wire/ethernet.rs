@@ -486,16 +486,13 @@ impl<T: AsRef<[u8]>> AsRef<[u8]> for Frame<T> {
 // accessors want, and the `Err` arm no longer reads a header it never validated.
 impl<T: AsRef<[u8]>> fmt::Display for Frame<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self.checked_len() {
-            Err(err) => write!(f, "EthernetII ({err})"),
-            Ok(_) => write!(
-                f,
-                "EthernetII src={} dst={} type={}",
-                self.src_addr(),
-                self.dst_addr(),
-                self.ethertype()
-            ),
-        }
+        write!(
+            f,
+            "EthernetII src={} dst={} type={}",
+            self.src_addr(),
+            self.dst_addr(),
+            self.ethertype()
+        )
     }
 }
 
