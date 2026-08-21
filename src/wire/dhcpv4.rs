@@ -1225,6 +1225,52 @@ impl<'a> Repr<'a> {
     }
 }
 
+/// A [`Repr`] paired with the number of octets it emits.
+///
+/// [`Repr::buffer_len`] sums over seven optional fields and three variable-length ones -- the
+/// parameter request list, the DNS server list, and the additional options -- so it is not a
+/// projection of anything reachable through `Repr`'s refinement, and `Repr` cannot be indexed
+/// by it directly. Measuring once and keeping the number alongside the representation makes
+/// the total statable with nothing trusted: `blen` is the value [`Repr::buffer_len`] returned
+/// for this `repr`, and `repr` is private and never lent out mutably, so it cannot drift.
+#[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(blen: int)]
+#[flux_rs::invariant(0 <= blen)]
+pub(crate) struct SizedRepr<'a> {
+    repr: Repr<'a>,
+    #[flux_rs::field(usize[blen])]
+    blen: usize,
+}
+
+impl<'a> SizedRepr<'a> {
+    /// Measure `repr` and keep the two together.
+    pub(crate) fn new(repr: Repr<'a>) -> Self {
+        let blen = repr.buffer_len();
+        Self { repr, blen }
+    }
+
+    /// The length of the packet [`Self::emit`] writes.
+    #[flux_rs::sig(fn(self: &Self[@r]) -> usize[r.blen])]
+    #[flux_rs::no_panic]
+    pub(crate) fn buffer_len(&self) -> usize {
+        self.blen
+    }
+
+    /// The representation that was measured.
+    pub(crate) fn into_repr(self) -> Repr<'a> {
+        self.repr
+    }
+
+    /// Emit the representation into `packet`, exactly as [`Repr::emit`] would.
+    pub(crate) fn emit<T>(&self, packet: &mut Packet<&mut T>) -> Result<()>
+    where
+        T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,
+    {
+        self.repr.emit(packet)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
