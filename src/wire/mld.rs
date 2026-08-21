@@ -39,9 +39,11 @@ enum_with_unknown! {
 /// `wire::buf`; it is local to this module only because `wire/buf.rs` is owned by another
 /// slice of this work. Trusted for the same reason every helper there is: the length of
 /// `data[at..at + 16]` is not recoverable (flux-rs/flux#1714). The `requires` is what keeps
-/// the caller's bounds obligation alive.
+/// the caller's bounds obligation alive, and `no_panic` is sound under it for the same reason
+/// it is on `read_u16_at`: the window is exactly sixteen octets, so the `try_into` cannot fail.
 #[flux_rs::trusted(yes, reason = "sub-slice length is not recoverable; see flux-rs/flux#1714")]
 #[flux_rs::sig(fn(&[u8][@n], at: usize) -> Ipv6Address requires at + 16 <= n)]
+#[flux_rs::no_panic]
 #[inline]
 fn read_ipv6_addr_at(data: &[u8], at: usize) -> Ipv6Address {
     Ipv6Address::from_octets(data[at..at + 16].try_into().unwrap())
