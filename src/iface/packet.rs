@@ -20,7 +20,9 @@ pub(crate) enum EthernetPacket<'a> {
 // A tracked payload length is a v4 one, and it equals the IP header's `payload_len`. Both halves
 // come from the variants: `PacketV4` carries the equality as its own invariant, and the v6 side
 // admits only an untracked payload.
-#[flux_rs::invariant(blen == -1 || (ip_ty == 0 && blen == plen))]
+// A tracked payload buffer is exactly the header's `payload_len`. Not restricted to v4: UDP
+// over IPv6 carries a tracked payload too, and `PacketV6` now has a `plen` to compare against.
+#[flux_rs::invariant(blen == -1 || blen == plen)]
 // The payload cannot claim to need more octets than the header says it will be given. This is
 // what carries the hop-by-hop floor to `dispatch_ip`, where `n == buffer_len()` relates it to
 // the transmit buffer.
@@ -37,9 +39,7 @@ pub(crate) enum Packet<'p> {
 impl<'p> Packet<'p> {
     #[flux_rs::sig(
         fn(ip_repr: IpRepr[@ipr], payload: IpPayload[@b]) -> Packet[ipr.ip_ty, ipr.plen, b.blen, b.minlen]
-        requires (ipr.ip_ty == 0 && b.blen != -1 => b.blen == ipr.plen)
-            && (ipr.ip_ty == 1 => b.blen == -1)
-            && b.minlen <= ipr.plen
+        requires (b.blen != -1 => b.blen == ipr.plen) && b.minlen <= ipr.plen
     )]
     #[flux_rs::no_panic]
     pub(crate) fn new(ip_repr: IpRepr, payload: IpPayload<'p>) -> Self {
@@ -66,8 +66,8 @@ impl<'p> Packet<'p> {
 
     #[cfg(feature = "proto-ipv6")]
     #[flux_rs::sig(
-        fn(ip_repr: Ipv6Repr[@r], payload: IpPayload[@b]) -> Packet[1, r.plen, -1, b.minlen]
-        requires b.blen == -1 && b.minlen <= r.plen
+        fn(ip_repr: Ipv6Repr[@r], payload: IpPayload[@b]) -> Packet[1, r.plen, b.blen, b.minlen]
+        requires (b.blen != -1 => b.blen == r.plen) && b.minlen <= r.plen
     )]
     #[flux_rs::no_panic]
     pub(crate) fn new_ipv6(ip_repr: Ipv6Repr, payload: IpPayload<'p>) -> Self {
@@ -282,11 +282,10 @@ pub(crate) struct PacketV4<'p> {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[cfg(feature = "proto-ipv6")]
 #[flux_rs::refined_by(plen: int, blen: int, minlen: int)]
-// No payload *buffer* length is tracked on the v6 side, so an `IpPayload` whose length *is*
-// tracked (today only `Icmpv4`) cannot be put in a `PacketV6`. Nothing in the crate does.
-// The header's `payload_len` is carried regardless, mirroring `PacketV4`, and so is the
-// `minlen` floor, which is what the hop-by-hop arm needs.
-#[flux_rs::invariant(blen == -1)]
+// Mirrors `PacketV4`: a tracked payload buffer is exactly the header's `payload_len`. UDP over
+// IPv6 is the case that needs it -- `IpPayload::Udp` is always tracked at `8 + m`, so requiring
+// `blen == -1` here would have been a claim the crate violates.
+#[flux_rs::invariant(blen == -1 || blen == plen)]
 #[flux_rs::invariant(minlen <= plen)]
 pub(crate) struct PacketV6<'p> {
     #[flux_rs::field(Ipv6Repr[plen])]

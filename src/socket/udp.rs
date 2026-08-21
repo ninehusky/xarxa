@@ -653,7 +653,10 @@ impl<'a> Socket<'a> {
     }
 
     #[flux_rs::trusted(no, reason = "calls IpRepr::new")]
-    #[flux_rs::sig(fn(self: &mut Socket[@t], &mut Context, F) -> Result<(), E>)]
+    #[flux_rs::sig(
+        fn(self: &mut Socket[@t], &mut Context, F) -> Result<(), E>
+        where F: FnOnce(&mut Context, PacketMeta, (IpRepr[@ipr], UdpRepr, &[u8]{v: ipr.plen == 8 + v})) -> Result<(), E>
+    )]
     pub(crate) fn dispatch<F, E>(&mut self, cx: &mut Context, emit: F) -> Result<(), E>
     where
         F: FnOnce(&mut Context, PacketMeta, (IpRepr, UdpRepr, &[u8])) -> Result<(), E>,
@@ -726,7 +729,7 @@ impl<'a> Socket<'a> {
 
             ip_repr.set_payload_len(repr.header_len() + payload_buf.len());
 
-            emit(cx, packet_meta.meta, (ip_repr, repr, payload_buf))
+            call_emit(cx, packet_meta.meta, ip_repr, repr, payload_buf, emit)
         });
         match res {
             Err(Empty) => Ok(()),
@@ -746,6 +749,37 @@ impl<'a> Socket<'a> {
             PollAt::Now
         }
     }
+}
+
+
+/// Calls `emit` on a datagram, discharging its payload-length precondition.
+///
+/// A verification shim, not an abstraction, and the exact analogue of `phy::call_with_buf`.
+/// [`Socket::dispatch`]'s signature states that `emit` is only ever called with an `IpRepr`
+/// whose `payload_len` is `8 + payload.len()`, and flux checks that at a call in a *function*
+/// body -- but not at one inside a *closure* body. `dispatch` calls `emit` from inside the
+/// closure it hands to `dequeue_payload`, so the call has to be hoisted into a named function
+/// to be checked at all. Call `emit` through this and the obligation is discharged; call it
+/// directly from the closure and `dispatch` asserts its own contract instead of proving it.
+#[flux_rs::trusted(no, reason = "checks Socket::dispatch's payload-length contract, #23")]
+#[flux_rs::sig(
+    fn(&mut Context, PacketMeta, IpRepr[@ipr], UdpRepr, &[u8][@m], F) -> R
+    requires ipr.plen == 8 + m
+    where
+        F: FnOnce(&mut Context, PacketMeta, (IpRepr[@i], UdpRepr, &[u8]{v: i.plen == 8 + v})) -> R
+)]
+fn call_emit<'a, R, F>(
+    cx: &mut Context,
+    meta: PacketMeta,
+    ip_repr: IpRepr,
+    udp_repr: UdpRepr,
+    payload: &'a [u8],
+    emit: F,
+) -> R
+where
+    F: FnOnce(&mut Context, PacketMeta, (IpRepr, UdpRepr, &'a [u8])) -> R,
+{
+    emit(cx, meta, (ip_repr, udp_repr, payload))
 }
 
 #[cfg(test)]

@@ -841,6 +841,13 @@ impl Repr {
     }
 
     /// Set the payload length.
+    /// A strong update: the caller keeps the new `payload_len` in the index. `length <= 65535`
+    /// is `Repr`'s own invariant, surfaced as a caller obligation rather than assumed.
+    #[flux_rs::sig(
+        fn(self: &strg Repr[@r], length: usize{length <= 65535})
+        ensures self: Repr[r.ip_ty, length]
+    )]
+    #[flux_rs::no_panic]
     pub fn set_payload_len(&mut self, length: usize) {
         match self {
             #[cfg(feature = "proto-ipv4")]
