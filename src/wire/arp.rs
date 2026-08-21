@@ -542,6 +542,10 @@ pub enum Repr {
     },
 }
 
+// `Repr::buffer_len` returns the literal 28 so the value is visible to the refinement; this
+// makes that literal a compile error if the field layout ever drifts.
+const _: () = assert!(field::TPA(6, 4).end == 28);
+
 impl Repr {
     /// Parse an Address Resolution Protocol packet and return a high-level representation,
     /// or return `Err(Error)` if the packet is not recognized.
@@ -584,9 +588,16 @@ impl Repr {
     }
 
     /// Return the length of a packet that will be emitted from this high-level representation.
+    // The literal is `field::TPA(6, 4).end` for the one representation there is; written out
+    // because flux cannot see through the `Field` (`Range`) const, and `dispatch_ethernet`
+    // sizes its tx buffer by this value. The `const` assert above makes a drift in the field
+    // layout a compile error rather than a silently wrong bound.
+    #[flux_rs::trusted(no, reason = "carries the emitted length to the tx-buffer sizing")]
+    #[flux_rs::sig(fn(&Repr) -> usize[28])]
+    #[flux_rs::no_panic]
     pub const fn buffer_len(&self) -> usize {
         match *self {
-            Repr::EthernetIpv4 { .. } => field::TPA(6, 4).end,
+            Repr::EthernetIpv4 { .. } => 28, // field::TPA(6, 4).end
         }
     }
 

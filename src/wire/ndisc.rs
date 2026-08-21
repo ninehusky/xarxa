@@ -503,7 +503,7 @@ impl<'a> Repr<'a> {
                 packet.set_msg_code(0);
                 packet.clear_reserved();
                 if let Some(lladdr) = lladdr {
-                    let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_mut());
+                    let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_buf());
                     NdiscOptionRepr::SourceLinkLayerAddr(lladdr).emit(&mut opt_pkt);
                 }
             }
@@ -527,7 +527,7 @@ impl<'a> Repr<'a> {
                 packet.set_retrans_time(retrans_time);
                 let mut offset = 0;
                 if let Some(lladdr) = lladdr {
-                    let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_mut());
+                    let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_buf());
                     let opt = NdiscOptionRepr::SourceLinkLayerAddr(lladdr);
                     opt.emit(&mut opt_pkt);
                     offset += opt.buffer_len();
@@ -550,7 +550,7 @@ impl<'a> Repr<'a> {
                 packet.clear_reserved();
                 packet.set_target_addr(target_addr);
                 if let Some(lladdr) = lladdr {
-                    let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_mut());
+                    let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_buf());
                     NdiscOptionRepr::SourceLinkLayerAddr(lladdr).emit(&mut opt_pkt);
                 }
             }
@@ -566,7 +566,7 @@ impl<'a> Repr<'a> {
                 packet.set_neighbor_flags(flags);
                 packet.set_target_addr(target_addr);
                 if let Some(lladdr) = lladdr {
-                    let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_mut());
+                    let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_buf());
                     NdiscOptionRepr::TargetLinkLayerAddr(lladdr).emit(&mut opt_pkt);
                 }
             }
@@ -584,7 +584,7 @@ impl<'a> Repr<'a> {
                 packet.set_dest_addr(dest_addr);
                 let offset = match lladdr {
                     Some(lladdr) => {
-                        let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_mut());
+                        let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_buf());
                         NdiscOptionRepr::TargetLinkLayerAddr(lladdr).emit(&mut opt_pkt);
                         NdiscOptionRepr::TargetLinkLayerAddr(lladdr).buffer_len()
                     }
@@ -600,25 +600,16 @@ impl<'a> Repr<'a> {
 
 /// Emit one NDISC option `offset` octets into an ICMPv6 packet's payload.
 ///
-/// `trusted(yes)`, but with the full obligation stated rather than deleted: the caller owes
-/// `icmpv6_header_len(code) + offset + 48 <= as_mut_reft(buffer)`, which is `NdiscOptionRepr::emit`'s
-/// own 48-octet bound translated through the payload split. Nothing in the body is unchecked --
-/// `payload_mut()[offset..]` is an ordinary bounds-checked index, exactly as before.
+/// The caller owes `icmpv6_header_len(code) + offset + 48 <= as_mut_reft(buffer)`, which is
+/// `NdiscOptionRepr::emit`'s own 48-octet bound translated through the payload split. It is not
+/// discharged at any of the three call sites, and cannot be: `NdiscOptionRepr::buffer_len` has no
+/// Flux signature, so `offset` is an unconstrained `usize`. Refining `NdiscOptionRepr` by its
+/// buffer length is what closes it.
 ///
-/// It exists only because the call cannot be *elaborated* inline. `payload_mut` returns a bare
-/// `&mut [u8]`, so the option wrapper is `NdiscOption<&mut [u8]>`, which instantiates core's
-/// blanket `impl<T, U> AsMut<U> for &mut T`; that impl has no associated refinement and cannot be
-/// given one, because Flux assigns a reference self type the unit sort. Left inline the resulting
-/// `associated refinement 'as_mut_reft' is missing` aborts checking of the *whole* enclosing
-/// function -- measured: with the calls inline, perturbing `NdiscOptionRepr::emit`'s `requires`
-/// with an absurd conjunct produced zero errors anywhere in this file, i.e. `Repr::emit`'s body
-/// was not being checked at all despite its `trusted(no)`.
-///
-/// The obligation is not currently discharged at any of the three call sites, and cannot be:
-/// `NdiscOptionRepr::buffer_len` has no Flux signature, so `offset` is an unconstrained `usize`.
-/// Refining `NdiscOptionRepr` by its buffer length is what closes it.
-#[flux_rs::trusted(yes, reason = "`NdiscOption<&mut [u8]>` hits core's blanket AsMut, which has no \
-associated refinement; inline, that error aborts checking of the enclosing function")]
+/// The window comes from `payload_buf` rather than `payload_mut()[offset..]`: a bare `&mut [u8]`
+/// makes the option wrapper `NdiscOption<&mut [u8]>`, which instantiates core's blanket
+/// `impl<T, U> AsMut<U> for &mut T`, and that impl has no associated refinement to name.
+#[flux_rs::trusted(no, reason = "panic site: the option window and every option setter")]
 #[flux_rs::sig(
     fn(packet: &mut Packet<T>[@p], offset: usize, opt: &NdiscOptionRepr)
     requires crate::wire::icmpv6::icmpv6_header_len(p.code) + offset + 48 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
@@ -627,7 +618,14 @@ fn emit_option_at<T>(packet: &mut Packet<T>, offset: usize, opt: &NdiscOptionRep
 where
     T: AsRef<[u8]> + AsMut<[u8]>,
 {
-    let mut opt_pkt = NdiscOption::new_unchecked(&mut packet.payload_mut()[offset..]);
+    // `advance` would reach `Buf::as_mut`'s `get_unchecked_mut(offset..)` without a runtime
+    // bound -- its `n <= len` is a flux `requires` with no executable counterpart, and it is
+    // not discharged at any call site here. A short buffer would become an out-of-bounds
+    // write where it used to panic. The checked reslice keeps the panic and still carries the
+    // length, since `Buf::new` has offset 0.
+    let mut window = packet.payload_buf();
+    let data = window.as_mut();
+    let mut opt_pkt = NdiscOption::new_unchecked(crate::wire::Buf::new(&mut data[offset..]));
     opt.emit(&mut opt_pkt);
 }
 
@@ -659,6 +657,38 @@ mod test {
             mtu: None,
             prefix_info: None,
         })
+    }
+
+    /// A short buffer must panic, not write out of bounds.
+    ///
+    /// `NdiscOptionRepr::buffer_len` rounds `2 + len` up to a multiple of 8 while
+    /// `emit_link_layer_addr` writes only `data[2..2 + len]`, so a link-layer address shorter
+    /// than 6 octets leaves a gap the preceding emit does not bounds-check. Reaching the option
+    /// window through `Buf::advance` -- whose `n <= len` is a flux `requires` with no executable
+    /// counterpart -- turned that into an out-of-bounds write via `as_mut`'s
+    /// `get_unchecked_mut`. This pins the checked behaviour.
+    #[test]
+    #[should_panic]
+    fn test_short_buffer_panics_rather_than_writing_out_of_bounds() {
+        let repr = Icmpv6Repr::Ndisc(Repr::RouterAdvert {
+            hop_limit: 64,
+            flags: RouterFlags::MANAGED,
+            router_lifetime: Duration::from_secs(900),
+            reachable_time: Duration::from_millis(900),
+            retrans_time: Duration::from_millis(900),
+            lladdr: Some(RawHardwareAddress::from_bytes(&[1, 2, 3])),
+            mtu: Some(1500),
+            prefix_info: None,
+        });
+
+        let mut bytes = [0u8; 21];
+        let mut packet = crate::wire::Icmpv6Packet::new_unchecked(&mut bytes[..]);
+        repr.emit(
+            &MOCK_IP_ADDR_1,
+            &MOCK_IP_ADDR_2,
+            &mut packet,
+            &ChecksumCapabilities::default(),
+        );
     }
 
     #[test]

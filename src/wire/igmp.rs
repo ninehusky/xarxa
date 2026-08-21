@@ -345,9 +345,24 @@ impl Repr {
     }
 
     /// Emit a high-level representation into an Internet Group Management Protocol v2 packet.
-    pub fn emit<T>(&self, packet: &mut Packet<&mut T>)
+    // The buffer parameter is `Packet<T>` with `T: Sized`, not `Packet<&mut T>` with `T: ?Sized`.
+    // The old shape instantiated core's blanket `impl<T, U> AsMut<U> for &mut T`, which carries no
+    // associated refinement, so naming `as_mut_reft` for the setters below raised `associated
+    // refinement 'as_mut_reft' is missing from implementation` -- a spec error, which aborts the
+    // whole body. The `Sized` form lets a caller pass `wire::Buf`, whose `AsMut` impl is local and
+    // refined; `&mut [u8]` still satisfies the bounds, so this is strictly more permissive.
+    //
+    // 8 is `buffer_len()`, i.e. `field::GROUP_ADDRESS.end`, and is the reach of
+    // `set_group_address`. The `<= 65535` conjunct is `fill_checksum`'s, exposed rather than
+    // assumed; see [`Packet::verify_checksum`].
+    #[flux_rs::sig(
+        fn(&Repr, packet: &mut Packet<T>[@p])
+        requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+              && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
+    )]
+    pub fn emit<T>(&self, packet: &mut Packet<T>)
     where
-        T: AsRef<[u8]> + AsMut<[u8]> + ?Sized,
+        T: AsRef<[u8]> + AsMut<[u8]>,
     {
         match *self {
             Repr::MembershipQuery {

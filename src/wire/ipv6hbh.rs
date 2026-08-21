@@ -1,4 +1,4 @@
-use super::{Error, Ipv6Option, Ipv6OptionRepr, Ipv6OptionsIterator, Result};
+use super::{Buf, Error, Ipv6Option, Ipv6OptionRepr, Ipv6OptionsIterator, Result};
 use crate::config;
 use crate::wire::ipv6option::RouterAlert;
 use heapless::Vec;
@@ -193,9 +193,12 @@ impl<'a> Repr<'a> {
         let mut buffer = header.options_mut();
 
         for opt in &self.options {
-            opt.emit(&mut Ipv6Option::new_unchecked(
+            // Routed through `Buf` so the option window keeps its length: a bare `&mut [u8]`
+            // instantiates core's blanket `AsMut for &mut T`, which carries no associated
+            // refinement, and `Ipv6OptionRepr::emit`'s buffer bound would then abort this body.
+            opt.emit(&mut Ipv6Option::new_unchecked(Buf::new(
                 &mut buffer[..opt.buffer_len()],
-            ));
+            )));
             buffer = &mut buffer[opt.buffer_len()..];
         }
     }

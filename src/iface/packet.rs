@@ -143,7 +143,10 @@ impl<'p> Packet<'p> {
                 )
             }
             #[cfg(all(feature = "proto-ipv4", feature = "multicast"))]
-            IpPayload::Igmp(igmp_repr) => igmp_repr.emit(&mut IgmpPacket::new_unchecked(payload)),
+            IpPayload::Igmp(igmp_repr) => {
+                // Routed through `Buf` for the same reason as the Icmpv4 arm above.
+                igmp_repr.emit(&mut IgmpPacket::new_unchecked(Buf::new(payload)))
+            }
             #[cfg(feature = "proto-ipv6")]
             IpPayload::Icmpv6(icmpv6_repr) => {
                 let ipv6_repr = match _ip_repr {
@@ -175,9 +178,10 @@ impl<'p> Packet<'p> {
                     length: 0,
                     data: &[],
                 };
-                ipv6_ext_hdr.emit(&mut Ipv6ExtHeader::new_unchecked(
+                // Routed through `Buf` for the same reason as the Icmpv4 arm above.
+                ipv6_ext_hdr.emit(&mut Ipv6ExtHeader::new_unchecked(Buf::new(
                     &mut payload[..ipv6_ext_hdr.header_len()],
-                ));
+                )));
 
                 let hbh_start = ipv6_ext_hdr.header_len();
                 let hbh_end = hbh_start + hbh_repr.buffer_len();
@@ -254,7 +258,15 @@ impl<'p> Packet<'p> {
                     &_ip_repr.src_addr(),
                     &_ip_repr.dst_addr(),
                     dhcp_repr.buffer_len(),
-                    |buf| dhcp_repr.emit(&mut DhcpPacket::new_unchecked(buf)).unwrap(),
+                    // Routed through `Buf` for the same reason as the arms above: a bare
+                    // `&mut [u8]` instantiates core's blanket `AsMut for &mut T`, which carries
+                    // no associated refinement, and `DhcpRepr::emit`'s buffer bound would then
+                    // abort this closure rather than pose anything.
+                    |buf| {
+                        dhcp_repr
+                            .emit(&mut DhcpPacket::new_unchecked(Buf::new(buf)))
+                            .unwrap()
+                    },
                     &caps.checksum,
                 )
             }
