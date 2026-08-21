@@ -418,8 +418,11 @@ pub enum Repr<'a> {
     // ranges below: flux cannot see through the associated const.
     #[flux_rs::variant((RouterAlert) -> Repr[4])]
     RouterAlert(RouterAlert),
+    // 6 is `2 + RplHopByHopRepr::buffer_len()`, which is the constant 4 -- matching the arm in
+    // `buffer_len()` below. `proto-rpl` is off in every measured config, so this index is not
+    // exercised; it is stated correctly rather than left to bite whoever turns the feature on.
     #[cfg(feature = "proto-rpl")]
-    #[flux_rs::variant((RplHopByHopRepr) -> Repr[2])]
+    #[flux_rs::variant((RplHopByHopRepr) -> Repr[6])]
     Rpl(RplHopByHopRepr),
     #[flux_rs::variant({Type, u8[@n], &[u8]} -> Repr[2 + n])]
     Unknown {
