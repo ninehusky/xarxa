@@ -163,10 +163,16 @@ pub struct Socket<'a> {
 /// where `H` is behind `&` or returned by value, keep it fine.) Since `f` here never
 /// receives the header, it cannot observe or modify it, and `dequeue_with` only removes
 /// packets — so every remaining element still satisfies whatever predicate it arrived with.
+/// The `65527` on the callback's buffer is `Socket::send`'s bound, carried across the ring.
+/// `send` is the only path that enqueues into a transmit buffer -- one `enqueue` call, at the
+/// site above -- so every payload the ring can yield came through it. `PacketBuffer` cannot
+/// state this itself: `RingBuffer` does not index its elements, so a per-element length is not
+/// reachable through the container.
 #[flux_rs::trusted(reason = "dequeue_with's H erases the element predicate; f cannot touch the header")]
 #[flux_rs::sig(fn(IpListenEndpoint[@t],
                   &mut crate::storage::PacketBuffer<UdpMetadata{m: t == -1 || m.dst_ty == t}>,
-                  F) -> Result<Result<R, E>, Empty>)]
+                  F) -> Result<Result<R, E>, Empty>
+               where F: FnOnce(&mut [u8]{v: v <= 65527}) -> Result<R, E>)]
 fn dequeue_payload<'c, R, E, F>(
     _endpoint: IpListenEndpoint,
     buf: &'c mut PacketBuffer<'_>,
@@ -410,8 +416,15 @@ impl<'a> Socket<'a> {
     /// and `Err(Error::Truncated)` if there is not enough transmit buffer capacity
     /// to ever send this packet.
     #[flux_rs::trusted(no, reason = "checking Socket invariant")]
-    #[flux_rs::sig(fn(self: &mut Socket[@t], usize[@n], UdpMetadata{m: t == -1 || m.dst_ty == t})
-                     -> Result<&mut [u8][n], SendError>)]
+    /// `n <= 65527` is `65535 - 8`, the largest payload a UDP length field can describe.
+    /// **This is an exposed obligation**: xarxa does not check it, and `emit_ports_and_len`
+    /// truncates via `as u16` if it is violated, so a larger datagram would go out with a wrong
+    /// length. Stating it here makes the caller responsible rather than leaving the bound owed
+    /// by nobody. See the ledger entry for the underlying defect.
+    #[flux_rs::sig(fn(self: &mut Socket[@t], usize[@n],
+                      UdpMetadata{m: t == -1 || m.dst_ty == t})
+                     -> Result<&mut [u8][n], SendError>
+                     requires n <= 65527)]
     pub fn send(
         &mut self,
         size: usize,
@@ -485,8 +498,11 @@ impl<'a> Socket<'a> {
     ///
     /// See also [send](#method.send).
     #[flux_rs::trusted(no, reason = "checking Socket invariant")]
-    #[flux_rs::sig(fn(self: &mut Socket[@t], &[u8], UdpMetadata{m: t == -1 || m.dst_ty == t})
-                     -> Result<(), SendError>)]
+    /// `k <= 65527` is [`Socket::send`]'s bound, which this forwards to; see it for why the
+    /// obligation is the caller's.
+    #[flux_rs::sig(fn(self: &mut Socket[@t], &[u8][@k], UdpMetadata{m: t == -1 || m.dst_ty == t})
+                     -> Result<(), SendError>
+                     requires k <= 65527)]
     pub fn send_slice(
         &mut self,
         data: &[u8],
