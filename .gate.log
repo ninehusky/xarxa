@@ -1,5 +1,5 @@
-summary. 1 functions processed: 0 checked; 1 trusted; 0 ignored. 0 constraints solved. Finished in 116.47ms
 summary. 60 functions processed: 2 checked; 58 trusted; 0 ignored. 0 constraints solved. Finished in 303.51ms
+summary. 1 functions processed: 0 checked; 1 trusted; 0 ignored. 0 constraints solved. Finished in 116.47ms
 summary. 39 functions processed: 39 checked; 0 trusted; 0 ignored. 1 constraints solved. Finished in 47.60ms
     Checking xarxa v0.13.1 (/Users/andrew/research/xarxa-ref-ethernet)
 warning: unused import: `crate::iface::Route`
