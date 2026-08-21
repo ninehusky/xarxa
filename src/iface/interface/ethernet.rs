@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::wire::Ref;
+
 impl InterfaceInner {
     pub(super) fn process_ethernet<'frame>(
         &mut self,
@@ -8,7 +10,7 @@ impl InterfaceInner {
         frame: &'frame [u8],
         fragments: &'frame mut FragmentsBuffer,
     ) -> Option<EthernetPacket<'frame>> {
-        let eth_frame = check!(EthernetFrame::new_checked(frame));
+        let eth_frame = check!(EthernetFrame::new_checked_ref(Ref::new(frame)));
 
         // Ignore any packets not directed to our hardware address or any of the multicast groups.
         if !eth_frame.dst_addr().is_broadcast()
@@ -20,7 +22,11 @@ impl InterfaceInner {
 
         match eth_frame.ethertype() {
             #[cfg(feature = "proto-ipv4")]
-            EthernetProtocol::Arp => self.process_arp(self.now, &eth_frame),
+            EthernetProtocol::Arp => {
+                // `process_arp` takes a `Frame<&[u8]>`, so the frame is rebuilt at that type;
+                // `new_checked_ref` above has already run the length check on these bytes.
+                self.process_arp(self.now, &EthernetFrame::new_unchecked(frame))
+            }
             #[cfg(feature = "proto-ipv4")]
             EthernetProtocol::Ipv4 => {
                 let ipv4_packet = check!(Ipv4Packet::new_checked(eth_frame.payload()));
