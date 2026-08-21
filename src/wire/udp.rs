@@ -4,7 +4,7 @@ use super::{Error, Result};
 use crate::phy::ChecksumCapabilities;
 use crate::wire::ip::checksum;
 use crate::wire::{IpAddress, IpProtocol};
-use crate::wire::{prefix, read_u16_at, write_u16_at, Buf};
+use crate::wire::{prefix, read_u16_at, write_u16_at, Buf, Ref};
 
 /// A ghost field: carries an integer in the refinement and nothing at runtime.
 ///
@@ -875,5 +875,25 @@ mod test {
         )
         .unwrap();
         assert_eq!(repr, packet_repr());
+    }
+}
+
+impl<'a> Packet<Ref<'a>> {
+    /// Return a pointer to the payload.
+    ///
+    /// The `Packet<&'a T>` twin of this cannot be proved: a reference in type-parameter position
+    /// has the unit sort, so neither half of the window bound is statable there. Over `Ref<'a>`
+    /// the buffer's length is `p.buffer.len` and the same window `payload_mut` proves is proved
+    /// here, with the payload's length surviving into the caller's index.
+    #[flux_rs::trusted(no, reason = "panic site: reslices the window named by the length field")]
+    #[flux_rs::sig(
+        fn(&Packet<Ref>[@p]) -> &[u8][p.len - 8]
+        requires 8 <= p.len && p.len <= p.buffer.len
+    )]
+    #[flux_rs::no_panic]
+    #[inline]
+    pub fn payload(&self) -> &'a [u8] {
+        let length = self.len() as usize;
+        self.buffer.window(8, length) // field::PAYLOAD(length)
     }
 }
