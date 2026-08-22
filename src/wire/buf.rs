@@ -254,6 +254,18 @@ pub fn write_u32_at(data: &mut [u8], at: usize, value: u32) {
     NetworkEndian::write_u32(&mut data[at..at + 4], value)
 }
 
+/// Copy `src` into `data[at..]`, which must be exactly `src`'s length.
+///
+/// `copy_window_at` takes the window's length as an argument; this one *derives* it, which is
+/// what a caller writing "the rest of the buffer" needs. The equality is `copy_from_slice`'s own
+/// precondition, stated rather than left to panic. See [`read_u16_at`] for why this is trusted.
+#[flux_rs::trusted(yes, reason = "sub-slice length is not recoverable; see flux-rs/flux#1714")]
+#[flux_rs::sig(fn(&mut [u8][@n], at: usize, src: &[u8][n - at]) requires at <= n)]
+#[flux_rs::no_panic]
+pub fn copy_suffix_at(data: &mut [u8], at: usize, src: &[u8]) {
+    data[at..].copy_from_slice(src)
+}
+
 /// Write a big-endian `u24` at `at`. See [`read_u16_at`] for why this is trusted.
 #[flux_rs::trusted(yes, reason = "sub-slice length is not recoverable; see flux-rs/flux#1714")]
 #[flux_rs::sig(fn(&mut [u8][@n], at: usize, value: u32) requires at + 3 <= n)]

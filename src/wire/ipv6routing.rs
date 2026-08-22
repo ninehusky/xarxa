@@ -439,22 +439,18 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     /// # Panics
     /// This function may panic if this header is not the RPL Source Routing Header routing type.
     //
-    // No `no_panic`: the `6 <= len` bound gates the window, but `copy_from_slice` panics
-    // unless `value.len()` is exactly `len - 6`, which is a real precondition of this function
-    // that no caller establishes. A returned `&mut` loses its length index
-    // (flux-rs/flux#1714), so `addresses`' length is unknown here and the equal-length assert
-    // stays. Stating it needs a `wire::buf` helper of the shape
-    // `fn(&mut [u8][@n], at: usize, src: &[u8][n - at]) requires at <= n`, which `copy_window_at`
-    // does not cover -- it takes the window length as an argument rather than deriving it.
+    // `copy_from_slice` panics unless `value.len()` is exactly `len - 6`. That is a real
+    // precondition of this function, now stated: `copy_suffix_at` derives the window's length
+    // rather than taking it as an argument, which `copy_window_at` cannot do.
     #[flux_rs::trusted(no, reason = "panic site: writes the address window at a fixed offset")]
     #[flux_rs::sig(
-        fn(self: &mut Header<T>[@h], value: &[u8])
-        requires 6 <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+        fn(self: &mut Header<T>[@h], value: &[u8][@m])
+        requires 6 + m == <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
     )]
+    #[flux_rs::no_panic]
     pub fn set_addresses(&mut self, value: &[u8]) {
         let data = self.buffer.as_mut();
-        let addresses = &mut data[6..]; // field::ADDRESSES
-        addresses.copy_from_slice(value);
+        crate::wire::copy_suffix_at(data, 6, value); // field::ADDRESSES
     }
 }
 
@@ -551,7 +547,9 @@ impl<'a> Repr<'a> {
     // which flux relates to the `AsMut` length nowhere, so both are named.
     #[flux_rs::sig(
         fn(self: &Self[@r], header: &mut Header<T>[@h])
-        requires r.blen <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+        // Equality on the mutable side: `set_addresses` writes `buffer[6..]` from a slice of
+        // exactly `blen - 6`, and `copy_from_slice` panics on any other length.
+        requires r.blen == <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
               && r.blen <= <T as AsRef<[u8]>>::as_ref_reft(h.buffer)
     )]
     pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, header: &mut Header<T>) {
