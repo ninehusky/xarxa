@@ -563,28 +563,16 @@ impl<'a> AddressRecordRepr<'a> {
         }
     }
 
-    /// Parse an MLDv2 address record and return a high-level representation.
-    ///
-    /// A reference in type-parameter position has the unit sort, so no bound on `T`'s buffer is
-    /// statable here and none of the five reads below would be provable. The body therefore
-    /// lives on [`parse_ref`](Self::parse_ref), over a buffer whose length is nameable; this
-    /// re-wraps the same bytes and forwards, which repeats no work the old body did not do.
-    pub fn parse<T>(record: &AddressRecord<&'a T>) -> Result<Self>
-    where
-        T: AsRef<[u8]> + ?Sized,
-    {
-        Self::parse_ref(&AddressRecord::new_unchecked(Ref::new(
-            record.buffer.as_ref(),
-        )))
-    }
-
-    /// [`parse`](Self::parse) over a [`Ref`], where the buffer's length is in the refinement.
+    /// Parse an MLDv2 address record, over a [`Ref`] whose length is in the refinement.
     ///
     /// The `requires` is the whole precondition of this record type: every field sits below
     /// offset 20 and the payload starts there. It is what
     /// [`AddressRecord::checked_len`](AddressRecord::checked_len) tests and what
-    /// [`new_checked_ref`](AddressRecord::new_checked_ref) carries out; `parse` above cannot
-    /// state it, so the obligation surfaces there.
+    /// [`new_checked_ref`](AddressRecord::new_checked_ref) carries out.
+    ///
+    /// There is no generic `parse` over `&T`: a reference in type-parameter position has the
+    /// unit sort, so such a wrapper could not state this `requires` and the obligation
+    /// surfaced there undischargeable. Callers build a `Ref` instead.
     #[flux_rs::sig(fn(&AddressRecord<Ref>[@r]) -> Result<Self> requires 20 <= r.buffer.len)]
     pub fn parse_ref(record: &AddressRecord<Ref<'a>>) -> Result<Self> {
         Ok(Self {

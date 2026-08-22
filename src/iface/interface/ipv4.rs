@@ -322,14 +322,24 @@ impl InterfaceInner {
         }
     }
 
+    /// `ip_payload.len() <= 65535`: the payload is an IPv4 packet's, whose extent is the
+    /// sixteen-bit `total_len`, and `Icmpv4Repr::parse_ref` needs it so the returned datagram
+    /// it may carry stays representable in the reply's own header.
+    #[flux_rs::sig(
+        fn(&mut Self, &mut SocketSet, Ipv4Repr, &[u8][@n]) -> Option<Packet>
+        requires n <= 65535
+    )]
     pub(super) fn process_icmpv4<'frame>(
         &mut self,
         _sockets: &mut SocketSet,
         ip_repr: Ipv4Repr,
         ip_payload: &'frame [u8],
     ) -> Option<Packet<'frame>> {
-        let icmp_packet = check!(Icmpv4Packet::new_checked(ip_payload));
-        let icmp_repr = check!(Icmpv4Repr::parse(&icmp_packet, &self.caps.checksum));
+        // Through `Ref` and `parse_ref`: the generic `parse` is over a `&T` self type, whose
+        // unit sort means it cannot state `parse_ref`'s `p.buffer.len <= 65535` -- the bound
+        // that keeps a returned datagram's length representable in the reply's IPv4 header.
+        let icmp_packet = check!(Icmpv4Packet::new_checked_ref(Ref::new(ip_payload)));
+        let icmp_repr = check!(Icmpv4Repr::parse_ref(&icmp_packet, &self.caps.checksum));
 
         #[cfg(feature = "socket-icmp")]
         let mut handled_by_icmp_socket = false;

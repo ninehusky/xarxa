@@ -1625,8 +1625,8 @@ fn test_join_ipv6_multicast_group(#[case] medium: Medium) {
             other => panic!("unexpected icmpv6_repr: {:?}", other),
         };
 
-        let record = MldAddressRecord::new_checked(record_data).unwrap();
-        let record_repr = MldAddressRecordRepr::parse(&record).unwrap();
+        let record = MldAddressRecord::new_checked_ref(Ref::new(record_data)).unwrap();
+        let record_repr = MldAddressRecordRepr::parse_ref(&record).unwrap();
 
         assert_eq!(
             record_repr,
@@ -1808,8 +1808,8 @@ fn test_handle_valid_multicast_query(#[case] medium: Medium) {
 
         // FIXME: parsing multiple address records should be done by the MLD code
         while !payload.is_empty() {
-            let record = MldAddressRecord::new_checked(payload).unwrap();
-            let mut record_repr = MldAddressRecordRepr::parse(&record).unwrap();
+            let record = MldAddressRecord::new_checked_ref(Ref::new(payload)).unwrap();
+            let mut record_repr = MldAddressRecordRepr::parse_ref(&record).unwrap();
             payload = record_repr.payload;
             record_repr.payload = &[];
             record_reprs.push(record_repr);

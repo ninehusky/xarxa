@@ -357,24 +357,11 @@ pub struct Repr<'a> {
 }
 
 impl<'a> Repr<'a> {
-    /// Parse an IPv6 Extension Header Header and return a high-level representation.
+    /// Parse an IPv6 Extension Header and return a high-level representation.
     ///
-    /// A reference in type-parameter position has the unit sort, so no bound on `T`'s buffer is
-    /// statable here and neither the header reads nor the payload window would be provable. The
-    /// body lives on [`parse_ref`](Self::parse_ref), over a buffer whose length is nameable;
-    /// this re-wraps the same bytes and forwards, which repeats no work the old body did not do.
-    pub fn parse<T>(header: &Header<&'a T>) -> Result<Self>
-    where
-        T: AsRef<[u8]> + ?Sized,
-    {
-        Repr::parse_ref(&Header::new_unchecked(Ref::new(header.buffer.as_ref())))
-    }
-
-    /// [`parse`](Self::parse) over a [`Ref`], where the buffer's length is in the refinement.
-    ///
-    /// `checked_len` rather than `check_len`: the same test, but its `Ok` arm names both facts
-    /// the three reads below need -- that the buffer holds the fixed header, and that the
-    /// payload window the length octet declares fits inside it.
+    /// There is no generic `parse` over `&T`: a reference in type-parameter position has the
+    /// unit sort, so such a wrapper cannot carry the buffer's extent, and this header's whole
+    /// contract is stated against it. Callers build a [`Ref`] instead.
     ///
     /// The `2 + r.dlen <= h.buffer.len` on the way out is `checked_len`'s own proof, carried to
     /// the caller: `iface::interface::ipv6` places the options that follow at exactly that
@@ -545,8 +532,8 @@ mod test {
 
     #[test]
     fn test_repr_parse_valid() {
-        let header = Header::new_unchecked(&REPR_PACKET_PAD4);
-        let repr = Repr::parse(&header).unwrap();
+        let header = Header::new_unchecked(Ref::new(&REPR_PACKET_PAD4));
+        let repr = Repr::parse_ref(&header).unwrap();
         assert_eq!(
             repr,
             Repr {
@@ -556,8 +543,8 @@ mod test {
             }
         );
 
-        let header = Header::new_unchecked(&REPR_PACKET_PAD12);
-        let repr = Repr::parse(&header).unwrap();
+        let header = Header::new_unchecked(Ref::new(&REPR_PACKET_PAD12));
+        let repr = Repr::parse_ref(&header).unwrap();
         assert_eq!(
             repr,
             Repr {

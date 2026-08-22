@@ -590,26 +590,9 @@ impl<'a> Repr<'a> {
     /// Parse an Internet Control Message Protocol version 4 packet and return
     /// a high-level representation.
     ///
-    /// A thin wrapper over [`parse_ref`](Self::parse_ref). A reference in type-parameter
-    /// position has the unit sort, so nothing about `T`'s extent is statable here; [`Ref`] is
-    /// where the buffer acquires a length, and `parse_ref` is where the accessors' windows are
-    /// proved against it. Callers already holding a `Ref` should call `parse_ref` directly.
-    pub fn parse<T>(
-        packet: &Packet<&'a T>,
-        checksum_caps: &ChecksumCapabilities,
-    ) -> Result<Repr<'a>>
-    where
-        T: AsRef<[u8]> + ?Sized,
-    {
-        let packet = Packet::new_unchecked(Ref::new(packet.buffer.as_ref()));
-        Repr::parse_ref(&packet, checksum_caps)
-    }
-
-    /// [`parse`](Self::parse) over a buffer whose length is in the refinement.
-    ///
-    /// `checked_len` rather than `check_len`: the same test, but its `Ok` arm names what the
-    /// accessors below need -- the buffer's length, and that it reaches the end of the fixed
-    /// header.
+    /// There is no generic `parse` over `&T`: a reference in type-parameter position has the
+    /// unit sort, so such a wrapper could not state the `requires` below and the obligation
+    /// surfaced there undischargeable. Callers build a [`Ref`] instead.
     // `p.buffer.len <= 65535`: every payload this returns is a window into `packet`, and the
     // variants bound theirs so `Repr`'s own `blen <= 65535` holds. The packet is an IPv4
     // payload, whose extent is the sixteen-bit `total_len`, so the bound holds wherever this is

@@ -623,8 +623,9 @@ impl<'a> Socket<'a> {
                             return Ok(());
                         }
                     };
-                    let packet = Icmpv4Packet::new_unchecked(&*packet_buf);
-                    let repr = match Icmpv4Repr::parse(&packet, &ChecksumCapabilities::ignored()) {
+                    let packet = Icmpv4Packet::new_unchecked(Ref::new(&*packet_buf));
+                    let repr = match Icmpv4Repr::parse_ref(&packet, &ChecksumCapabilities::ignored())
+                    {
                         Ok(x) => x,
                         Err(_) => {
                             net_trace!(
