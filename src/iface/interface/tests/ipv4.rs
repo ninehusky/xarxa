@@ -737,8 +737,8 @@ fn test_handle_igmp(#[case] medium: Medium) {
                 };
                 let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, checksum_caps).ok()?;
                 let ip_payload = ipv4_packet.payload();
-                let igmp_packet = IgmpPacket::new_checked(ip_payload).ok()?;
-                let igmp_repr = IgmpRepr::parse(&igmp_packet).ok()?;
+                let igmp_packet = IgmpPacket::new_unchecked(Ref::new(ip_payload));
+                let igmp_repr = IgmpRepr::parse_ref(&igmp_packet).ok()?;
                 Some((ipv4_repr, igmp_repr))
             })
             .collect::<Vec<_>>()

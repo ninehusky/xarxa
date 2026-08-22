@@ -401,8 +401,8 @@ impl InterfaceInner {
     ) -> Option<Packet<'frame>> {
         use crate::time::Duration;
 
-        let igmp_packet = check!(IgmpPacket::new_checked(ip_payload));
-        let igmp_repr = check!(IgmpRepr::parse(&igmp_packet));
+        let igmp_packet = IgmpPacket::new_unchecked(Ref::new(ip_payload));
+        let igmp_repr = check!(IgmpRepr::parse_ref(&igmp_packet));
 
         // FIXME: report membership after a delay
         match igmp_repr {

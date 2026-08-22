@@ -4,7 +4,7 @@ use super::{Error, Result};
 use crate::time::Duration;
 use crate::wire::ip::checksum;
 
-use crate::wire::{Ipv4Address, copy_window_at, read_u16_at, sub, write_u16_at};
+use crate::wire::{Ipv4Address, Ref, copy_window_at, read_u16_at, sub, write_u16_at};
 
 enum_with_unknown! {
     /// Internet Group Management Protocol v1/v2 message version/type.
@@ -292,11 +292,15 @@ pub enum IgmpVersion {
 impl Repr {
     /// Parse an Internet Group Management Protocol v1/v2 packet and return
     /// a high-level representation.
-    pub fn parse<T>(packet: &Packet<&T>) -> Result<Repr>
-    where
-        T: AsRef<[u8]> + ?Sized,
-    {
-        packet.check_len()?;
+    ///
+    /// There is no generic `parse` over `&T`: a reference in type-parameter position has the
+    /// unit sort, so nothing about the buffer's extent is statable there and none of the reads
+    /// below would be provable. Callers build a [`Ref`] instead.
+    ///
+    /// `checked_len` rather than `check_len`: the same test, but its `Ok` arm names the buffer's
+    /// length, which is what every accessor here needs.
+    pub fn parse_ref(packet: &Packet<Ref<'_>>) -> Result<Repr> {
+        packet.checked_len()?;
 
         // Check if the address is 0.0.0.0 or multicast
         let addr = packet.group_addr();
@@ -429,9 +433,9 @@ const fn duration_to_max_resp_code(duration: Duration) -> u8 {
     }
 }
 
-impl<T: AsRef<[u8]> + ?Sized> fmt::Display for Packet<&T> {
+impl fmt::Display for Packet<Ref<'_>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match Repr::parse(self) {
+        match Repr::parse_ref(self) {
             Ok(repr) => write!(f, "{repr}"),
             Err(err) => write!(f, "IGMP ({err})"),
         }
@@ -471,7 +475,9 @@ impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
         f: &mut fmt::Formatter,
         indent: &mut PrettyIndent,
     ) -> fmt::Result {
-        match Packet::new_checked(buffer) {
+        // Over `Ref`: `Display` is implemented for `Packet<Ref>`, the only self type at which
+        // the accessors it calls are provable.
+        match Packet::new_checked(Ref::new(buffer.as_ref())) {
             Err(err) => writeln!(f, "{indent}({err})"),
             Ok(packet) => writeln!(f, "{indent}{packet}"),
         }

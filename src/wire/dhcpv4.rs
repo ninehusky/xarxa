@@ -8,7 +8,7 @@ use heapless::Vec;
 use super::{Error, Result};
 use crate::wire::arp::Hardware;
 use crate::wire::{
-    Buf, EthernetAddress, Ipv4Address, copy_window_at, read_u16_at, read_u32_at, sub, tail,
+    Buf, EthernetAddress, Ipv4Address, Ref, copy_window_at, read_u16_at, read_u32_at, sub, tail,
     write_u16_at, write_u32_at,
 };
 
@@ -1005,11 +1005,15 @@ impl<'a> Repr<'a> {
     }
 
     /// Parse a DHCP packet and return a high-level representation.
-    pub fn parse<T>(packet: &'a Packet<&'a T>) -> Result<Self>
-    where
-        T: AsRef<[u8]> + ?Sized,
-    {
-        packet.check_len()?;
+    ///
+    /// There is no generic `parse` over `&T`: a reference in type-parameter position has the
+    /// unit sort, so nothing about the buffer's extent is statable there and none of the reads
+    /// below would be provable. Callers build a [`Ref`] instead.
+    ///
+    /// `checked_len` rather than `check_len`: the same test, but its `Ok` arm names the
+    /// buffer's length, which is what every accessor here needs.
+    pub fn parse_ref(packet: &'a Packet<Ref<'a>>) -> Result<Self> {
+        packet.checked_len()?;
         let transaction_id = packet.transaction_id();
         let client_hardware_address = packet.client_hardware_address();
         let client_ip = packet.client_ip();
@@ -1400,7 +1404,7 @@ mod test {
 
     #[test]
     fn test_deconstruct_discover() {
-        let packet = Packet::new_unchecked(DISCOVER_BYTES);
+        let packet = Packet::new_unchecked(Ref::new(DISCOVER_BYTES));
         assert_eq!(packet.magic_number(), MAGIC_COOKIE);
         assert_eq!(packet.opcode(), OpCode::Request);
         assert_eq!(packet.hardware_type(), Hardware::Ethernet);
@@ -1568,8 +1572,8 @@ mod test {
 
     #[test]
     fn test_parse_discover() {
-        let packet = Packet::new_unchecked(DISCOVER_BYTES);
-        let repr = Repr::parse(&packet).unwrap();
+        let packet = Packet::new_unchecked(Ref::new(DISCOVER_BYTES));
+        let repr = Repr::parse_ref(&packet).unwrap();
         assert_eq!(repr, discover_repr());
     }
 
@@ -1613,8 +1617,8 @@ mod test {
         let mut packet = Packet::new_unchecked(&mut bytes);
         repr.emit(&mut packet).unwrap();
 
-        let packet = Packet::new_unchecked(&bytes);
-        let repr_parsed = Repr::parse(&packet).unwrap();
+        let packet = Packet::new_unchecked(Ref::new(&bytes));
+        let repr_parsed = Repr::parse_ref(&packet).unwrap();
 
         assert_eq!(
             repr_parsed.dns_servers,
@@ -1650,8 +1654,8 @@ mod test {
 
     #[test]
     fn test_parse_ack_dns_servers() {
-        let packet = Packet::new_unchecked(ACK_DNS_SERVER_BYTES);
-        let repr = Repr::parse(&packet).unwrap();
+        let packet = Packet::new_unchecked(Ref::new(ACK_DNS_SERVER_BYTES));
+        let repr = Repr::parse_ref(&packet).unwrap();
 
         // The packet described by ACK_BYTES advertises 4 DNS servers
         // Here we ensure that we correctly parse the first 3 into our fixed
@@ -1671,8 +1675,8 @@ mod test {
 
     #[test]
     fn test_parse_ack_lease_duration() {
-        let packet = Packet::new_unchecked(ACK_LEASE_TIME_BYTES);
-        let repr = Repr::parse(&packet).unwrap();
+        let packet = Packet::new_unchecked(Ref::new(ACK_LEASE_TIME_BYTES));
+        let repr = Repr::parse_ref(&packet).unwrap();
 
         // Verify that the lease time in the ACK is properly parsed. The packet contains a lease
         // duration of 598s.
