@@ -714,7 +714,10 @@ impl Repr {
     // unchecked form is a-okay here.
     #[allow(unsafe_code)]
     #[flux_rs::trusted(no, reason = "discharges the assert(false) licensing unreachable_unchecked")]
-    #[flux_rs::sig(fn(Address[@v], Address[v], Protocol, usize[@p], u8) -> Repr[v, p])]
+    // `p <= 65535` is `Ipv4Repr`/`Ipv6Repr`'s own invariant: the enclosing header's length
+    // field is sixteen bits, so a longer payload cannot be represented on the wire. Stating it
+    // here rather than at the two struct literals below puts it where callers can see it.
+    #[flux_rs::sig(fn(Address[@v], Address[v], Protocol, plen: usize{plen <= 65535}, u8) -> Repr[v, plen])]
     pub fn new(
         src_addr: Address,
         dst_addr: Address,
