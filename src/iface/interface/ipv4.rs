@@ -95,18 +95,24 @@ impl InterfaceInner {
         })
     }
 
+    /// The `requires` is `Packet::new_checked_ref`'s `Ok` arm verbatim, which is how every
+    /// caller builds the packet. It used to be re-established inside by re-checking through
+    /// `as_window`; taking the packet as a `Packet<Ref>` means the caller's proof survives the
+    /// call instead of being thrown away and redone.
+    #[flux_rs::sig(
+        fn(&mut Self, &mut SocketSet, PacketMeta, HardwareAddress,
+           &Ipv4Packet<Ref>[@p], &mut FragmentsBuffer) -> Option<Packet>
+        requires 20 <= p.buffer.len && 20 <= p.hlen && p.hlen <= p.tlen
+              && p.tlen <= p.buffer.len && p.tlen <= 65535
+    )]
     pub(super) fn process_ipv4<'a>(
         &mut self,
         sockets: &mut SocketSet,
         meta: PacketMeta,
         source_hardware_addr: HardwareAddress,
-        ipv4_packet: &Ipv4Packet<&'a [u8]>,
+        ipv4_packet: &Ipv4Packet<Ref<'a>>,
         frag: &'a mut FragmentsBuffer,
     ) -> Option<Packet<'a>> {
-        // Re-check over a `Ref`, where the buffer's length is in the refinement: the caller's
-        // `Packet<&[u8]>` ran the same test and threw the answer away, and the `payload()`
-        // below needs it. The test is the one that already ran; nothing is removed.
-        let ipv4_packet = &check!(Ipv4Packet::new_checked_ref(ipv4_packet.as_window()));
         let mut ipv4_repr = check!(Ipv4Repr::parse_ref(ipv4_packet, &self.caps.checksum));
         if !self.is_unicast_v4(ipv4_repr.src_addr) && !ipv4_repr.src_addr.is_unspecified() {
             // Discard packets with non-unicast source addresses but allow unspecified
@@ -256,11 +262,18 @@ impl InterfaceInner {
         }
     }
 
+    /// `14 <= f.buffer.len` is what `Frame<Ref>::payload` requires -- the fixed part of the
+    /// Ethernet header. The caller has it from `new_checked_ref`, or from having already read
+    /// the ethertype to get here.
     #[cfg(feature = "medium-ethernet")]
+    #[flux_rs::sig(
+        fn(&mut Self, Instant, &EthernetFrame<Ref>[@f]) -> Option<EthernetPacket>
+        requires 14 <= f.buffer.len
+    )]
     pub(super) fn process_arp<'frame>(
         &mut self,
         timestamp: Instant,
-        eth_frame: &EthernetFrame<&'frame [u8]>,
+        eth_frame: &EthernetFrame<Ref<'frame>>,
     ) -> Option<EthernetPacket<'frame>> {
         let arp_packet = check!(ArpPacket::new_checked(eth_frame.payload()));
         let arp_repr = check!(ArpRepr::parse(&arp_packet));

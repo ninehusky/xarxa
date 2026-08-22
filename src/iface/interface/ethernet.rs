@@ -25,11 +25,11 @@ impl InterfaceInner {
             EthernetProtocol::Arp => {
                 // `process_arp` takes a `Frame<&[u8]>`, so the frame is rebuilt at that type;
                 // `new_checked_ref` above has already run the length check on these bytes.
-                self.process_arp(self.now, &EthernetFrame::new_unchecked(frame))
+                self.process_arp(self.now, &EthernetFrame::new_unchecked(Ref::new(frame)))
             }
             #[cfg(feature = "proto-ipv4")]
             EthernetProtocol::Ipv4 => {
-                let ipv4_packet = check!(Ipv4Packet::new_checked(eth_frame.payload()));
+                let ipv4_packet = check!(Ipv4Packet::new_checked_ref(Ref::new(eth_frame.payload())));
 
                 self.process_ipv4(
                     sockets,

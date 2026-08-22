@@ -857,7 +857,7 @@ fn test_router_advertisement(#[case] medium: Medium) {
                 let ipv6_packet = match device.medium() {
                     #[cfg(feature = "medium-ethernet")]
                     Medium::Ethernet => {
-                        let eth_frame = EthernetFrame::new_checked(frame).ok()?;
+                        let eth_frame = EthernetFrame::new_checked_ref(Ref::new(frame)).ok()?;
                         Ipv6Packet::new_checked_ref(Ref::new(eth_frame.payload())).ok()?
                     }
                     #[cfg(feature = "medium-ip")]
@@ -1537,7 +1537,7 @@ fn test_join_ipv6_multicast_group(#[case] medium: Medium) {
                 let ipv6_packet = match device.medium() {
                     #[cfg(feature = "medium-ethernet")]
                     Medium::Ethernet => {
-                        let eth_frame = EthernetFrame::new_checked(frame).ok()?;
+                        let eth_frame = EthernetFrame::new_checked_ref(Ref::new(frame)).ok()?;
                         Ipv6Packet::new_checked_ref(Ref::new(eth_frame.payload())).ok()?
                     }
                     #[cfg(feature = "medium-ip")]
@@ -1664,7 +1664,7 @@ fn test_handle_valid_multicast_query(#[case] medium: Medium) {
                 let ipv6_packet = match device.medium() {
                     #[cfg(feature = "medium-ethernet")]
                     Medium::Ethernet => {
-                        let eth_frame = EthernetFrame::new_checked(frame).ok()?;
+                        let eth_frame = EthernetFrame::new_checked_ref(Ref::new(frame)).ok()?;
                         Ipv6Packet::new_checked_ref(Ref::new(eth_frame.payload())).ok()?
                     }
                     #[cfg(feature = "medium-ip")]

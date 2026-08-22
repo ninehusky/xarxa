@@ -346,22 +346,6 @@ impl<T: AsRef<[u8]>> Frame<T> {
     }
 }
 
-impl<'a, T: AsRef<[u8]> + ?Sized> Frame<&'a T> {
-    /// Return a pointer to the payload, without checking for 802.1Q.
-    //
-    // Left bounds-checked. The buffer here is `&'a T`, so the length index has to come from
-    // core's blanket `impl<T, U> AsRef<U> for &T`, which carries no associated refinement
-    // (`as_ref_reft` is missing). The bound `14 <= len` is therefore unstatable at this self
-    // type, and routing through the unchecked `suffix` without stating it would trade a panic
-    // for UB. The provable twin is on `Frame<Ref<'a>>` below; this one is still here because
-    // `InterfaceInner::process_arp` takes a `Frame<&[u8]>`.
-    #[inline]
-    pub fn payload(&self) -> &'a [u8] {
-        let data = self.buffer.as_ref();
-        &data[field::PAYLOAD]
-    }
-}
-
 impl<'a> Frame<Ref<'a>> {
     /// [`new_checked`](Self::new_checked) over a [`Ref`], carrying its proof out.
     ///
@@ -638,7 +622,7 @@ mod test_ipv4 {
 
     #[test]
     fn test_deconstruct() {
-        let frame = Frame::new_unchecked(&FRAME_BYTES[..]);
+        let frame = Frame::new_unchecked(Ref::new(&FRAME_BYTES[..]));
         assert_eq!(
             frame.dst_addr(),
             Address::from_octets([0x01, 0x02, 0x03, 0x04, 0x05, 0x06])
@@ -684,7 +668,7 @@ mod test_ipv6 {
 
     #[test]
     fn test_deconstruct() {
-        let frame = Frame::new_unchecked(&FRAME_BYTES[..]);
+        let frame = Frame::new_unchecked(Ref::new(&FRAME_BYTES[..]));
         assert_eq!(
             frame.dst_addr(),
             Address::from_octets([0x01, 0x02, 0x03, 0x04, 0x05, 0x06])

@@ -1025,7 +1025,7 @@ impl InterfaceInner {
         match IpVersion::of_packet(ip_payload) {
             #[cfg(feature = "proto-ipv4")]
             Ok(IpVersion::Ipv4) => {
-                let ipv4_packet = check!(Ipv4Packet::new_checked(ip_payload));
+                let ipv4_packet = check!(Ipv4Packet::new_checked_ref(Ref::new(ip_payload)));
                 self.process_ipv4(sockets, meta, HardwareAddress::Ip, &ipv4_packet, frag)
             }
             #[cfg(feature = "proto-ipv6")]

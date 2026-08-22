@@ -639,19 +639,6 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
         Ref::new(self.buffer.as_ref())
     }
 
-    /// Return a pointer to the payload.
-    //
-    // Left bounds-checked. The buffer here is `&'a T`, so the length index would have to come
-    // from core's blanket `impl<T, U> AsRef<U> for &T`, which carries no associated refinement
-    // (`as_ref_reft` is missing). Neither end of the window -- `header_len()` nor `total_len()`
-    // -- is therefore statable at this self type. The provable form is
-    // `Packet<Ref>::payload`; reach it through `as_window`.
-    #[inline]
-    pub fn payload(&self) -> &'a [u8] {
-        let range = self.header_len() as usize..self.total_len() as usize;
-        let data = self.buffer.as_ref();
-        &data[range]
-    }
 }
 
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
@@ -1195,9 +1182,11 @@ impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
 
         let checksum_caps = ChecksumCapabilities::ignored();
 
-        let (ip_repr, payload) = match Packet::new_checked(buffer) {
+        // Over `Ref`: the accessors below are provable only at that self type, and the
+        // `&'a T` twin of `payload` no longer exists.
+        let (ip_repr, payload) = match Packet::new_checked_ref(Ref::new(buffer.as_ref())) {
             Err(err) => return write!(f, "{indent}({err})"),
-            Ok(ip_packet) => match Repr::parse(&ip_packet, &checksum_caps) {
+            Ok(ip_packet) => match Repr::parse_ref(&ip_packet, &checksum_caps) {
                 Err(_) => return Ok(()),
                 Ok(ip_repr) => {
                     if ip_packet.more_frags() || ip_packet.frag_offset() != 0 {
@@ -1246,7 +1235,7 @@ pub(crate) mod test {
 
     #[test]
     fn test_deconstruct() {
-        let packet = Packet::new_unchecked(&PACKET_BYTES[..]);
+        let packet = Packet::new_unchecked(Ref::new(&PACKET_BYTES[..]));
         assert_eq!(packet.version(), 4);
         assert_eq!(packet.header_len(), 20);
         assert_eq!(packet.dscp(), 0);
@@ -1295,7 +1284,7 @@ pub(crate) mod test {
         bytes.push(0);
 
         assert_eq!(
-            Packet::new_unchecked(&bytes).payload().len(),
+            Packet::new_unchecked(Ref::new(&bytes)).payload().len(),
             PAYLOAD_BYTES.len()
         );
         assert_eq!(
