@@ -170,7 +170,7 @@ pub fn tcp_not_accepted() {
         window_scale: None,
         max_seg_size: None,
         sack_permitted: false,
-        sack_ranges: [None, None, None],
+        sack_ranges: SackRanges::none(),
         timestamp: None,
         payload: &[],
     };
@@ -215,7 +215,7 @@ pub fn tcp_not_accepted() {
                 window_scale: None,
                 max_seg_size: None,
                 sack_permitted: false,
-                sack_ranges: [None, None, None],
+                sack_ranges: SackRanges::none(),
                 timestamp: None,
                 payload: &[],
             }))
@@ -270,7 +270,7 @@ pub fn tcp_listen_drops_unspecified_src() {
         window_scale: None,
         max_seg_size: Some(1460),
         sack_permitted: false,
-        sack_ranges: [None, None, None],
+        sack_ranges: SackRanges::none(),
         timestamp: None,
         payload: &[],
     };

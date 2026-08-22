@@ -978,7 +978,7 @@ fn test_raw_socket_no_reply_tcp(#[case] medium: Medium) {
         window_scale: None,
         max_seg_size: None,
         sack_permitted: false,
-        sack_ranges: [None, None, None],
+        sack_ranges: SackRanges::none(),
         timestamp: None,
         payload: &PAYLOAD,
     };

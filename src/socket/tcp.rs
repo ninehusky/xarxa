@@ -13,8 +13,9 @@ use crate::socket::{Context, PollAt};
 use crate::storage::{Assembler, RingBuffer};
 use crate::time::{Duration, Instant};
 use crate::wire::{
-    IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, SizedTcpRepr, TCP_HEADER_LEN,
-    TcpControl,
+    IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, SackBlock, SackRanges,
+    SizedTcpRepr,
+    TCP_HEADER_LEN, TcpControl,
     TcpRepr, TcpSeqNumber, TcpTimestampGenerator, TcpTimestampRepr,
 };
 
@@ -1457,7 +1458,7 @@ impl<'a> Socket<'a> {
             window_scale: None,
             max_seg_size: None,
             sack_permitted: false,
-            sack_ranges: [None, None, None],
+            sack_ranges: SackRanges::none(),
             timestamp: None,
             payload: &[],
         };
@@ -1536,20 +1537,21 @@ impl<'a> Socket<'a> {
             // length fields in the option) MUST specify the contiguous block of data containing
             // the segment which triggered this ACK, unless that segment advanced the
             // Acknowledgment Number field in the header.
-            reply_repr.sack_ranges[0] = None;
+            reply_repr.sack_ranges.first = SackBlock::Absent;
 
             let ack = reply_repr.ack_number.unwrap_or(TcpSeqNumber(0));
 
             if let Some(last_seg_seq) = self.local_rx_last_seq {
-                reply_repr.sack_ranges[0] = self
-                    .assembler
-                    .iter_data()
-                    .map(|(left, right)| (ack + left, ack + right))
-                    .find(|&(left, right)| left <= last_seg_seq && right >= last_seg_seq)
-                    .map(|(left, right)| (left.0 as u32, right.0 as u32));
+                reply_repr.sack_ranges.first = SackBlock::from_option(
+                    self.assembler
+                        .iter_data()
+                        .map(|(left, right)| (ack + left, ack + right))
+                        .find(|&(left, right)| left <= last_seg_seq && right >= last_seg_seq)
+                        .map(|(left, right)| (left.0 as u32, right.0 as u32)),
+                );
             }
 
-            if reply_repr.sack_ranges[0].is_none() {
+            if !reply_repr.sack_ranges.first.is_present() {
                 // The matching segment was removed from the assembler, meaning the acknowledgement
                 // number has advanced, or there was no previous sACK.
                 //
@@ -1557,12 +1559,13 @@ impl<'a> Socket<'a> {
                 // through those, that is currently infeasible. Instead, we offer the range with
                 // the lowest sequence number (if one exists) to hint at what segments would
                 // most quickly advance the acknowledgement number.
-                reply_repr.sack_ranges[0] = self
-                    .assembler
-                    .iter_data()
-                    .map(|(left, right)| (ack + left, ack + right))
-                    .next()
-                    .map(|(left, right)| (left.0 as u32, right.0 as u32));
+                reply_repr.sack_ranges.first = SackBlock::from_option(
+                    self.assembler
+                        .iter_data()
+                        .map(|(left, right)| (ack + left, ack + right))
+                        .next()
+                        .map(|(left, right)| (left.0 as u32, right.0 as u32)),
+                );
             }
         }
 
@@ -2652,7 +2655,7 @@ impl<'a> Socket<'a> {
             window_scale: None,
             max_seg_size: None,
             sack_permitted: false,
-            sack_ranges: [None, None, None],
+            sack_ranges: SackRanges::none(),
             timestamp: TcpTimestampRepr::generate_reply_with_tsval(
                 self.tsval_generator,
                 self.last_remote_tsval,
@@ -3088,7 +3091,7 @@ mod test {
         window_scale: None,
         max_seg_size: None,
         sack_permitted: false,
-        sack_ranges: [None, None, None],
+        sack_ranges: SackRanges::none(),
         timestamp: None,
         payload: &[],
     };
@@ -3109,7 +3112,7 @@ mod test {
         window_scale: None,
         max_seg_size: None,
         sack_permitted: false,
-        sack_ranges: [None, None, None],
+        sack_ranges: SackRanges::none(),
         timestamp: None,
         payload: &[],
     };
@@ -4758,14 +4761,14 @@ mod test {
                     seq_number: LOCAL_SEQ + 1,
                     ack_number: Some(REMOTE_SEQ + 1 + 5000),
                     window_len: 4000,
-                    sack_ranges: [
-                        Some((
+                    sack_ranges: SackRanges {
+                        first: SackBlock::Present(
                             REMOTE_SEQ.0 as u32 + 1 + 5500,
                             REMOTE_SEQ.0 as u32 + 1 + 5500 + offset as u32
-                        )),
-                        None,
-                        None
-                    ],
+                        ),
+                        second: SackBlock::Absent,
+                        third: SackBlock::Absent,
+                    },
                     ..RECV_TEMPL
                 })
             );
@@ -4793,11 +4796,11 @@ mod test {
                 seq_number: LOCAL_SEQ + 1,
                 ack_number: Some(TcpSeqNumber(-4)),
                 window_len: 64,
-                sack_ranges: [
-                    Some(((-4_i32 + 10) as u32, (-4_i32 + 20) as u32,)),
-                    None,
-                    None,
-                ],
+                sack_ranges: SackRanges {
+                    first: SackBlock::Present((-4_i32 + 10) as u32, (-4_i32 + 20) as u32),
+                    second: SackBlock::Absent,
+                    third: SackBlock::Absent,
+                },
                 ..RECV_TEMPL
             })
         );

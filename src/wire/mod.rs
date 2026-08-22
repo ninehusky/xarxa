@@ -280,7 +280,7 @@ pub use self::udp::{HEADER_LEN as UDP_HEADER_LEN, Packet as UdpPacket, Repr as U
 
 pub use self::tcp::{
     Control as TcpControl, HEADER_LEN as TCP_HEADER_LEN, Packet as TcpPacket, Repr as TcpRepr,
-    SeqNumber as TcpSeqNumber, TcpOption, TcpTimestampGenerator, TcpTimestampRepr,
+    SackBlock, SackRanges, SeqNumber as TcpSeqNumber, TcpOption, TcpTimestampGenerator, TcpTimestampRepr,
 };
 
 pub(crate) use self::tcp::SizedRepr as SizedTcpRepr;
