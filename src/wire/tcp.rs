@@ -6,7 +6,7 @@ use crate::phy::ChecksumCapabilities;
 use crate::wire::ip::checksum;
 use crate::wire::{IpAddress, IpProtocol};
 use crate::wire::{
-    Buf, Ref, read_i32_at, read_u16_at, sub, write_i32_at, write_u16_at, write_u32_at,
+    Buf, Maybe, Ref, read_i32_at, read_u16_at, sub, write_i32_at, write_u16_at, write_u32_at,
 };
 
 flux_rs::defs! {
@@ -987,44 +987,6 @@ impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
     #[flux_rs::sig(fn(self: &Self[@source]) -> &[u8][Self::as_ref_reft(source)])]
     fn as_ref(&self) -> &[u8] {
         self.buffer.as_ref()
-    }
-}
-
-/// `Option<T>`, with whether it is set in the refinement.
-///
-/// Exists for the same reason as [`SackBlock`]: a refinement cannot be attached to
-/// `core::Option` from outside without crashing fixpoint's sort elaboration. See that type.
-///
-/// This one is never stored -- the public fields of [`Repr`] keep their `Option` types. It is
-/// built as a *local* inside [`Repr::header_len`] and [`Repr::emit`] so that the presence of
-/// each option is read out of the struct once, into a value flux can name. Reading the field
-/// twice would give two unrelated values, and the length computed by one would say nothing
-/// about the branch taken by the other.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-#[flux_rs::refined_by(present: bool)]
-pub enum Maybe<T> {
-    #[flux_rs::variant(Maybe<T>[false])]
-    Nothing,
-    #[flux_rs::variant((T) -> Maybe<T>[true])]
-    Just(T),
-}
-
-impl<T> Maybe<T> {
-    /// Whether the value is set.
-    #[flux_rs::sig(fn(&Maybe<T>[@m]) -> bool[m])]
-    pub const fn is_present(&self) -> bool {
-        matches!(self, Maybe::Just(_))
-    }
-
-    /// Take an `Option` apart once, into something flux can name.
-    ///
-    /// The result's `present` is unknown here -- `Option` is unrefined, which is the whole
-    /// point -- but it is *fixed*, so a later `match` on this value learns the branch it took.
-    pub fn from_option(value: Option<T>) -> Maybe<T> {
-        match value {
-            Some(inner) => Maybe::Just(inner),
-            None => Maybe::Nothing,
-        }
     }
 }
 

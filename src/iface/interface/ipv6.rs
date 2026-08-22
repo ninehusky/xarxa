@@ -460,7 +460,7 @@ impl InterfaceInner {
                 flags,
             } => {
                 let ip_addr = ip_repr.src_addr.into();
-                if let Some(lladdr) = lladdr {
+                if let MaybeAddr::Present(lladdr) = lladdr {
                     let lladdr = check!(lladdr.parse(self.medium));
                     if !lladdr.is_unicast() || !target_addr.x_is_unicast() {
                         return None;
@@ -478,7 +478,7 @@ impl InterfaceInner {
                 lladdr,
                 ..
             } => {
-                if let Some(lladdr) = lladdr {
+                if let MaybeAddr::Present(lladdr) = lladdr {
                     let lladdr = check!(lladdr.parse(self.medium));
                     if !lladdr.is_unicast() || !target_addr.x_is_unicast() {
                         return None;
@@ -492,7 +492,7 @@ impl InterfaceInner {
                         flags: NdiscNeighborFlags::SOLICITED,
                         target_addr,
                         #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
-                        lladdr: Some(self.hardware_addr.into()),
+                        lladdr: MaybeAddr::Present(self.hardware_addr.into()),
                     });
                     let ip_repr = Ipv6Repr {
                         src_addr: target_addr,
@@ -525,7 +525,7 @@ impl InterfaceInner {
                     self.slaac.process_advertisement(
                         &ip_repr.src_addr,
                         router_lifetime,
-                        prefix_info,
+                        prefix_info.as_option(),
                         self.now,
                     )
                 }
@@ -725,7 +725,7 @@ impl Interface {
             return;
         }
         let rs_repr = Icmpv6Repr::Ndisc(NdiscRepr::RouterSolicit {
-            lladdr: Some(self.hardware_addr().into()),
+            lladdr: MaybeAddr::Present(self.hardware_addr().into()),
         });
         let ipv6_repr = Ipv6Repr {
             src_addr: self.inner.link_local_ipv6_address().unwrap(),

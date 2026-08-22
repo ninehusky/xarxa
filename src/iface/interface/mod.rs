@@ -1252,7 +1252,7 @@ impl InterfaceInner {
 
                 let solicit = Icmpv6Repr::Ndisc(NdiscRepr::NeighborSolicit {
                     target_addr: dst_addr,
-                    lladdr: Some(self.hardware_addr.into()),
+                    lladdr: MaybeAddr::Present(self.hardware_addr.into()),
                 });
 
                 let packet = Packet::new_ipv6(

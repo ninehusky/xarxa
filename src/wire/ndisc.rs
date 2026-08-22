@@ -3,7 +3,7 @@ use bitflags::bitflags;
 use super::{Error, Result};
 use crate::time::Duration;
 use crate::wire::Ipv6Address;
-use crate::wire::RawHardwareAddress;
+use crate::wire::{Maybe, MaybeAddr, RawHardwareAddress};
 use crate::wire::Ref;
 use crate::wire::mld::read_ipv6_addr_at;
 use crate::wire::icmpv6::{Message, Packet, field};
@@ -295,6 +295,86 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     }
 }
 
+flux_rs::defs! {
+    // What an optional link-layer address option contributes: two octets of preamble plus the
+    // address, rounded up, or nothing. `round8` is `ndiscoption`'s own -- a second definition
+    // with the same body would be a distinct function to fixpoint, and the offsets here are
+    // compared against `NdiscOptionRepr::buffer_len`, which is stated in terms of that one.
+    fn nd_opt_addr(present: bool, len: int) -> int {
+        if present { if 2 + len <= 8 { 8 } else { 16 } } else { 0 }
+    }
+
+    // What an optional redirected-header option contributes. 48 is eight octets of preamble
+    // plus `Ipv6Repr::buffer_len()`, a constant 40, rounded up to a multiple of eight.
+    //
+    // The rounding is written out rather than delegated: `ndiscoption::round8` is in another
+    // module, and a local helper called from here would be a nested defn call. Neither is
+    // unfolded, so `8 <= blen` -- and with it every setter bound in the Redirect arm -- could
+    // not be discharged through either. Checked against the original by `Repr::buffer_len`
+    // proving its own index.
+    fn nd_opt_redir(present: bool, dlen: int) -> int {
+        if present {
+            if (48 + dlen) % 8 == 0 { 48 + dlen } else { 48 + dlen + 8 - (48 + dlen) % 8 }
+        } else {
+            0
+        }
+    }
+}
+
+/// An optional redirected header that keeps its data's length.
+///
+/// See [`MaybeAddr`], for the same reason.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(present: bool, dlen: int)]
+// `RedirectedHeader`'s own invariant bounds its data length, but that constrains the *struct*,
+// not this enum's index; without restating it `dlen` is unconstrained wherever a `Repr` is
+// destructured, and `Repr`'s `8 <= blen` cannot be proved.
+#[flux_rs::invariant(0 <= dlen)]
+pub enum MaybeRedirected<'a> {
+    #[flux_rs::variant(MaybeRedirected[false, 0])]
+    Absent,
+    #[flux_rs::variant((NdiscRedirectedHeader[@h]) -> MaybeRedirected[true, h.dlen])]
+    Present(NdiscRedirectedHeader<'a>),
+}
+
+impl<'a> MaybeRedirected<'a> {
+    /// Whether a redirected header is present.
+    #[flux_rs::sig(fn(&MaybeRedirected[@m]) -> bool[m.present])]
+    pub const fn is_present(&self) -> bool {
+        matches!(self, MaybeRedirected::Present(_))
+    }
+
+    /// As an `Option`. The refinement is lost on the way out.
+    pub const fn as_option(&self) -> Option<NdiscRedirectedHeader<'a>> {
+        match *self {
+            MaybeRedirected::Present(h) => Some(h),
+            MaybeRedirected::Absent => None,
+        }
+    }
+
+    /// From an `Option`. The result's index is unknown but fixed.
+    pub const fn from_option(value: Option<NdiscRedirectedHeader<'a>>) -> MaybeRedirected<'a> {
+        match value {
+            Some(h) => MaybeRedirected::Present(h),
+            None => MaybeRedirected::Absent,
+        }
+    }
+}
+
+/// The octets an optional link-layer address option contributes.
+#[flux_rs::sig(fn(MaybeAddr[@l]) -> usize[nd_opt_addr(l.present, l.len)])]
+#[flux_rs::no_panic]
+const fn opt_addr_len(lladdr: MaybeAddr) -> usize {
+    match lladdr {
+        MaybeAddr::Present(addr) => {
+            let len = 2 + addr.len();
+            if len % 8 == 0 { len } else { len + 8 - len % 8 }
+        }
+        MaybeAddr::Absent => 0,
+    }
+}
+
 /// A high-level representation of an Neighbor Discovery packet header.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -310,41 +390,46 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 #[flux_rs::invariant(8 <= blen)]
 #[flux_rs::refined_by(blen: int)]
 pub enum Repr<'a> {
-    #[flux_rs::variant({Option<RawHardwareAddress>} -> Repr[8])]
+    #[flux_rs::variant({MaybeAddr[@l]} -> Repr[8 + nd_opt_addr(l.present, l.len)])]
     RouterSolicit {
-        lladdr: Option<RawHardwareAddress>,
+        lladdr: MaybeAddr,
     },
     #[flux_rs::variant({u8, RouterFlags, Duration, Duration, Duration,
-                        Option<RawHardwareAddress>, Option<u32>,
-                        Option<NdiscPrefixInformation>} -> Repr[16])]
+                        MaybeAddr[@l], Maybe<u32>[@m],
+                        Maybe<NdiscPrefixInformation>[@pi]}
+                       -> Repr[16 + nd_opt_addr(l.present, l.len)
+                               + (if m { 8 } else { 0 }) + (if pi { 32 } else { 0 })])]
     RouterAdvert {
         hop_limit: u8,
         flags: RouterFlags,
         router_lifetime: Duration,
         reachable_time: Duration,
         retrans_time: Duration,
-        lladdr: Option<RawHardwareAddress>,
-        mtu: Option<u32>,
-        prefix_info: Option<NdiscPrefixInformation>,
+        lladdr: MaybeAddr,
+        mtu: Maybe<u32>,
+        prefix_info: Maybe<NdiscPrefixInformation>,
     },
-    #[flux_rs::variant({Ipv6Address, Option<RawHardwareAddress>} -> Repr[24])]
+    #[flux_rs::variant({Ipv6Address, MaybeAddr[@l]}
+                       -> Repr[24 + nd_opt_addr(l.present, l.len)])]
     NeighborSolicit {
         target_addr: Ipv6Address,
-        lladdr: Option<RawHardwareAddress>,
+        lladdr: MaybeAddr,
     },
-    #[flux_rs::variant({NeighborFlags, Ipv6Address, Option<RawHardwareAddress>} -> Repr[24])]
+    #[flux_rs::variant({NeighborFlags, Ipv6Address, MaybeAddr[@l]}
+                       -> Repr[24 + nd_opt_addr(l.present, l.len)])]
     NeighborAdvert {
         flags: NeighborFlags,
         target_addr: Ipv6Address,
-        lladdr: Option<RawHardwareAddress>,
+        lladdr: MaybeAddr,
     },
-    #[flux_rs::variant({Ipv6Address, Ipv6Address, Option<RawHardwareAddress>,
-                        Option<NdiscRedirectedHeader>} -> Repr[40])]
+    #[flux_rs::variant({Ipv6Address, Ipv6Address, MaybeAddr[@l], MaybeRedirected[@h]}
+                       -> Repr[40 + nd_opt_addr(l.present, l.len)
+                               + nd_opt_redir(h.present, h.dlen)])]
     Redirect {
         target_addr: Ipv6Address,
         dest_addr: Ipv6Address,
-        lladdr: Option<RawHardwareAddress>,
-        redirected_hdr: Option<NdiscRedirectedHeader<'a>>,
+        lladdr: MaybeAddr,
+        redirected_hdr: MaybeRedirected<'a>,
     },
 }
 
@@ -383,6 +468,16 @@ impl<'a> Repr<'a> {
             offset += len;
         }
 
+        // The option slots are accumulated above as `Option`s, which carry no refinement.
+        // Converting once here is what lets the variants state their own length; the resulting
+        // index is unknown but fixed, which is all `buffer_len` and `emit` need -- they read the
+        // same value.
+        let src_ll_addr = MaybeAddr::from_option(src_ll_addr);
+        let target_ll_addr = MaybeAddr::from_option(target_ll_addr);
+        let mtu = Maybe::from_option(mtu);
+        let prefix_info = Maybe::from_option(prefix_info);
+        let redirected_hdr = MaybeRedirected::from_option(redirected_hdr);
+
         match packet.msg_type() {
             Message::RouterSolicit => Ok(Repr::RouterSolicit {
                 lladdr: src_ll_addr,
@@ -417,52 +512,46 @@ impl<'a> Repr<'a> {
         }
     }
 
+    /// Return the length of a packet that will be emitted from this high-level representation.
+    //
+    // 8, 16, 24 and 40 restate `field::UNUSED.end`, `field::RETRANS_TM.end`,
+    // `field::TARGET_ADDR.end` and `field::DEST_ADDR.end`: flux cannot see through a `Range`
+    // const. The option lengths are spelled out rather than routed through
+    // `NdiscOptionRepr::buffer_len` so each is a function of this repr's own index.
+    #[flux_rs::trusted(no, reason = "ties the `blen` index to the emitted length")]
+    #[flux_rs::sig(fn(self: &Self[@r]) -> usize[r.blen])]
+    #[flux_rs::no_panic]
     pub const fn buffer_len(&self) -> usize {
         match self {
-            &Repr::RouterSolicit { lladdr } => match lladdr {
-                Some(addr) => {
-                    field::UNUSED.end + { NdiscOptionRepr::SourceLinkLayerAddr(addr).buffer_len() }
-                }
-                None => field::UNUSED.end,
-            },
+            &Repr::RouterSolicit { lladdr } => 8 + opt_addr_len(lladdr),
             &Repr::RouterAdvert {
                 lladdr,
                 mtu,
                 prefix_info,
                 ..
             } => {
-                let mut offset = 0;
-                if let Some(lladdr) = lladdr {
-                    offset += NdiscOptionRepr::TargetLinkLayerAddr(lladdr).buffer_len();
+                let mut offset = 16 + opt_addr_len(lladdr);
+                if mtu.is_present() {
+                    offset += 8;
                 }
-                if let Some(mtu) = mtu {
-                    offset += NdiscOptionRepr::Mtu(mtu).buffer_len();
-                }
-                if let Some(prefix_info) = prefix_info {
-                    offset += NdiscOptionRepr::PrefixInformation(prefix_info).buffer_len();
-                }
-                field::RETRANS_TM.end + offset
-            }
-            &Repr::NeighborSolicit { lladdr, .. } | &Repr::NeighborAdvert { lladdr, .. } => {
-                let mut offset = field::TARGET_ADDR.end;
-                if let Some(lladdr) = lladdr {
-                    offset += NdiscOptionRepr::SourceLinkLayerAddr(lladdr).buffer_len();
+                if prefix_info.is_present() {
+                    offset += 32;
                 }
                 offset
+            }
+            &Repr::NeighborSolicit { lladdr, .. } | &Repr::NeighborAdvert { lladdr, .. } => {
+                24 + opt_addr_len(lladdr)
             }
             &Repr::Redirect {
                 lladdr,
                 redirected_hdr,
                 ..
             } => {
-                let mut offset = field::DEST_ADDR.end;
-                if let Some(lladdr) = lladdr {
-                    offset += NdiscOptionRepr::TargetLinkLayerAddr(lladdr).buffer_len();
-                }
-                if let Some(NdiscRedirectedHeader { header, data }) = redirected_hdr {
-                    offset +=
-                        NdiscOptionRepr::RedirectedHeader(NdiscRedirectedHeader { header, data })
-                            .buffer_len();
+                let mut offset = 40 + opt_addr_len(lladdr);
+                if let MaybeRedirected::Present(NdiscRedirectedHeader { data, .. }) = redirected_hdr
+                {
+                    let len = 48 + crate::flux_util::byte_len(data);
+                    offset += if len % 8 == 0 { len } else { len + 8 - len % 8 };
                 }
                 offset
             }
@@ -502,7 +591,7 @@ impl<'a> Repr<'a> {
                 packet.set_msg_type(Message::RouterSolicit);
                 packet.set_msg_code(0);
                 packet.clear_reserved();
-                if let Some(lladdr) = lladdr {
+                if let MaybeAddr::Present(lladdr) = lladdr {
                     let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_buf());
                     NdiscOptionRepr::SourceLinkLayerAddr(lladdr).emit(&mut opt_pkt);
                 }
@@ -526,17 +615,17 @@ impl<'a> Repr<'a> {
                 packet.set_reachable_time(reachable_time);
                 packet.set_retrans_time(retrans_time);
                 let mut offset = 0;
-                if let Some(lladdr) = lladdr {
+                if let MaybeAddr::Present(lladdr) = lladdr {
                     let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_buf());
                     let opt = NdiscOptionRepr::SourceLinkLayerAddr(lladdr);
                     opt.emit(&mut opt_pkt);
                     offset += opt.buffer_len();
                 }
-                if let Some(mtu) = mtu {
+                if let Maybe::Just(mtu) = mtu {
                     emit_option_at(packet, offset, &NdiscOptionRepr::Mtu(mtu));
                     offset += NdiscOptionRepr::Mtu(mtu).buffer_len();
                 }
-                if let Some(prefix_info) = prefix_info {
+                if let Maybe::Just(prefix_info) = prefix_info {
                     emit_option_at(packet, offset, &NdiscOptionRepr::PrefixInformation(prefix_info));
                 }
             }
@@ -549,7 +638,7 @@ impl<'a> Repr<'a> {
                 packet.set_msg_code(0);
                 packet.clear_reserved();
                 packet.set_target_addr(target_addr);
-                if let Some(lladdr) = lladdr {
+                if let MaybeAddr::Present(lladdr) = lladdr {
                     let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_buf());
                     NdiscOptionRepr::SourceLinkLayerAddr(lladdr).emit(&mut opt_pkt);
                 }
@@ -565,7 +654,7 @@ impl<'a> Repr<'a> {
                 packet.clear_reserved();
                 packet.set_neighbor_flags(flags);
                 packet.set_target_addr(target_addr);
-                if let Some(lladdr) = lladdr {
+                if let MaybeAddr::Present(lladdr) = lladdr {
                     let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_buf());
                     NdiscOptionRepr::TargetLinkLayerAddr(lladdr).emit(&mut opt_pkt);
                 }
@@ -583,14 +672,14 @@ impl<'a> Repr<'a> {
                 packet.set_target_addr(target_addr);
                 packet.set_dest_addr(dest_addr);
                 let offset = match lladdr {
-                    Some(lladdr) => {
+                    MaybeAddr::Present(lladdr) => {
                         let mut opt_pkt = NdiscOption::new_unchecked(packet.payload_buf());
                         NdiscOptionRepr::TargetLinkLayerAddr(lladdr).emit(&mut opt_pkt);
                         NdiscOptionRepr::TargetLinkLayerAddr(lladdr).buffer_len()
                     }
-                    None => 0,
+                    MaybeAddr::Absent => 0,
                 };
-                if let Some(redirected_hdr) = redirected_hdr {
+                if let MaybeRedirected::Present(redirected_hdr) = redirected_hdr {
                     emit_option_at(packet, offset, &NdiscOptionRepr::RedirectedHeader(redirected_hdr));
                 }
             }
@@ -611,8 +700,8 @@ impl<'a> Repr<'a> {
 /// `impl<T, U> AsMut<U> for &mut T`, and that impl has no associated refinement to name.
 #[flux_rs::trusted(no, reason = "panic site: the option window and every option setter")]
 #[flux_rs::sig(
-    fn(packet: &mut Packet<T>[@p], offset: usize, opt: &NdiscOptionRepr)
-    requires crate::wire::icmpv6::icmpv6_header_len(p.code) + offset + 48 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    fn(packet: &mut Packet<T>[@p], offset: usize, opt: &NdiscOptionRepr[@o])
+    requires crate::wire::icmpv6::icmpv6_header_len(p.code) + offset + o.blen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
 )]
 fn emit_option_at<T>(packet: &mut Packet<T>, offset: usize, opt: &NdiscOptionRepr)
 where
@@ -653,9 +742,9 @@ mod test {
             router_lifetime: Duration::from_secs(900),
             reachable_time: Duration::from_millis(900),
             retrans_time: Duration::from_millis(900),
-            lladdr: Some(EthernetAddress::from_octets([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]).into()),
-            mtu: None,
-            prefix_info: None,
+            lladdr: MaybeAddr::Present(EthernetAddress::from_octets([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]).into()),
+            mtu: Maybe::Nothing,
+            prefix_info: Maybe::Nothing,
         })
     }
 
@@ -676,9 +765,9 @@ mod test {
             router_lifetime: Duration::from_secs(900),
             reachable_time: Duration::from_millis(900),
             retrans_time: Duration::from_millis(900),
-            lladdr: Some(RawHardwareAddress::from_bytes(&[1, 2, 3])),
-            mtu: Some(1500),
-            prefix_info: None,
+            lladdr: MaybeAddr::Present(RawHardwareAddress::from_bytes(&[1, 2, 3])),
+            mtu: Maybe::Just(1500),
+            prefix_info: Maybe::Nothing,
         });
 
         let mut bytes = [0u8; 21];
@@ -758,8 +847,8 @@ mod test {
         let repr = Icmpv6Repr::Ndisc(Repr::Redirect {
             target_addr: MOCK_IP_ADDR_1,
             dest_addr: MOCK_IP_ADDR_2,
-            lladdr: Some(lladdr),
-            redirected_hdr: None,
+            lladdr: MaybeAddr::Present(lladdr),
+            redirected_hdr: MaybeRedirected::Absent,
         });
 
         let mut bytes = vec![0u8; repr.buffer_len()];

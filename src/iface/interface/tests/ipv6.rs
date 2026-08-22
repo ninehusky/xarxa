@@ -625,7 +625,7 @@ fn ndisc_neighbor_advertisement_ethernet(#[case] medium: Medium) {
             IpPayload::Icmpv6(Icmpv6Repr::Ndisc(NdiscRepr::NeighborAdvert {
                 flags: NdiscNeighborFlags::SOLICITED,
                 target_addr: Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x0002),
-                lladdr: Some(RawHardwareAddress::from_bytes(&[0, 0, 0, 0, 0, 1])),
+                lladdr: MaybeAddr::Present(RawHardwareAddress::from_bytes(&[0, 0, 0, 0, 0, 1])),
             }))
         ))
     );
@@ -680,7 +680,7 @@ fn ndisc_neighbor_advertisement_ethernet_multicast_addr(#[case] medium: Medium) 
             IpPayload::Icmpv6(Icmpv6Repr::Ndisc(NdiscRepr::NeighborAdvert {
                 flags: NdiscNeighborFlags::SOLICITED,
                 target_addr: Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x0002),
-                lladdr: Some(RawHardwareAddress::from_bytes(&[
+                lladdr: MaybeAddr::Present(RawHardwareAddress::from_bytes(&[
                     0xff, 0xff, 0xff, 0xff, 0xff, 0xff
                 ])),
             }))
@@ -735,7 +735,7 @@ fn ndisc_neighbor_advertisement_ieee802154(#[case] medium: Medium) {
             IpPayload::Icmpv6(Icmpv6Repr::Ndisc(NdiscRepr::NeighborAdvert {
                 flags: NdiscNeighborFlags::SOLICITED,
                 target_addr: Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x0002),
-                lladdr: Some(RawHardwareAddress::from_bytes(&[0, 0, 0, 0, 0, 0, 0, 1])),
+                lladdr: MaybeAddr::Present(RawHardwareAddress::from_bytes(&[0, 0, 0, 0, 0, 0, 0, 1])),
             }))
         ))
     );
@@ -780,7 +780,7 @@ fn test_handle_valid_ndisc_request(#[case] medium: Medium) {
 
     let solicit = Icmpv6Repr::Ndisc(NdiscRepr::NeighborSolicit {
         target_addr: local_ip_addr,
-        lladdr: Some(remote_hw_addr.into()),
+        lladdr: MaybeAddr::Present(remote_hw_addr.into()),
     });
     let ip_repr = IpRepr::Ipv6(Ipv6Repr {
         src_addr: remote_ip_addr,
@@ -807,7 +807,7 @@ fn test_handle_valid_ndisc_request(#[case] medium: Medium) {
     let icmpv6_expected = Icmpv6Repr::Ndisc(NdiscRepr::NeighborAdvert {
         flags: NdiscNeighborFlags::SOLICITED,
         target_addr: local_ip_addr,
-        lladdr: Some(local_hw_addr.into()),
+        lladdr: MaybeAddr::Present(local_hw_addr.into()),
     });
 
     let ipv6_expected = Ipv6Repr {
@@ -934,7 +934,7 @@ fn test_router_advertisement(#[case] medium: Medium) {
         assert_eq!(
             icmp_repr,
             Icmpv6Repr::Ndisc(NdiscRepr::RouterSolicit {
-                lladdr: Some(local_hw_addr.into()),
+                lladdr: MaybeAddr::Present(local_hw_addr.into()),
             })
         );
 
@@ -956,9 +956,9 @@ fn test_router_advertisement(#[case] medium: Medium) {
         router_lifetime: Duration::from_secs(600),
         reachable_time: Duration::from_secs(0),
         retrans_time: Duration::from_secs(0),
-        lladdr: None,
-        mtu: None,
-        prefix_info: Some(prefix_information),
+        lladdr: MaybeAddr::Absent,
+        mtu: Maybe::Nothing,
+        prefix_info: Maybe::Just(prefix_information),
     };
     let ip_repr = IpRepr::Ipv6(Ipv6Repr {
         src_addr: remote_ip_addr.address(),
@@ -1023,7 +1023,7 @@ fn test_router_advertisement(#[case] medium: Medium) {
         ..
     } = advertisement
     {
-        *prefix_info = Some(prefix_information);
+        *prefix_info = Maybe::Just(prefix_information);
     }
 
     let mut frame = EthernetFrame::new_unchecked(&mut eth_bytes);
@@ -1061,7 +1061,7 @@ fn test_router_advertisement(#[case] medium: Medium) {
         ..
     } = advertisement
     {
-        *prefix_info = None;
+        *prefix_info = Maybe::Nothing;
         *router_lifetime = Duration::ZERO;
     }
 
