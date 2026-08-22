@@ -498,7 +498,10 @@ pub enum Repr<'a> {
     #[cfg(feature = "proto-rpl")]
     #[flux_rs::variant((RplHopByHopRepr) -> Repr[6])]
     Rpl(RplHopByHopRepr),
-    #[flux_rs::variant({Type, u8[@n], &[u8]} -> Repr[2 + n])]
+    // `n <= m`: the declared length cannot exceed the data it names. `Repr::emit` copies
+    // `data[..length]`, which panics otherwise, so this is a real precondition of the type
+    // rather than a convenience -- and construction sites are few.
+    #[flux_rs::variant({Type, u8[@n], {&[u8][@m] | n <= m}} -> Repr[2 + n])]
     Unknown {
         type_: Type,
         length: u8,
@@ -524,8 +527,8 @@ fn read_router_alert(data: &[u8]) -> u16 {
 /// `data` as independent fields and nothing states `length <= data.len()`. Stating it would mean
 /// refining the enum, which every construction site outside this file would then have to
 /// discharge.
-#[flux_rs::trusted(no, reason = "panic site: Repr::Unknown does not state length <= data.len()")]
-#[flux_rs::sig(fn(&[u8], length: u8) -> &[u8])]
+#[flux_rs::trusted(no, reason = "panic site: the declared-length window")]
+#[flux_rs::sig(fn(&[u8][@m], length: u8{length <= m}) -> &[u8][length])]
 fn unknown_data(data: &[u8], length: u8) -> &[u8] {
     &data[..length as usize]
 }
