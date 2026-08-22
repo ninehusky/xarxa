@@ -97,3 +97,25 @@ pub fn suffix_mut<T>(data: &mut [T], at: usize) -> &mut [T] {
 pub const fn byte_len(data: &[u8]) -> usize {
     data.len()
 }
+
+/// The index of the first zero octet, or `data.len()` if there is none.
+///
+/// `Iterator::position` states that its index is below the slice's length, but it hands that
+/// back inside an `Option`, and `Option`'s payload carries no refinement here -- xarxa cannot
+/// register a spec for it, see `wire::tcp::SackBlock`. The bound is lost at the `?`, and the
+/// truncation that follows keeps a bounds check it does not need.
+///
+/// Returning `n` for "not found" is the same information `None` carried: the caller tests it the
+/// way it tested `None`, and gets a length it can slice with.
+#[flux_rs::sig(fn(&[u8][@n]) -> usize{v: v <= n})]
+#[flux_rs::no_panic]
+pub fn first_nul(data: &[u8]) -> usize {
+    let mut i = 0;
+    while i < data.len() {
+        if data[i] == 0 {
+            return i;
+        }
+        i += 1;
+    }
+    i
+}

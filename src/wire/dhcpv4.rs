@@ -626,8 +626,8 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[flux_rs::sig(fn(&Packet<T>[@p]) -> Result<&str> requires 108 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
     pub fn get_sname(&self) -> Result<&str> {
         let data = sub(self.buffer.as_ref(), 34, 74); // field::SNAME
-        let len = data.iter().position(|&x| x == 0).ok_or(Error)?;
-        if len == 0 {
+        let len = crate::flux_util::first_nul(data);
+        if len == 74 || len == 0 {
             return Err(Error);
         }
 
@@ -641,8 +641,8 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[flux_rs::sig(fn(&Packet<T>[@p]) -> Result<&str> requires 236 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
     pub fn get_boot_file(&self) -> Result<&str> {
         let data = sub(self.buffer.as_ref(), 108, 128); // field::FILE
-        let len = data.iter().position(|&x| x == 0).ok_or(Error)?;
-        if len == 0 {
+        let len = crate::flux_util::first_nul(data);
+        if len == 128 || len == 0 {
             return Err(Error);
         }
         let data = core::str::from_utf8(&data[..len]).map_err(|_| Error)?;
