@@ -1,6 +1,16 @@
 use bitflags::bitflags;
 use core::fmt;
 
+flux_rs::defs! {
+    // An NDISC option's length is a whole number of eight-octet units, so every arm of
+    // `Repr::buffer_len` rounds its octet count up to a multiple of eight. Kept in lockstep
+    // with the arms, which spell the rounding out rather than calling `div_ceil` -- that
+    // method carries no spec, so the equality could not be proved through it.
+    fn round8(n: int) -> int {
+        if n % 8 == 0 { n } else { n + 8 - n % 8 }
+    }
+}
+
 use super::{Error, Result};
 use crate::time::Duration;
 use crate::wire::{Ipv6Address, Ipv6AddressExt, Ipv6Packet, Ipv6Repr, MAX_HARDWARE_ADDRESS_LEN};
@@ -748,20 +758,34 @@ impl PrefixInformation {
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(dlen: int)]
 pub struct RedirectedHeader<'a> {
     pub header: Ipv6Repr,
+    #[flux_rs::field(&[u8][dlen])]
     pub data: &'a [u8],
 }
 
 /// A high-level representation of an NDISC Option.
+//
+// Indexed by the octets `emit` writes, which is what `buffer_len` returns. The two link-layer
+// arms and the redirected-header arm are content-dependent, which is why this is not a set of
+// constants: `RawHardwareAddress` carries its length and `RedirectedHeader` now carries its
+// data's, so both are statable. 48 is `8 + Ipv6Repr::buffer_len()`, the latter a constant 40.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(blen: int)]
 pub enum Repr<'a> {
+    #[flux_rs::variant((RawHardwareAddress[@a]) -> Repr[round8(2 + a.len)])]
     SourceLinkLayerAddr(RawHardwareAddress),
+    #[flux_rs::variant((RawHardwareAddress[@a]) -> Repr[round8(2 + a.len)])]
     TargetLinkLayerAddr(RawHardwareAddress),
+    #[flux_rs::variant((PrefixInformation) -> Repr[32])]
     PrefixInformation(PrefixInformation),
+    #[flux_rs::variant((RedirectedHeader[@h]) -> Repr[round8(48 + h.dlen)])]
     RedirectedHeader(RedirectedHeader<'a>),
+    #[flux_rs::variant((u32) -> Repr[8])]
     Mtu(u32),
+    #[flux_rs::variant({u8, u8[@l], &[u8]} -> Repr[8 * l])]
     Unknown {
         type_: u8,
         length: u8,
@@ -867,19 +891,29 @@ impl<'a> Repr<'a> {
     }
 
     /// Return the length of a header that will be emitted from this high-level representation.
+    //
+    // The round up is spelled out rather than `div_ceil(8) * 8`: that method carries no flux
+    // spec, so `round8` could not be proved equal to it. Same value either way.
+    #[flux_rs::trusted(no, reason = "ties the `blen` index to the emitted length")]
+    #[flux_rs::sig(fn(self: &Self[@r]) -> usize[r.blen])]
+    #[flux_rs::no_panic]
     pub const fn buffer_len(&self) -> usize {
         match self {
             &Repr::SourceLinkLayerAddr(addr) | &Repr::TargetLinkLayerAddr(addr) => {
                 let len = 2 + addr.len();
-                // Round up to next multiple of 8
-                len.div_ceil(8) * 8
+                if len % 8 == 0 { len } else { len + 8 - len % 8 }
             }
-            &Repr::PrefixInformation(_) => field::PREFIX.end,
-            &Repr::RedirectedHeader(RedirectedHeader { header, data }) => {
-                (8 + header.buffer_len() + data.len()).div_ceil(8) * 8
+            // 32, 8 and `length * 8` restate `field::PREFIX.end`, `field::MTU.end` and
+            // `field::DATA(length).end`: flux cannot see through a `Range` const.
+            &Repr::PrefixInformation(_) => 32,
+            &Repr::RedirectedHeader(RedirectedHeader { data, .. }) => {
+                // 40 is `Ipv6Repr::buffer_len()`, a constant; restated because that method
+                // returns an unindexed `usize`.
+                let len = 8 + 40 + crate::flux_util::byte_len(data);
+                if len % 8 == 0 { len } else { len + 8 - len % 8 }
             }
-            &Repr::Mtu(_) => field::MTU.end,
-            &Repr::Unknown { length, .. } => field::DATA(length).end,
+            &Repr::Mtu(_) => 8,
+            &Repr::Unknown { length, .. } => length as usize * 8,
         }
     }
 
@@ -890,6 +924,11 @@ impl<'a> Repr<'a> {
     /// Header at least 48). It is a lower bound, not the full contract -- the variable-length
     /// arms additionally need `buffer_len()`, which is content-dependent. See the notes on
     /// `emit_redirected_header`, `emit_unknown` and `data_mut` for what is still owed.
+    ///
+    /// `r.blen <= as_mut_reft` -- now statable, and weaker for every arm but Redirected Header
+    /// -- was tried and is worse: the arms' setters reach past their own option's length, and
+    /// the three `emit_option_at` sites cannot supply it while `ndisc::Repr` is indexed by its
+    /// fixed header rather than its full `buffer_len()`. Both halves have to move together.
     #[flux_rs::trusted(no, reason = "carries the option buffer bound to the setters")]
     #[flux_rs::sig(
         fn(&Repr, opt: &strg NdiscOption<T>[@p])
