@@ -1446,7 +1446,12 @@ impl<'a> Socket<'a> {
     /// The IP header describes exactly what the segment emits. The measurement happens first
     /// so that `IpRepr::new` is handed `SizedTcpRepr::buffer_len`, which is exact in the
     /// refinement, rather than a second `Repr::buffer_len` call flux cannot equate with it.
+    ///
+    /// `r.plen == 0`: the reply carries `payload: &[]`. That is what bounds `buffer_len` for
+    /// every caller downstream -- `ack_reply` unwraps this, sets the sACK slots and
+    /// re-measures, and the ceiling has to survive the round trip.
     #[flux_rs::trusted(no, reason = "calls IpRepr::new")]
+    #[flux_rs::sig(fn(&IpRepr, &TcpRepr) -> Reply{r: r.plen == 0})]
     pub(crate) fn reply(ip_repr: &IpRepr, repr: &TcpRepr) -> Reply<'static> {
         let reply_repr = TcpRepr {
             src_port: repr.dst_port,
@@ -2985,11 +2990,11 @@ where
 /// tuple cannot carry that -- flux rejects an `@` binder in return position, so the second
 /// component has no way to name the first.
 #[derive(Debug)]
-#[flux_rs::refined_by(ip_ty: int, blen: int)]
+#[flux_rs::refined_by(ip_ty: int, blen: int, plen: int)]
 pub(crate) struct Reply<'a> {
     #[flux_rs::field(IpRepr[ip_ty, blen])]
     pub(crate) ip_repr: IpRepr,
-    #[flux_rs::field(SizedTcpRepr[blen])]
+    #[flux_rs::field(SizedTcpRepr[blen, plen])]
     pub(crate) repr: SizedTcpRepr<'a>,
 }
 

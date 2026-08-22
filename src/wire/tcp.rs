@@ -1746,9 +1746,10 @@ impl<'a> Repr<'a> {
 /// Same device as `dhcpv4::SizedRepr`.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 // 20 is `Repr::buffer_len`'s floor, the fixed part of the TCP header.
-#[flux_rs::refined_by(blen: int)]
+#[flux_rs::refined_by(blen: int, plen: int)]
 #[flux_rs::invariant(20 <= blen)]
 pub(crate) struct SizedRepr<'a> {
+    #[flux_rs::field(Repr[plen])]
     repr: Repr<'a>,
     #[flux_rs::field(usize[blen])]
     blen: usize,
@@ -1760,7 +1761,9 @@ impl<'a> SizedRepr<'a> {
     /// The result's `blen` is carried out against the repr's payload length, which is what lets
     /// a caller holding a short payload -- `Socket::reply` builds one with `payload: &[]` --
     /// discharge `IpRepr::new`'s and `set_payload_len`'s `plen <= 65535`.
-    #[flux_rs::sig(fn(Repr[@r]) -> SizedRepr{s: 20 <= s.blen && s.blen <= 68 + r.plen})]
+    #[flux_rs::sig(
+        fn(Repr[@r]) -> SizedRepr{s: 20 <= s.blen && s.blen <= 68 + r.plen && s.plen == r.plen}
+    )]
     pub(crate) fn new(repr: Repr<'a>) -> Self {
         let blen = repr.buffer_len();
         Self { repr, blen }
@@ -1790,21 +1793,21 @@ impl<'a> SizedRepr<'a> {
     /// `&strg` so the caller keeps `blen`, as for the three setters below. None of these four
     /// fields is part of what [`Repr::buffer_len`] counts, and each postcondition is proved
     /// rather than stated -- the body writes `repr` and leaves the measured length alone.
-    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], u16) ensures self: SizedRepr[r.blen])]
+    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], u16) ensures self: SizedRepr[r.blen, r.plen])]
     #[flux_rs::no_panic]
     pub(crate) fn set_window_len(&mut self, value: u16) {
         self.repr.window_len = value;
     }
 
     /// Set the control flag.
-    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], Control) ensures self: SizedRepr[r.blen])]
+    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], Control) ensures self: SizedRepr[r.blen, r.plen])]
     #[flux_rs::no_panic]
     pub(crate) fn set_control(&mut self, value: Control) {
         self.repr.control = value;
     }
 
     /// Set the sequence number.
-    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], SeqNumber) ensures self: SizedRepr[r.blen])]
+    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], SeqNumber) ensures self: SizedRepr[r.blen, r.plen])]
     #[flux_rs::no_panic]
     pub(crate) fn set_seq_number(&mut self, value: SeqNumber) {
         self.repr.seq_number = value;
@@ -1815,7 +1818,7 @@ impl<'a> SizedRepr<'a> {
     /// The sACK option is the one whose presence turns on `ack_number`, and
     /// [`Repr::header_len`] counts it either way, so this does not move the length.
     #[flux_rs::sig(
-        fn(self: &strg SizedRepr[@r], Option<SeqNumber>) ensures self: SizedRepr[r.blen]
+        fn(self: &strg SizedRepr[@r], Option<SeqNumber>) ensures self: SizedRepr[r.blen, r.plen]
     )]
     #[flux_rs::no_panic]
     pub(crate) fn set_ack_number(&mut self, value: Option<SeqNumber>) {
@@ -1823,6 +1826,10 @@ impl<'a> SizedRepr<'a> {
     }
 
     /// The representation that was measured.
+    ///
+    /// The payload length comes back out with it: `ack_reply` unwraps, sets the sACK slots and
+    /// re-measures, and without this the re-measured `buffer_len` would have no ceiling again.
+    #[flux_rs::sig(fn(SizedRepr[@s]) -> Repr[s.plen])]
     pub(crate) fn into_repr(self) -> Repr<'a> {
         self.repr
     }
