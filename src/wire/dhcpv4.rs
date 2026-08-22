@@ -1261,10 +1261,18 @@ impl<'a> Repr<'a> {
 /// by it directly. Measuring once and keeping the number alongside the representation makes
 /// the total statable with nothing trusted: `blen` is the value [`Repr::buffer_len`] returned
 /// for this `repr`, and `repr` is private and never lent out mutably, so it cannot drift.
-#[derive(Debug, PartialEq, Eq, Clone)]
+// `Clone` is not derived: the derived body reconstructs the struct, and flux cannot carry the
+// invariant across that -- it reports `a precondition cannot be proved` on the derive itself.
+// Nothing clones a `SizedRepr`.
+#[derive(Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[flux_rs::refined_by(blen: int)]
-#[flux_rs::invariant(0 <= blen)]
+// The ceiling is what `socket::dhcpv4`'s three dispatch sites need: they set
+// `ipr.plen = 8 + d.blen` against `Ipv4Repr`'s own `plen <= 65535`. It is not derivable from
+// `Repr::buffer_len`, whose last term sums `2 + opt.data.len()` over `additional_options` --
+// a slice whose elements' lengths are unreachable through the container -- so the obligation
+// lands undischarged on `new` below. One honest site instead of six.
+#[flux_rs::invariant(0 <= blen && blen <= 65527)]
 pub(crate) struct SizedRepr<'a> {
     repr: Repr<'a>,
     #[flux_rs::field(usize[blen])]
