@@ -154,7 +154,7 @@ impl Assembler {
     }
 
     fn back(&self) -> Contig {
-        self.contigs[self.contigs.len() - 1]
+        self.contigs[ASSEMBLER_MAX_SEGMENT_COUNT - 1]
     }
 
     /// Return whether the assembler contains no data.
@@ -163,27 +163,46 @@ impl Assembler {
     }
 
     /// Remove a contig at the given index.
+    //
+    // `ASSEMBLER_MAX_SEGMENT_COUNT` rather than `self.contigs.len()` throughout this file: an
+    // array-to-slice coercion gets a fresh, unconstrained length every time it happens, so the
+    // `len()` a guard measured said nothing about the array the access goes through. The const
+    // is the array's own `N`, which is what its `Index` impl is stated against.
+    #[flux_rs::sig(fn(&mut Self, at: usize{at < ASSEMBLER_MAX_SEGMENT_COUNT}))]
     fn remove_contig_at(&mut self, at: usize) {
         debug_assert!(self.contigs[at].has_data());
 
-        for i in at..self.contigs.len() - 1 {
+        // `while` rather than `for i in at..N - 1`: flux does not bound a `for` loop's
+        // induction variable, so `contigs[i]` and `contigs[i + 1]` were unproved. The condition
+        // of a `while` it does track. Same range, same iterations.
+        let mut i = at;
+        while i < ASSEMBLER_MAX_SEGMENT_COUNT - 1 {
             if !self.contigs[i].has_data() {
                 return;
             }
             self.contigs[i] = self.contigs[i + 1];
+            i += 1;
         }
 
         // Removing the last one.
-        self.contigs[self.contigs.len() - 1] = Contig::empty();
+        self.contigs[ASSEMBLER_MAX_SEGMENT_COUNT - 1] = Contig::empty();
     }
 
     /// Add a contig at the given index, and return a pointer to it.
+    #[flux_rs::sig(
+        fn(&mut Self, at: usize{at < ASSEMBLER_MAX_SEGMENT_COUNT})
+            -> Result<&mut Contig, TooManyHolesError>
+    )]
     fn add_contig_at(&mut self, at: usize) -> Result<&mut Contig, TooManyHolesError> {
         if self.back().has_data() {
             return Err(TooManyHolesError);
         }
 
-        for i in (at + 1..self.contigs.len()).rev() {
+        // Counts down rather than `(at + 1..N).rev()`, for the reason on `remove_contig_at`.
+        // Same indices in the same order.
+        let mut i = ASSEMBLER_MAX_SEGMENT_COUNT;
+        while i > at + 1 {
+            i -= 1;
             self.contigs[i] = self.contigs[i - 1];
         }
 
@@ -202,7 +221,7 @@ impl Assembler {
 
         // Find index of the contig containing the start of the range.
         loop {
-            if i == self.contigs.len() {
+            if i == ASSEMBLER_MAX_SEGMENT_COUNT {
                 // The new range is after all the previous ranges, but there/s no space to add it.
                 return Err(TooManyHolesError);
             }
@@ -241,7 +260,7 @@ impl Assembler {
 
         // coalesce contigs to the right.
         let mut j = i + 1;
-        while j < self.contigs.len()
+        while j < ASSEMBLER_MAX_SEGMENT_COUNT
             && self.contigs[j].has_data()
             && offset + size >= self.contigs[i].total_size() + self.contigs[j].hole_size
         {
@@ -250,7 +269,9 @@ impl Assembler {
         }
         let shift = j - i - 1;
         if shift != 0 {
-            for x in i + 1..self.contigs.len() {
+            // `while` rather than `for`, for the reason on `remove_contig_at`.
+            let mut x = i + 1;
+            while x < ASSEMBLER_MAX_SEGMENT_COUNT {
                 if !self.contigs[x].has_data() {
                     break;
                 }
@@ -260,6 +281,7 @@ impl Assembler {
                     .get(x + shift)
                     .copied()
                     .unwrap_or_else(Contig::empty);
+                x += 1;
             }
         }
 
@@ -269,7 +291,7 @@ impl Assembler {
             self.contigs[i].data_size += left;
 
             // Decrease hole size of the next, if any.
-            if i + 1 < self.contigs.len() && self.contigs[i + 1].has_data() {
+            if i + 1 < ASSEMBLER_MAX_SEGMENT_COUNT && self.contigs[i + 1].has_data() {
                 self.contigs[i + 1].hole_size -= left;
             }
         }
