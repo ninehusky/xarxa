@@ -904,11 +904,20 @@ pub struct Repr {
 
 impl Repr {
     /// Parse an Internet Protocol version 6 packet and return a high-level representation.
+    ///
+    /// A thin wrapper over [`parse_ref`](Self::parse_ref): a reference in type-parameter
+    /// position has the unit sort, so the buffer's extent is unstatable at this self type, and
+    /// a caller that needs it out again -- the payload window is bounded by it -- has to hold a
+    /// [`Ref`] to begin with.
     pub fn parse<T: AsRef<[u8]> + ?Sized>(packet: &Packet<&T>) -> Result<Repr> {
-        // Re-wrapped as a `Ref` rather than read through `&T`: at a reference self type the
-        // buffer's length is unstatable, so nothing the accessors require can be discharged.
-        // `Ref::new` gives the same bytes an index and `new_checked_ref` runs the same test
-        // `check_len` ran, so its `Ok` arm proves every accessor's bound below.
+        Repr::parse_ref(&Packet::new_unchecked(Ref::new(packet.buffer.as_ref())))
+    }
+
+    /// [`parse`](Self::parse) over a buffer whose length is in the refinement.
+    ///
+    /// `new_checked_ref` runs the same test `check_len` ran, so its `Ok` arm proves every
+    /// accessor's bound below.
+    pub fn parse_ref(packet: &Packet<Ref<'_>>) -> Result<Repr> {
         let packet = &Packet::new_checked_ref(Ref::new(packet.buffer.as_ref()))?;
         if packet.version() != 6 {
             return Err(Error);

@@ -42,7 +42,7 @@ impl InterfaceInner {
             }
             #[cfg(feature = "proto-ipv6")]
             EthernetProtocol::Ipv6 => {
-                let ipv6_packet = check!(Ipv6Packet::new_checked(eth_frame.payload()));
+                let ipv6_packet = check!(Ipv6Packet::new_checked_ref(Ref::new(eth_frame.payload())));
                 self.process_ipv6(sockets, meta, eth_frame.src_addr().into(), &ipv6_packet)
                     .map(EthernetPacket::Ip)
             }

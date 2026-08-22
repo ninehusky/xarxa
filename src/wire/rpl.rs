@@ -2506,8 +2506,8 @@ mod tests {
 
         let icmp_repr = match repr.next_header {
             SixlowpanNextHeader::Uncompressed(IpProtocol::Icmpv6) => {
-                let icmp_packet = Icmpv6Packet::new_checked(packet.payload()).unwrap();
-                match Icmpv6Repr::parse(
+                let icmp_packet = Icmpv6Packet::new_checked_ref(Ref::new(packet.payload())).unwrap();
+                match Icmpv6Repr::parse_ref(
                     &repr.src_addr,
                     &repr.dst_addr,
                     &icmp_packet,

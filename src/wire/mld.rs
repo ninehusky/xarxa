@@ -957,8 +957,8 @@ mod test {
 
     #[test]
     fn test_query_repr_parse() {
-        let packet = Packet::new_unchecked(&QUERY_PACKET_BYTES[..]);
-        let repr = Icmpv6Repr::parse(
+        let packet = Packet::new_unchecked(Ref::new(&QUERY_PACKET_BYTES[..]));
+        let repr = Icmpv6Repr::parse_ref(
             &IPV6_LINK_LOCAL_ALL_NODES,
             &IPV6_LINK_LOCAL_ALL_ROUTERS,
             &packet,
@@ -969,8 +969,8 @@ mod test {
 
     #[test]
     fn test_report_repr_parse() {
-        let packet = Packet::new_unchecked(&REPORT_PACKET_BYTES[..]);
-        let repr = Icmpv6Repr::parse(
+        let packet = Packet::new_unchecked(Ref::new(&REPORT_PACKET_BYTES[..]));
+        let repr = Icmpv6Repr::parse_ref(
             &IPV6_LINK_LOCAL_ALL_NODES,
             &IPV6_LINK_LOCAL_ALL_ROUTERS,
             &packet,

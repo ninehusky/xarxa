@@ -1030,7 +1030,7 @@ impl InterfaceInner {
             }
             #[cfg(feature = "proto-ipv6")]
             Ok(IpVersion::Ipv6) => {
-                let ipv6_packet = check!(Ipv6Packet::new_checked(ip_payload));
+                let ipv6_packet = check!(Ipv6Packet::new_checked_ref(Ref::new(ip_payload)));
                 self.process_ipv6(sockets, meta, HardwareAddress::Ip, &ipv6_packet)
             }
             // Drop all other traffic.

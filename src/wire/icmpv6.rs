@@ -893,29 +893,9 @@ impl<'a> Repr<'a> {
     /// Parse an Internet Control Message Protocol version 6 packet and return
     /// a high-level representation.
     ///
-    /// A thin wrapper over [`parse_ref`](Self::parse_ref). A reference in type-parameter
-    /// position has the unit sort, so nothing about `T`'s extent is statable here; [`Ref`] is
-    /// where the buffer acquires a length, and `parse_ref` is where the accessors' windows are
-    /// proved against it. Callers already holding a `Ref` should call `parse_ref` directly.
-    pub fn parse<T>(
-        src_addr: &Ipv6Address,
-        dst_addr: &Ipv6Address,
-        packet: &Packet<&'a T>,
-        checksum_caps: &ChecksumCapabilities,
-    ) -> Result<Repr<'a>>
-    where
-        T: AsRef<[u8]> + ?Sized,
-    {
-        let packet = Packet::new_unchecked(Ref::new(packet.buffer.as_ref()));
-        Repr::parse_ref(src_addr, dst_addr, &packet, checksum_caps)
-    }
-
-    /// [`parse`](Self::parse) over a buffer whose length is in the refinement.
-    ///
-    /// `checked_len` rather than `check_len`: the same test, but its `Ok` arm names what the
-    /// accessors below need. `4 <= len` alone covers the code octet; every field past it is
-    /// read inside an arm that has already pinned `p.code`, where
-    /// `icmpv6_header_len(p.code) <= len` becomes the concrete bound that field wants.
+    /// There is no generic `parse` over `&T`: a reference in type-parameter position has the
+    /// unit sort, so such a wrapper could not state the `requires` below and the obligation
+    /// surfaced there undischargeable. Callers build a [`Ref`] instead.
     ///
     /// `p.buffer.len <= 65535`: the echo variants' payloads are windows into `packet`, and they
     /// carry the bound that keeps `Repr`'s own `blen <= 65535` true. The packet is an IPv6
@@ -1306,8 +1286,8 @@ mod test {
 
     #[test]
     fn test_echo_repr_parse() {
-        let packet = Packet::new_unchecked(&ECHO_PACKET_BYTES[..]);
-        let repr = Repr::parse(
+        let packet = Packet::new_unchecked(Ref::new(&ECHO_PACKET_BYTES[..]));
+        let repr = Repr::parse_ref(
             &MOCK_IP_ADDR_1,
             &MOCK_IP_ADDR_2,
             &packet,
@@ -1359,8 +1339,8 @@ mod test {
 
     #[test]
     fn test_too_big_repr_parse() {
-        let packet = Packet::new_unchecked(&PKT_TOO_BIG_BYTES[..]);
-        let repr = Repr::parse(
+        let packet = Packet::new_unchecked(Ref::new(&PKT_TOO_BIG_BYTES[..]));
+        let repr = Repr::parse_ref(
             &MOCK_IP_ADDR_1,
             &MOCK_IP_ADDR_2,
             &packet,
@@ -1433,8 +1413,8 @@ mod test {
             &ChecksumCapabilities::default(),
         );
 
-        let packet = Packet::new_unchecked(&data);
-        let repr2 = Repr::parse(
+        let packet = Packet::new_unchecked(Ref::new(&data));
+        let repr2 = Repr::parse_ref(
             &MOCK_IP_ADDR_1,
             &MOCK_IP_ADDR_2,
             &packet,
@@ -1456,9 +1436,10 @@ mod test {
             &mut packet,
             &ChecksumCapabilities::default(),
         );
-        let packet = Packet::new_unchecked(&bytes[..field::HEADER_END + IPV6_HEADER_LEN - 1]);
+        let packet =
+            Packet::new_unchecked(Ref::new(&bytes[..field::HEADER_END + IPV6_HEADER_LEN - 1]));
         assert!(
-            Repr::parse(
+            Repr::parse_ref(
                 &MOCK_IP_ADDR_1,
                 &MOCK_IP_ADDR_2,
                 &packet,

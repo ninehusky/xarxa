@@ -15,10 +15,10 @@ fn parse_ipv6(data: &[u8]) -> crate::wire::Result<Packet<'_>> {
         IpProtocol::IpSecEsp => todo!(),
         IpProtocol::IpSecAh => todo!(),
         IpProtocol::Icmpv6 => {
-            let icmp = Icmpv6Repr::parse(
+            let icmp = Icmpv6Repr::parse_ref(
                 &ipv6.src_addr,
                 &ipv6.dst_addr,
-                &Icmpv6Packet::new_checked(ipv6_header.payload())?,
+                &Icmpv6Packet::new_checked_ref(Ref::new(ipv6_header.payload()))?,
                 &Default::default(),
             )?;
             Ok(Packet::new_ipv6(ipv6, IpPayload::Icmpv6(icmp)))
@@ -85,7 +85,7 @@ fn any_ip(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked(&data[..]).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
         ),
         None
     );
@@ -99,7 +99,7 @@ fn any_ip(#[case] medium: Medium) {
                 &mut sockets,
                 PacketMeta::default(),
                 HardwareAddress::default(),
-                &Ipv6Packet::new_checked(&data[..]).unwrap()
+                &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
             )
             .is_some()
     );
@@ -128,7 +128,7 @@ fn multicast_source_address(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked(&data[..]).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
         ),
         response
     );
@@ -177,7 +177,7 @@ fn hop_by_hop_skip_with_icmp(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked(&data[..]).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
         ),
         response
     );
@@ -213,7 +213,7 @@ fn hop_by_hop_discard_with_icmp(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked(&data[..]).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
         ),
         response
     );
@@ -268,7 +268,7 @@ fn hop_by_hop_discard_param_problem(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked(&data[..]).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
         ),
         response
     );
@@ -326,7 +326,7 @@ fn hop_by_hop_discard_with_multicast(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked(&data[..]).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
         ),
         response
     );
@@ -386,7 +386,7 @@ fn imcp_empty_echo_request(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked(&data[..]).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
         ),
         response
     );
@@ -447,7 +447,7 @@ fn icmp_echo_request(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked(&data[..]).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
         ),
         response
     );
@@ -495,7 +495,7 @@ fn icmp_echo_reply_as_input(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked(&data[..]).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
         ),
         response
     );
@@ -544,7 +544,7 @@ fn unknown_proto_with_multicast_dst_address(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked(&data[..]).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
         ),
         response
     );
@@ -594,7 +594,7 @@ fn unknown_proto(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked(&data[..]).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
         ),
         response
     );
@@ -639,7 +639,7 @@ fn ndisc_neighbor_advertisement_ethernet(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked(&data[..]).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
         ),
         response
     );
@@ -696,7 +696,7 @@ fn ndisc_neighbor_advertisement_ethernet_multicast_addr(#[case] medium: Medium) 
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked(&data[..]).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
         ),
         response
     );
@@ -749,7 +749,7 @@ fn ndisc_neighbor_advertisement_ieee802154(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked(&data[..]).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
         ),
         response
     );
@@ -858,14 +858,14 @@ fn test_router_advertisement(#[case] medium: Medium) {
                     #[cfg(feature = "medium-ethernet")]
                     Medium::Ethernet => {
                         let eth_frame = EthernetFrame::new_checked(frame).ok()?;
-                        Ipv6Packet::new_checked(eth_frame.payload()).ok()?
+                        Ipv6Packet::new_checked_ref(Ref::new(eth_frame.payload())).ok()?
                     }
                     #[cfg(feature = "medium-ip")]
-                    Medium::Ip => Ipv6Packet::new_checked(&frame[..]).ok()?,
+                    Medium::Ip => Ipv6Packet::new_checked_ref(Ref::new(&frame[..])).ok()?,
                     #[cfg(feature = "medium-ieee802154")]
                     Medium::Ieee802154 => todo!(),
                 };
-                let buf = ipv6_packet.into_inner().to_vec();
+                let buf = ipv6_packet.into_inner().as_ref().to_vec();
                 Some(Ipv6Packet::new_unchecked(buf))
             })
             .collect::<std::vec::Vec<_>>()
@@ -922,8 +922,9 @@ fn test_router_advertisement(#[case] medium: Medium) {
         if ipv6_repr.dst_addr == IPV6_LINK_LOCAL_ALL_MLDV2_ROUTERS {
             continue; // Skip MLD reports
         }
-        let icmpv6_packet = Icmpv6Packet::new_checked(ipv6_packet.payload()).unwrap();
-        let icmp_repr = Icmpv6Repr::parse(
+        let icmpv6_packet =
+            Icmpv6Packet::new_checked_ref(Ref::new(ipv6_packet.payload())).unwrap();
+        let icmp_repr = Icmpv6Repr::parse_ref(
             &ipv6_repr.src_addr,
             &ipv6_repr.dst_addr,
             &icmpv6_packet,
@@ -1537,14 +1538,14 @@ fn test_join_ipv6_multicast_group(#[case] medium: Medium) {
                     #[cfg(feature = "medium-ethernet")]
                     Medium::Ethernet => {
                         let eth_frame = EthernetFrame::new_checked(frame).ok()?;
-                        Ipv6Packet::new_checked(eth_frame.payload()).ok()?
+                        Ipv6Packet::new_checked_ref(Ref::new(eth_frame.payload())).ok()?
                     }
                     #[cfg(feature = "medium-ip")]
-                    Medium::Ip => Ipv6Packet::new_checked(&frame[..]).ok()?,
+                    Medium::Ip => Ipv6Packet::new_checked_ref(Ref::new(&frame[..])).ok()?,
                     #[cfg(feature = "medium-ieee802154")]
                     Medium::Ieee802154 => todo!(),
                 };
-                let buf = ipv6_packet.into_inner().to_vec();
+                let buf = ipv6_packet.into_inner().as_ref().to_vec();
                 Some(Ipv6Packet::new_unchecked(buf))
             })
             .collect::<std::vec::Vec<_>>()
@@ -1605,8 +1606,9 @@ fn test_join_ipv6_multicast_group(#[case] medium: Medium) {
         assert_eq!(hbh_repr.options()[2], Ipv6OptionRepr::PadN(0));
 
         let icmpv6_packet =
-            Icmpv6Packet::new_checked(&ip_payload[hbh_repr.buffer_len()..]).unwrap();
-        let icmpv6_repr = Icmpv6Repr::parse(
+            Icmpv6Packet::new_checked_ref(Ref::new(&ip_payload[hbh_repr.buffer_len()..]))
+                .unwrap();
+        let icmpv6_repr = Icmpv6Repr::parse_ref(
             &ipv6_packet.src_addr(),
             &ipv6_packet.dst_addr(),
             &icmpv6_packet,
@@ -1663,14 +1665,14 @@ fn test_handle_valid_multicast_query(#[case] medium: Medium) {
                     #[cfg(feature = "medium-ethernet")]
                     Medium::Ethernet => {
                         let eth_frame = EthernetFrame::new_checked(frame).ok()?;
-                        Ipv6Packet::new_checked(eth_frame.payload()).ok()?
+                        Ipv6Packet::new_checked_ref(Ref::new(eth_frame.payload())).ok()?
                     }
                     #[cfg(feature = "medium-ip")]
-                    Medium::Ip => Ipv6Packet::new_checked(&frame[..]).ok()?,
+                    Medium::Ip => Ipv6Packet::new_checked_ref(Ref::new(&frame[..])).ok()?,
                     #[cfg(feature = "medium-ieee802154")]
                     Medium::Ieee802154 => todo!(),
                 };
-                let buf = ipv6_packet.into_inner().to_vec();
+                let buf = ipv6_packet.into_inner().as_ref().to_vec();
                 Some(Ipv6Packet::new_unchecked(buf))
             })
             .collect::<std::vec::Vec<_>>()
@@ -1783,8 +1785,9 @@ fn test_handle_valid_multicast_query(#[case] medium: Medium) {
         assert_eq!(hbh_repr.options()[2], Ipv6OptionRepr::PadN(0));
 
         let icmpv6_packet =
-            Icmpv6Packet::new_checked(&ip_payload[hbh_repr.buffer_len()..]).unwrap();
-        let icmpv6_repr = Icmpv6Repr::parse(
+            Icmpv6Packet::new_checked_ref(Ref::new(&ip_payload[hbh_repr.buffer_len()..]))
+                .unwrap();
+        let icmpv6_repr = Icmpv6Repr::parse_ref(
             &ipv6_packet.src_addr(),
             &ipv6_packet.dst_addr(),
             &icmpv6_packet,

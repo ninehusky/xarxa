@@ -818,9 +818,9 @@ mod test {
 
     #[test]
     fn test_router_advert_repr_parse() {
-        let packet = Packet::new_unchecked(&ROUTER_ADVERT_BYTES[..]);
+        let packet = Packet::new_unchecked(Ref::new(&ROUTER_ADVERT_BYTES[..]));
         assert_eq!(
-            Icmpv6Repr::parse(
+            Icmpv6Repr::parse_ref(
                 &MOCK_IP_ADDR_1,
                 &MOCK_IP_ADDR_2,
                 &packet,
@@ -865,8 +865,8 @@ mod test {
             &ChecksumCapabilities::default(),
         );
 
-        let packet = Packet::new_unchecked(&bytes[..]);
-        let parsed = Icmpv6Repr::parse(
+        let packet = Packet::new_unchecked(Ref::new(&bytes[..]));
+        let parsed = Icmpv6Repr::parse_ref(
             &MOCK_IP_ADDR_1,
             &MOCK_IP_ADDR_2,
             &packet,
