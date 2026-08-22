@@ -27,6 +27,9 @@ impl Version {
     ///
     /// This function never returns `Ok(IpVersion::Unspecified)`; instead,
     /// unknown versions result in `Err(Error)`.
+    // `1 <= n`: the version is the top nibble of the first octet, so an empty buffer has no
+    // version to report. The three call sites all hold a received frame's payload.
+    #[flux_rs::sig(fn(&[u8][@n]) -> Result<Version> requires 1 <= n)]
     pub const fn of_packet(data: &[u8]) -> Result<Version> {
         match data[0] >> 4 {
             #[cfg(feature = "proto-ipv4")]
@@ -698,6 +701,10 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Returns the version field.
+    //
+    // No signature: this self type instantiates core's blanket `AsRef for &T`, which carries no
+    // associated refinement, so `1 <= as_ref_reft` is unstatable here -- stating it swaps the
+    // honest out-of-bounds obligation below for a spec error. Same wall as `ipv4::payload`.
     pub fn version(&self) -> u8 {
         let data = self.buffer.as_ref();
         data[field::VER.start] >> 4
