@@ -220,7 +220,11 @@ fn client_id_octets(addr: &EthernetAddress) -> [u8; 7] {
 /// derives the offset from a counter is provable, with or without a length-versus-capacity spec
 /// for `heapless::Vec`. Literal offsets are. The `const` assert below is what keeps this honest
 /// if the count is ever reconfigured: it becomes a compile error rather than a dropped server.
+// The returned length is at most the array's: it is incremented by `IP_SIZE` once per server,
+// and there are at most `MAX_DNS_SERVER_COUNT` of them. That is what the caller's
+// `&servers[..data_len]` needs.
 #[flux_rs::trusted(no, reason = "panic site: writes a window per element")]
+#[flux_rs::sig(fn(&Vec<Ipv4Address, _>) -> ([u8; 12], usize{v: v <= 12}))]
 fn dns_server_octets(servers: &Vec<Ipv4Address, MAX_DNS_SERVER_COUNT>) -> ([u8; 12], usize) {
     const IP_SIZE: usize = core::mem::size_of::<u32>();
     const _: () = assert!(MAX_DNS_SERVER_COUNT == 3);

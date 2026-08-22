@@ -523,13 +523,20 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> AddressRecord<T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> AddressRecord<T> {
     /// Return a pointer to the address records.
     //
-    // No signature: the return is a `&mut [u8]` whose length the caller cannot recover
-    // (flux-rs/flux#1714), so a bound stated here buys nothing downstream. `Repr::emit`
-    // reaches the same bytes through `wire::Buf` instead.
+    // The `requires` proves the window; the *return* still carries no length, because a
+    // returned `&mut` loses its index (flux-rs/flux#1714), so it buys nothing downstream.
+    // `Repr::emit` reaches the same bytes through `wire::Buf` instead.
+    #[flux_rs::trusted(no, reason = "panic site: the record payload window")]
+    #[flux_rs::sig(
+        fn(&mut AddressRecord<T>[@r]) -> &mut [u8]
+        requires 20 <= <T as AsMut<[u8]>>::as_mut_reft(r.buffer)
+    )]
     #[inline]
     pub fn payload_mut(&mut self) -> &mut [u8] {
         let data = self.buffer.as_mut();
-        &mut data[field::RECORD_MCAST_ADDR.end..]
+        // 20 rather than `field::RECORD_MCAST_ADDR.end`: flux cannot see through a `Range`
+        // const, and the `requires` above is stated at the literal.
+        &mut data[20..]
     }
 }
 
