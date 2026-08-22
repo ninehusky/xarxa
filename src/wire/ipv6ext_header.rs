@@ -344,11 +344,15 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     }
 }
 
+// Indexed by the data window's length. `header_len()` is the constant 2, so `2 + dlen` is what
+// this header occupies, and a caller placing what follows it needs both halves.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(dlen: int)]
 pub struct Repr<'a> {
     pub next_header: IpProtocol,
     pub length: u8,
+    #[flux_rs::field(&[u8][dlen])]
     pub data: &'a [u8],
 }
 
@@ -371,6 +375,11 @@ impl<'a> Repr<'a> {
     /// `checked_len` rather than `check_len`: the same test, but its `Ok` arm names both facts
     /// the three reads below need -- that the buffer holds the fixed header, and that the
     /// payload window the length octet declares fits inside it.
+    ///
+    /// The `2 + r.dlen <= h.buffer.len` on the way out is `checked_len`'s own proof, carried to
+    /// the caller: `iface::interface::ipv6` places the options that follow at exactly that
+    /// offset into the same buffer.
+    #[flux_rs::sig(fn(&Header<Ref>[@h]) -> Result<Repr{r: 2 + r.dlen <= h.buffer.len}>)]
     pub fn parse_ref(header: &Header<Ref<'a>>) -> Result<Self> {
         header.checked_len()?;
         Ok(Self {

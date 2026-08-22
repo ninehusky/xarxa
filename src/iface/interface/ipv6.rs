@@ -279,8 +279,11 @@ impl InterfaceInner {
             )
         };
 
-        let ext_hdr = check!(Ipv6ExtHeader::new_checked(ip_payload));
-        let ext_repr = check!(Ipv6ExtHeaderRepr::parse(&ext_hdr));
+        // Through `Ref` and `parse_ref`: the generic `parse` takes a `&T` self type, whose unit
+        // sort means nothing about the buffer's extent survives, and the window opened at
+        // `header_len() + data.len()` below is a bound against exactly that extent.
+        let ext_hdr = check!(Ipv6ExtHeader::new_checked_ref(Ref::new(ip_payload)));
+        let ext_repr = check!(Ipv6ExtHeaderRepr::parse_ref(&ext_hdr));
         let hbh_hdr = check!(Ipv6HopByHopHeader::new_checked(ext_repr.data));
         let hbh_repr = check!(Ipv6HopByHopRepr::parse(&hbh_hdr));
 
