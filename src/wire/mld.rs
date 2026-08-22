@@ -737,7 +737,10 @@ impl<'a> Repr<'a> {
     #[flux_rs::trusted(no, reason = "calls the header setters, clear_reserved and the record loop")]
     #[flux_rs::sig(
         fn(&Self[@r], packet: &strg Packet<T>[@p])
-        requires r.blen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        // Equality, not `<=`: the two `copy_from_slice` calls in the body panic unless the
+        // payload window is exactly the data's length, which is a real precondition of this
+        // function. Callers size the buffer from `buffer_len()`, so they meet it.
+        requires r.blen == <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
         ensures packet: Packet<T>{v: v.buffer == p.buffer}
     )]
     pub fn emit<T>(&self, packet: &mut Packet<T>)
@@ -767,7 +770,12 @@ impl<'a> Repr<'a> {
                 packet.set_qrv(*qrv);
                 packet.set_qqic(*qqic);
                 packet.set_num_srcs(*num_srcs);
-                packet.payload_mut().copy_from_slice(&data[..]);
+                // Through `payload_buf` rather than `payload_mut`: a returned `&mut [u8]` loses
+                // its length (flux-rs/flux#1714), and `copy_from_slice` panics unless the two
+                // lengths are equal. `Buf` carries the window's length, and `emit`'s
+                // `r.blen == as_mut_reft` makes it exactly `data`'s.
+                let mut window = packet.payload_buf();
+                window.as_mut().copy_from_slice(&data[..]);
             }
             Repr::Report {
                 nr_mcast_addr_rcrds,
@@ -777,7 +785,12 @@ impl<'a> Repr<'a> {
                 packet.set_msg_code(0);
                 packet.clear_reserved();
                 packet.set_nr_mcast_addr_rcrds(*nr_mcast_addr_rcrds);
-                packet.payload_mut().copy_from_slice(&data[..]);
+                // Through `payload_buf` rather than `payload_mut`: a returned `&mut [u8]` loses
+                // its length (flux-rs/flux#1714), and `copy_from_slice` panics unless the two
+                // lengths are equal. `Buf` carries the window's length, and `emit`'s
+                // `r.blen == as_mut_reft` makes it exactly `data`'s.
+                let mut window = packet.payload_buf();
+                window.as_mut().copy_from_slice(&data[..]);
             }
             Repr::ReportRecordReprs(records) => {
                 packet.set_msg_type(Message::MldReport);
