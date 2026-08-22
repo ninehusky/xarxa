@@ -761,7 +761,9 @@ impl PrefixInformation {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[flux_rs::refined_by(dlen: int)]
-#[flux_rs::invariant(0 <= dlen)]
+// The upper bound is what keeps `ndisc::Repr`'s own `blen <= 65535` true through the Redirect
+// arm: 40 fixed + at most 16 of link-layer option + `round8(48 + dlen)`.
+#[flux_rs::invariant(0 <= dlen && dlen <= 65424)]
 pub struct RedirectedHeader<'a> {
     pub header: Ipv6Repr,
     #[flux_rs::field(&[u8][dlen])]

@@ -836,6 +836,10 @@ impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
 // (which require `4 <= buffer`) follow from `r.blen <= buffer` alone. Flux checks this against
 // each `variant` below, so it is an obligation discharged here, not an assumption.
 #[flux_rs::invariant(4 <= blen)]
+// See `icmpv4::Repr`: the enclosing IPv6 packet's length field is sixteen bits. The four error
+// variants are already capped at `MAX_ERROR_PACKET_LEN` by `icmpv6_err_buffer_len`; the two
+// echo variants carry the bound on their payload instead.
+#[flux_rs::invariant(blen <= 65535)]
 #[flux_rs::refined_by(blen: int)]
 pub enum Repr<'a> {
     #[flux_rs::variant({DstUnreachable, Ipv6Repr, &[u8][@m]} -> Repr[icmpv6_err_buffer_len(m)])]
@@ -863,13 +867,13 @@ pub enum Repr<'a> {
         header: Ipv6Repr,
         data: &'a [u8],
     },
-    #[flux_rs::variant({u16, u16, &[u8][@m]} -> Repr[8 + m])]
+    #[flux_rs::variant({u16, u16, {&[u8][@m] | m <= 65527}} -> Repr[8 + m])]
     EchoRequest {
         ident: u16,
         seq_no: u16,
         data: &'a [u8],
     },
-    #[flux_rs::variant({u16, u16, &[u8][@m]} -> Repr[8 + m])]
+    #[flux_rs::variant({u16, u16, {&[u8][@m] | m <= 65527}} -> Repr[8 + m])]
     EchoReply {
         ident: u16,
         seq_no: u16,
@@ -912,6 +916,15 @@ impl<'a> Repr<'a> {
     /// accessors below need. `4 <= len` alone covers the code octet; every field past it is
     /// read inside an arm that has already pinned `p.code`, where
     /// `icmpv6_header_len(p.code) <= len` becomes the concrete bound that field wants.
+    ///
+    /// `p.buffer.len <= 65535`: the echo variants' payloads are windows into `packet`, and they
+    /// carry the bound that keeps `Repr`'s own `blen <= 65535` true. The packet is an IPv6
+    /// payload, whose extent is the sixteen-bit length field, so it holds wherever this is
+    /// called; from outside the crate it is the caller's to discharge.
+    #[flux_rs::sig(
+        fn(&Ipv6Address, &Ipv6Address, &Packet<Ref>[@p], &ChecksumCapabilities) -> Result<Repr>
+        requires p.buffer.len <= 65535
+    )]
     pub fn parse_ref(
         src_addr: &Ipv6Address,
         dst_addr: &Ipv6Address,
@@ -938,7 +951,9 @@ impl<'a> Repr<'a> {
                 src_addr: ip_packet.src_addr(),
                 dst_addr: ip_packet.dst_addr(),
                 next_header: ip_packet.next_header(),
-                payload_len: ip_packet.payload_len().into(),
+                // `as usize` rather than `.into()`: `From<u16> for usize` carries no spec, so
+                // the result is unbounded and `Ipv6Repr`'s `plen <= 65535` fails under it.
+                payload_len: ip_packet.payload_len() as usize,
                 hop_limit: ip_packet.hop_limit(),
             };
             Ok((payload.window(40, len), repr))
@@ -1007,17 +1022,24 @@ impl<'a> Repr<'a> {
     }
 
     /// Return the length of a packet that will be emitted from this high-level representation.
+    //
+    // 8 restates `field::UNUSED.end` and `field::ECHO_SEQNO.end`: flux cannot see through a
+    // `Range` const. `byte_len` carries the slice's `isize::MAX` ceiling, which is what keeps
+    // the sums from reading as wrapping under `check_overflow = "lazy"`.
+    #[flux_rs::trusted(no, reason = "ties the `blen` index to the emitted length")]
+    #[flux_rs::sig(fn(self: &Self[@r]) -> usize[r.blen])]
+    #[flux_rs::no_panic]
     pub fn buffer_len(&self) -> usize {
         match self {
             &Repr::DstUnreachable { header, data, .. }
             | &Repr::PktTooBig { header, data, .. }
             | &Repr::TimeExceeded { header, data, .. }
             | &Repr::ParamProblem { header, data, .. } => cmp::min(
-                field::UNUSED.end + header.buffer_len() + data.len(),
+                8 + header.buffer_len() + crate::flux_util::byte_len(data),
                 MAX_ERROR_PACKET_LEN,
             ),
             &Repr::EchoRequest { data, .. } | &Repr::EchoReply { data, .. } => {
-                field::ECHO_SEQNO.end + data.len()
+                8 + crate::flux_util::byte_len(data)
             }
             #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
             &Repr::Ndisc(ndisc) => ndisc.buffer_len(),

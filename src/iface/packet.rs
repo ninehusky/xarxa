@@ -398,8 +398,19 @@ impl<'p> IpPayload<'p> {
 }
 
 #[cfg(any(feature = "proto-ipv4", feature = "proto-ipv6"))]
+// `requires header_len * 2 + 8 <= mtu` rather than a saturating subtraction: it is what stops
+// the `mtu - header_len * 2 - 8` below from wrapping, which under `check_overflow = "lazy"` it
+// otherwise may, yielding a budget near `usize::MAX` instead of a small one. Every call site
+// passes compile-time constants -- 20 against `IPV4_MIN_MTU`, 40 against `IPV6_MIN_MTU` -- so
+// it discharges there and the body keeps the arithmetic it had.
+//
+// `v <= mtu` is the half that matters downstream: it is what bounds the ICMP reply's payload,
+// and through it the reply repr's own `blen <= 65535`.
 #[flux_rs::trusted(no, reason = "the `v <= len` is what the reply's `[0..v]` window needs")]
-#[flux_rs::sig(fn(len: usize, usize, usize) -> usize{v: v <= len})]
+#[flux_rs::sig(
+    fn(len: usize, mtu: usize, header_len: usize) -> usize{v: v <= len && v <= mtu}
+    requires header_len * 2 + 8 <= mtu
+)]
 pub(crate) fn icmp_reply_payload_len(len: usize, mtu: usize, header_len: usize) -> usize {
     // Send back as much of the original payload as will fit within
     // the minimum MTU required by IPv4. See RFC 1812 § 4.3.2.3 for

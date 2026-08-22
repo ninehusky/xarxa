@@ -508,26 +508,31 @@ impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
 // Without this the setters' `1 <= as_mut_reft` / `2 <= as_mut_reft` cannot be discharged from
 // `emit`'s `as_mut_reft == blen` alone.
 #[flux_rs::invariant(8 <= blen)]
+// An ICMPv4 message is emitted into an IPv4 packet, whose length field is sixteen bits, so a
+// longer message cannot be represented on the wire -- `ipv4::Repr::emit`'s `as u16` truncates
+// it silently. Each variant's payload carries the matching bound, which is what makes this
+// provable here rather than assumed. See `xarxa-real-bugs.md`.
+#[flux_rs::invariant(blen <= 65535)]
 pub enum Repr<'a> {
-    #[flux_rs::variant({u16, u16, &[u8][@m]} -> Repr[8 + m])]
+    #[flux_rs::variant({u16, u16, {&[u8][@m] | m <= 65527}} -> Repr[8 + m])]
     EchoRequest {
         ident: u16,
         seq_no: u16,
         data: &'a [u8],
     },
-    #[flux_rs::variant({u16, u16, &[u8][@m]} -> Repr[8 + m])]
+    #[flux_rs::variant({u16, u16, {&[u8][@m] | m <= 65527}} -> Repr[8 + m])]
     EchoReply {
         ident: u16,
         seq_no: u16,
         data: &'a [u8],
     },
-    #[flux_rs::variant({DstUnreachable, Ipv4Repr, &[u8][@m]} -> Repr[28 + m])]
+    #[flux_rs::variant({DstUnreachable, Ipv4Repr, {&[u8][@m] | m <= 65507}} -> Repr[28 + m])]
     DstUnreachable {
         reason: DstUnreachable,
         header: Ipv4Repr,
         data: &'a [u8],
     },
-    #[flux_rs::variant({TimeExceeded, Ipv4Repr, &[u8][@m]} -> Repr[28 + m])]
+    #[flux_rs::variant({TimeExceeded, Ipv4Repr, {&[u8][@m] | m <= 65507}} -> Repr[28 + m])]
     TimeExceeded {
         reason: TimeExceeded,
         header: Ipv4Repr,
@@ -545,7 +550,9 @@ pub enum Repr<'a> {
 /// `Result<()>`, so what it established does not survive the call, and the split below needs it
 /// stated; by the time either `Err` here is reachable `new_checked` has already returned the same
 /// one. Both go away once `wire/ipv4.rs`'s check carries its length out.
-#[flux_rs::sig(fn(Ref[@r]) -> Result<(Ipv4Repr, &[u8])>)]
+// `m + 20 <= r`: `payload` is `data`'s window from `header_len`, and `header_len >= 20` is what
+// `Ipv4Packet::new_checked` establishes. That is the bound the two error variants need.
+#[flux_rs::sig(fn(Ref[@r]) -> Result<(Ipv4Repr, &[u8]{m: m + 20 <= r})> requires r <= 65535)]
 fn returned_datagram<'a>(data: Ref<'a>) -> Result<(Ipv4Repr, &'a [u8])> {
     let len = data.as_ref().len();
     // 20 is `ipv4::field::DST_ADDR.end`, the minimum `Ipv4Packet::check_len` enforces; flux
@@ -553,7 +560,10 @@ fn returned_datagram<'a>(data: Ref<'a>) -> Result<(Ipv4Repr, &'a [u8])> {
     if len < 20 {
         return Err(Error);
     }
-    let ip_packet = Ipv4Packet::new_checked(data)?;
+    // `new_checked_ref` rather than `new_checked`: the generic one carries only the buffer
+    // length out, while this one also establishes `20 <= p.hlen`, which is what makes the
+    // returned payload's `m + 20 <= r` provable.
+    let ip_packet = Ipv4Packet::new_checked_ref(data)?;
     let header_len = ip_packet.header_len() as usize;
     if header_len > len {
         return Err(Error);
@@ -600,6 +610,14 @@ impl<'a> Repr<'a> {
     /// `checked_len` rather than `check_len`: the same test, but its `Ok` arm names what the
     /// accessors below need -- the buffer's length, and that it reaches the end of the fixed
     /// header.
+    // `p.buffer.len <= 65535`: every payload this returns is a window into `packet`, and the
+    // variants bound theirs so `Repr`'s own `blen <= 65535` holds. The packet is an IPv4
+    // payload, whose extent is the sixteen-bit `total_len`, so the bound holds wherever this is
+    // called -- and where it is called from outside the crate, it is the caller's to discharge.
+    #[flux_rs::sig(
+        fn(&Packet<Ref>[@p], &ChecksumCapabilities) -> Result<Repr>
+        requires p.buffer.len <= 65535
+    )]
     pub fn parse_ref(
         packet: &Packet<Ref<'a>>,
         checksum_caps: &ChecksumCapabilities,

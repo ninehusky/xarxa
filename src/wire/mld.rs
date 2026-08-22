@@ -641,9 +641,13 @@ pub(crate) fn records_len(records: &[AddressRecordRepr]) -> usize {
 // Smallest variant is Report/ReportRecordReprs at `field::NR_MCAST_RCRDS.end` == 8. Flux checks
 // this against the `variant` indices below; `Icmpv6Repr`'s `4 <= blen` invariant rests on it.
 #[flux_rs::invariant(8 <= blen)]
+// See `icmpv4::Repr`: an MLD message is emitted inside an ICMPv6 packet, inside an IPv6 packet
+// whose length field is sixteen bits. This is what lets `Icmpv6Repr`'s own `blen <= 65535`
+// hold through its `Mld` variant.
+#[flux_rs::invariant(blen <= 65535)]
 #[flux_rs::refined_by(blen: int)]
 pub enum Repr<'a> {
-    #[flux_rs::variant({u16, Ipv6Address, bool, u8{v: v < 8}, u8, u16, &[u8][@m]} -> Repr[28 + m])]
+    #[flux_rs::variant({u16, Ipv6Address, bool, u8{v: v < 8}, u8, u16, {&[u8][@m] | m <= 65507}} -> Repr[28 + m])]
     Query {
         max_resp_code: u16,
         mcast_addr: Ipv6Address,
@@ -653,17 +657,23 @@ pub enum Repr<'a> {
         num_srcs: u16,
         data: &'a [u8],
     },
-    #[flux_rs::variant({u16, &[u8][@m]} -> Repr[8 + m])]
+    #[flux_rs::variant({u16, {&[u8][@m] | m <= 65527}} -> Repr[8 + m])]
     Report {
         nr_mcast_addr_rcrds: u16,
         data: &'a [u8],
     },
-    #[flux_rs::variant((&[AddressRecordRepr][@k]) -> Repr[8 + 20 * k])]
+    #[flux_rs::variant(({&[AddressRecordRepr][@k] | k <= 3276}) -> Repr[8 + 20 * k])]
     ReportRecordReprs(&'a [AddressRecordRepr<'a>]),
 }
 
 impl<'a> Repr<'a> {
     /// Parse an MLDv2 packet and return a high-level representation.
+    ///
+    /// `p.buffer.len <= 65535`: the payload each variant keeps is a window into `packet`, and
+    /// they carry the bound that keeps `Repr`'s own `blen <= 65535` true. The packet is an
+    /// ICMPv6 payload, so it holds wherever this is called in-crate; from outside it is the
+    /// caller's to discharge.
+    #[flux_rs::sig(fn(&Packet<Ref>[@p]) -> Result<Repr> requires p.buffer.len <= 65535)]
     pub fn parse(packet: &Packet<Ref<'a>>) -> Result<Repr<'a>> {
         // `checked_len` rather than `check_len`: the same test, but its `Ok` arm names the
         // buffer's length, which is what `payload` opens its window against.

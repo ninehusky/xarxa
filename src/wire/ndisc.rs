@@ -329,8 +329,9 @@ flux_rs::defs! {
 #[flux_rs::refined_by(present: bool, dlen: int)]
 // `RedirectedHeader`'s own invariant bounds its data length, but that constrains the *struct*,
 // not this enum's index; without restating it `dlen` is unconstrained wherever a `Repr` is
-// destructured, and `Repr`'s `8 <= blen` cannot be proved.
-#[flux_rs::invariant(0 <= dlen)]
+// destructured, and `Repr`'s `8 <= blen` cannot be proved. The upper half is what carries
+// `blen <= 65535` the same way.
+#[flux_rs::invariant(0 <= dlen && dlen <= 65424)]
 pub enum MaybeRedirected<'a> {
     #[flux_rs::variant(MaybeRedirected[false, 0])]
     Absent,
@@ -388,6 +389,10 @@ const fn opt_addr_len(lladdr: MaybeAddr) -> usize {
 // Smallest variant is RouterSolicit at `field::UNUSED.end` == 8. Flux checks this against the
 // `variant` indices below; `Icmpv6Repr`'s own `4 <= blen` invariant rests on it.
 #[flux_rs::invariant(8 <= blen)]
+// See `icmpv4::Repr`: an NDISC message is emitted inside an ICMPv6 packet, inside an IPv6
+// packet whose length field is sixteen bits. This is what lets `Icmpv6Repr`'s own
+// `blen <= 65535` hold through its `Ndisc` variant.
+#[flux_rs::invariant(blen <= 65535)]
 #[flux_rs::refined_by(blen: int)]
 pub enum Repr<'a> {
     #[flux_rs::variant({MaybeAddr[@l]} -> Repr[8 + nd_opt_addr(l.present, l.len)])]
