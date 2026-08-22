@@ -100,15 +100,18 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the Querier's Robustness Variable.
     #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    // `u8{v: v < 8}` because the field is the low three bits, which the mask below makes true.
+    // It is what `Repr::Query`'s variant claims, and through it what `Repr::emit` hands back to
+    // `set_qrv`, whose `value < 8` is otherwise unprovable from an unindexed field read.
     #[flux_rs::sig(
-        fn(&Packet<T>[@p]) -> u8
+        fn(&Packet<T>[@p]) -> u8{v: v < 8}
         requires 25 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
     )]
     #[flux_rs::no_panic]
     #[inline]
     pub fn qrv(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[field::SQRV] & 0x7
+        data[field::SQRV] % 8
     }
 
     /// Return the Querier's Query Interval Code.
@@ -640,7 +643,7 @@ pub(crate) fn records_len(records: &[AddressRecordRepr]) -> usize {
 #[flux_rs::invariant(8 <= blen)]
 #[flux_rs::refined_by(blen: int)]
 pub enum Repr<'a> {
-    #[flux_rs::variant({u16, Ipv6Address, bool, u8, u8, u16, &[u8][@m]} -> Repr[28 + m])]
+    #[flux_rs::variant({u16, Ipv6Address, bool, u8{v: v < 8}, u8, u16, &[u8][@m]} -> Repr[28 + m])]
     Query {
         max_resp_code: u16,
         mcast_addr: Ipv6Address,
