@@ -1345,7 +1345,14 @@ impl Control {
 }
 
 /// A high-level representation of a Transmission Control Protocol packet.
+//
+// Indexed by the payload's length, and nothing else. That is enough to give `buffer_len` a
+// ceiling as well as its floor, which is what `IpRepr::new` and `set_payload_len` need against
+// `Ipv4Repr`/`Ipv6Repr`'s `plen <= 65535`. There is no invariant, so the index is derived at
+// every construction site rather than owed -- the 492 struct literals across the crate are
+// untouched.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[flux_rs::refined_by(plen: int)]
 pub struct Repr<'a> {
     pub src_port: u16,
     pub dst_port: u16,
@@ -1358,6 +1365,7 @@ pub struct Repr<'a> {
     pub sack_permitted: bool,
     pub sack_ranges: SackRanges,
     pub timestamp: Option<TcpTimestampRepr>,
+    #[flux_rs::field(&[u8][plen])]
     pub payload: &'a [u8],
 }
 
@@ -1596,7 +1604,7 @@ impl<'a> Repr<'a> {
     /// `byte_len` rather than `.len()` so the sum carries the `isize::MAX` ceiling; without it
     /// `check_overflow = "lazy"` models the addition as wrapping and the floor is lost.
     #[flux_rs::trusted(no, reason = "floor on the emitted packet length")]
-    #[flux_rs::sig(fn(&Self) -> usize{v: 20 <= v})]
+    #[flux_rs::sig(fn(&Self[@r]) -> usize{v: 20 <= v && v <= 68 + r.plen})]
     pub fn buffer_len(&self) -> usize {
         self.header_len() + crate::flux_util::byte_len(self.payload)
     }
@@ -1748,6 +1756,11 @@ pub(crate) struct SizedRepr<'a> {
 
 impl<'a> SizedRepr<'a> {
     /// Measure `repr` and keep the two together.
+    ///
+    /// The result's `blen` is carried out against the repr's payload length, which is what lets
+    /// a caller holding a short payload -- `Socket::reply` builds one with `payload: &[]` --
+    /// discharge `IpRepr::new`'s and `set_payload_len`'s `plen <= 65535`.
+    #[flux_rs::sig(fn(Repr[@r]) -> SizedRepr{s: 20 <= s.blen && s.blen <= 68 + r.plen})]
     pub(crate) fn new(repr: Repr<'a>) -> Self {
         let blen = repr.buffer_len();
         Self { repr, blen }
