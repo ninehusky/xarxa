@@ -440,8 +440,8 @@ impl<'a> Socket<'a> {
                         net_trace!("raw: sent ipv6 packet with wrong ip protocol, dropping.");
                         return Ok(());
                     }
-                    let packet = Ipv6Packet::new_unchecked(&*packet.into_inner());
-                    let ipv6_repr = match Ipv6Repr::parse(&packet) {
+                    let packet = Ipv6Packet::new_unchecked(Ref::new(&*packet.into_inner()));
+                    let ipv6_repr = match Ipv6Repr::parse_ref(&packet) {
                         Ok(x) => x,
                         Err(_) => {
                             net_trace!("raw: malformed ipv6 packet in queue, dropping.");

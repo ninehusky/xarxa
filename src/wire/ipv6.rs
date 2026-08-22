@@ -657,23 +657,6 @@ impl<T: AsRef<[u8]>> Packet<T> {
 }
 
 impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
-    /// Return a pointer to the payload.
-    //
-    // Left bounds-checked. The buffer here is `&'a T`, so the length index has to come from
-    // core's blanket `impl<T, U> AsRef<U> for &T`, which carries no associated refinement
-    // (`as_ref_reft` is missing), and the window's end is a property of the buffer's contents
-    // besides. The provable twin is on `Packet<Ref<'a>>` below; this one is still here because
-    // `socket::raw` and `iface::interface::ipv6` hold their packets at `Packet<&[u8]>`.
-    //
-    // The window is read out here rather than through `total_len`: that accessor's `requires`
-    // is stated over `as_ref_reft`, which is what this self type cannot phrase, so calling it
-    // would replace an unproven bound with an unstatable one.
-    #[inline]
-    pub fn payload(&self) -> &'a [u8] {
-        let data = self.buffer.as_ref();
-        let total = 40 + read_u16_at(data, 4) as usize; // field::DST_ADDR.end, field::LENGTH
-        &data[40..total]
-    }
 }
 
 impl<'a> Packet<Ref<'a>> {
@@ -1000,9 +983,11 @@ impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
         f: &mut fmt::Formatter,
         indent: &mut PrettyIndent,
     ) -> fmt::Result {
-        let (ip_repr, payload) = match Packet::new_checked(buffer) {
+        // Over `Ref`: the accessors below are provable only at that self type, and the
+        // `&'a T` twin of `payload` no longer exists.
+        let (ip_repr, payload) = match Packet::new_checked_ref(Ref::new(buffer.as_ref())) {
             Err(err) => return write!(f, "{indent}({err})"),
-            Ok(ip_packet) => match Repr::parse(&ip_packet) {
+            Ok(ip_packet) => match Repr::parse_ref(&ip_packet) {
                 Err(_) => return Ok(()),
                 Ok(ip_repr) => {
                     write!(f, "{indent}{ip_repr}")?;
@@ -1390,7 +1375,7 @@ pub(crate) mod test {
 
     #[test]
     fn test_packet_deconstruction() {
-        let packet = Packet::new_unchecked(&REPR_PACKET_BYTES[..]);
+        let packet = Packet::new_unchecked(Ref::new(&REPR_PACKET_BYTES[..]));
         assert_eq!(packet.check_len(), Ok(()));
         assert_eq!(packet.version(), 6);
         assert_eq!(packet.traffic_class(), 0);
@@ -1446,7 +1431,7 @@ pub(crate) mod test {
         bytes.push(0);
 
         assert_eq!(
-            Packet::new_unchecked(&bytes).payload().len(),
+            Packet::new_unchecked(Ref::new(&bytes)).payload().len(),
             REPR_PAYLOAD_BYTES.len()
         );
         assert_eq!(
@@ -1466,8 +1451,8 @@ pub(crate) mod test {
 
     #[test]
     fn test_repr_parse_valid() {
-        let packet = Packet::new_unchecked(&REPR_PACKET_BYTES[..]);
-        let repr = Repr::parse(&packet).unwrap();
+        let packet = Packet::new_unchecked(Ref::new(&REPR_PACKET_BYTES[..]));
+        let repr = Repr::parse_ref(&packet).unwrap();
         assert_eq!(repr, packet_repr());
     }
 

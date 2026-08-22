@@ -1,8 +1,8 @@
 use super::*;
 
 fn parse_ipv6(data: &[u8]) -> crate::wire::Result<Packet<'_>> {
-    let ipv6_header = Ipv6Packet::new_checked(data)?;
-    let ipv6 = Ipv6Repr::parse(&ipv6_header)?;
+    let ipv6_header = Ipv6Packet::new_checked_ref(Ref::new(data))?;
+    let ipv6 = Ipv6Repr::parse_ref(&ipv6_header)?;
 
     match ipv6.next_header {
         IpProtocol::HopByHop => todo!(),
@@ -917,8 +917,8 @@ fn test_router_advertisement(#[case] medium: Medium) {
 
     for ipv6_packet in transmitted.into_iter() {
         let buf = ipv6_packet.into_inner();
-        let ipv6_packet = Ipv6Packet::new_unchecked(buf.as_slice());
-        let ipv6_repr = Ipv6Repr::parse(&ipv6_packet).unwrap();
+        let ipv6_packet = Ipv6Packet::new_unchecked(Ref::new(buf.as_slice()));
+        let ipv6_repr = Ipv6Repr::parse_ref(&ipv6_packet).unwrap();
         if ipv6_repr.dst_addr == IPV6_LINK_LOCAL_ALL_MLDV2_ROUTERS {
             continue; // Skip MLD reports
         }
@@ -1579,9 +1579,9 @@ fn test_join_ipv6_multicast_group(#[case] medium: Medium) {
     let checksum_caps = &caps.checksum;
     for (&group_addr, ipv6_packet) in groups.iter().zip(reports) {
         let buf = ipv6_packet.into_inner();
-        let ipv6_packet = Ipv6Packet::new_unchecked(buf.as_slice());
+        let ipv6_packet = Ipv6Packet::new_unchecked(Ref::new(buf.as_slice()));
 
-        let _ipv6_repr = Ipv6Repr::parse(&ipv6_packet).unwrap();
+        let _ipv6_repr = Ipv6Repr::parse_ref(&ipv6_packet).unwrap();
         let ip_payload = ipv6_packet.payload();
 
         // The first 2 octets of this payload hold the next-header indicator and the
@@ -1757,9 +1757,9 @@ fn test_handle_valid_multicast_query(#[case] medium: Medium) {
     let checksum_caps = &caps.checksum;
     for ((_mcast_query, _address, results), ipv6_packet) in queries.iter().zip(reports) {
         let buf = ipv6_packet.into_inner();
-        let ipv6_packet = Ipv6Packet::new_unchecked(buf.as_slice());
+        let ipv6_packet = Ipv6Packet::new_unchecked(Ref::new(buf.as_slice()));
 
-        let ipv6_repr = Ipv6Repr::parse(&ipv6_packet).unwrap();
+        let ipv6_repr = Ipv6Repr::parse_ref(&ipv6_packet).unwrap();
         let ip_payload = ipv6_packet.payload();
         assert_eq!(ipv6_repr.dst_addr, IPV6_LINK_LOCAL_ALL_MLDV2_ROUTERS);
 

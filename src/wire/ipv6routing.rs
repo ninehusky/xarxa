@@ -2,7 +2,7 @@ use super::{Error, Result};
 use core::fmt;
 
 use crate::wire::Ipv6Address as Address;
-use crate::wire::{sub, write_octets16_at};
+use crate::wire::{Ref, sub, write_octets16_at};
 
 enum_with_unknown! {
     /// IPv6 Extension Routing Header Routing Type
@@ -160,6 +160,23 @@ impl<T: AsRef<[u8]>> Header<T> {
         let header = Self::new_unchecked(buffer);
         header.check_len()?;
         Ok(header)
+    }
+
+    /// [`check_len`](Self::check_len), carrying out the one bound that does not depend on the
+    /// routing type.
+    ///
+    /// The per-type bounds it also establishes -- 22 octets for Type2, 6 for Rpl -- cannot come
+    /// out this way: they are conditioned on `routing_type()`, which is a property of the
+    /// buffer's *contents*, so carrying them would need a ghost field anchoring the type the way
+    /// `ipv4` anchors `hlen`. Until then the accessors under those arms are owed.
+    #[flux_rs::trusted(no, reason = "carries the buffer length through the Result")]
+    #[flux_rs::sig(
+        fn(&Header<T>[@h])
+            -> Result<usize{v: v == <T as AsRef<[u8]>>::as_ref_reft(h.buffer) && 2 <= v}>
+    )]
+    fn checked_len(&self) -> Result<usize> {
+        self.check_len()?;
+        Ok(self.buffer.as_ref().len())
     }
 
     /// Ensure that no accessor method will panic if called.
@@ -454,9 +471,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     }
 }
 
-impl<T: AsRef<[u8]> + ?Sized> fmt::Display for Header<&T> {
+impl fmt::Display for Header<Ref<'_>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match Repr::parse(self) {
+        match Repr::parse_ref(self) {
             Ok(repr) => write!(f, "{repr}"),
             Err(err) => {
                 write!(f, "IPv6 Routing ({err})")?;
@@ -503,11 +520,13 @@ pub enum Repr<'a> {
 
 impl<'a> Repr<'a> {
     /// Parse an IPv6 Routing Header and return a high-level representation.
-    pub fn parse<T>(header: &'a Header<&'a T>) -> Result<Repr<'a>>
-    where
-        T: AsRef<[u8]> + ?Sized,
-    {
-        header.check_len()?;
+    ///
+    /// There is no generic `parse` over `&T`: a reference in type-parameter position has the
+    /// unit sort, so nothing about the buffer's extent is statable there and none of the reads
+    /// below would be provable -- the body was not being refinement-checked at all. Callers
+    /// build a [`Ref`] instead.
+    pub fn parse_ref(header: &'a Header<Ref<'a>>) -> Result<Repr<'a>> {
+        header.checked_len()?;
         match header.routing_type() {
             Type::Type2 => Ok(Repr::Type2 {
                 segments_left: header.segments_left(),
@@ -714,16 +733,16 @@ mod test {
 
     #[test]
     fn test_repr_parse_valid() {
-        let header = Header::new_checked(&BYTES_TYPE2[..]).unwrap();
-        let repr = Repr::parse(&header).unwrap();
+        let header = Header::new_checked(Ref::new(&BYTES_TYPE2[..])).unwrap();
+        let repr = Repr::parse_ref(&header).unwrap();
         assert_eq!(repr, REPR_TYPE2);
 
-        let header = Header::new_checked(&BYTES_SRH_FULL[..]).unwrap();
-        let repr = Repr::parse(&header).unwrap();
+        let header = Header::new_checked(Ref::new(&BYTES_SRH_FULL[..])).unwrap();
+        let repr = Repr::parse_ref(&header).unwrap();
         assert_eq!(repr, REPR_SRH_FULL);
 
-        let header = Header::new_checked(&BYTES_SRH_ELIDED[..]).unwrap();
-        let repr = Repr::parse(&header).unwrap();
+        let header = Header::new_checked(Ref::new(&BYTES_SRH_ELIDED[..])).unwrap();
+        let repr = Repr::parse_ref(&header).unwrap();
         assert_eq!(repr, REPR_SRH_ELIDED);
     }
 
