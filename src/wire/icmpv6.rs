@@ -1065,7 +1065,10 @@ impl<'a> Repr<'a> {
         fn(self: &Self[@r], &Ipv6Address, &Ipv6Address,
            packet: &strg Packet<T>[@p], &ChecksumCapabilities)
         requires <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
-              && r.blen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+              // Equality on the mutable side: the `Mld` arm forwards to `mld::Repr::emit`,
+              // whose two `copy_from_slice` calls panic unless the payload window is exactly
+              // the data's length.
+              && r.blen == <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
         ensures packet: Packet<T>
     )]
     pub fn emit<T>(
