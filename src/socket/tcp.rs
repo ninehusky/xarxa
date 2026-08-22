@@ -953,7 +953,7 @@ impl<'a> Socket<'a> {
         T: Into<IpListenEndpoint>,
     {
         let local_endpoint = local_endpoint.into();
-        if local_endpoint.port == 0 {
+        if local_endpoint.port() == 0 {
             return Err(ListenError::Unaddressable);
         }
 
@@ -1618,11 +1618,11 @@ impl<'a> Socket<'a> {
                 && repr.src_port == tuple.remote.port
         } else {
             // We're listening, reject packets not matching the listen endpoint.
-            let addr_ok = match self.listen_endpoint.addr {
+            let addr_ok = match self.listen_endpoint.addr() {
                 Some(addr) => ip_repr.dst_addr() == addr,
                 None => true,
             };
-            addr_ok && repr.dst_port != 0 && repr.dst_port == self.listen_endpoint.port
+            addr_ok && repr.dst_port != 0 && repr.dst_port == self.listen_endpoint.port()
         }
     }
 
@@ -1933,7 +1933,7 @@ impl<'a> Socket<'a> {
             // Here we need to additionally check `listen_endpoint`, because we want to make sure
             // that SYN-RECEIVED was actually converted from the LISTEN state (another possible
             // reason is TCP simultaneous open).
-            (State::SynReceived, TcpControl::Rst) if self.listen_endpoint.port != 0 => {
+            (State::SynReceived, TcpControl::Rst) if self.listen_endpoint.port() != 0 => {
                 tcp_trace!("received RST");
                 self.tuple = None;
                 self.set_state(State::Listen);

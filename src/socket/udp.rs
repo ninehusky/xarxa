@@ -369,7 +369,7 @@ impl<'a> Socket<'a> {
     /// Check whether the socket is open.
     #[inline]
     pub fn is_open(&self) -> bool {
-        self.endpoint.port != 0
+        self.endpoint.port() != 0
     }
 
     /// Check whether the transmit buffer is full.
@@ -610,11 +610,11 @@ impl<'a> Socket<'a> {
     }
 
     pub(crate) fn accepts(&self, cx: &mut Context, ip_repr: &IpRepr, repr: &UdpRepr) -> bool {
-        if self.endpoint.port != repr.dst_port {
+        if self.endpoint.port() != repr.dst_port {
             return false;
         }
-        if self.endpoint.addr.is_some()
-            && self.endpoint.addr != Some(ip_repr.dst_addr())
+        if self.endpoint.has_addr()
+            && self.endpoint.addr() != Some(ip_repr.dst_addr())
             && !cx.is_broadcast(&ip_repr.dst_addr())
             && !ip_repr.dst_addr().is_multicast()
         {

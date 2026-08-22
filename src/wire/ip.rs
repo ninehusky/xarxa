@@ -498,7 +498,7 @@ impl ListenEndpoint {
 
     /// Query whether the endpoint has a specified address and port.
     pub const fn is_specified(&self) -> bool {
-        self.addr.is_some() && self.port != 0
+        self.has_addr() && self.port() != 0
     }
 
     /// Whether an address was given. `-1` is the index reserved for "none".
@@ -522,6 +522,21 @@ impl ListenEndpoint {
         self.addr
     }
 
+    /// The endpoint listening on `addr`, indexed by that address's version.
+    ///
+    /// The `From` impls below build a `ListenEndpoint` from a definite address, which needs the
+    /// hidden fields; going through here keeps them checked and leaves the trusted surface on
+    /// this type, where the rest of it already is. `-1` is reserved for "no address", so an
+    /// endpoint built from an `Address` never carries it.
+    #[flux_rs::trusted(reason = "opaque: constructs an endpoint with a definite address")]
+    #[flux_rs::sig(fn(addr: Address[@t], port: u16) -> ListenEndpoint[t])]
+    pub const fn with_addr(addr: Address, port: u16) -> ListenEndpoint {
+        ListenEndpoint {
+            addr: Some(addr),
+            port,
+        }
+    }
+
     /// The listening port. Carries no version information.
     #[flux_rs::trusted(reason = "opaque: projects the hidden port field")]
     #[flux_rs::sig(fn(&ListenEndpoint) -> u16)]
@@ -533,39 +548,30 @@ impl ListenEndpoint {
 #[cfg(all(feature = "proto-ipv4", feature = "proto-ipv6"))]
 impl From<::core::net::SocketAddr> for ListenEndpoint {
     fn from(x: ::core::net::SocketAddr) -> ListenEndpoint {
-        ListenEndpoint {
-            addr: Some(x.ip().into()),
-            port: x.port(),
-        }
+        ListenEndpoint::with_addr(x.ip().into(), x.port())
     }
 }
 
 #[cfg(feature = "proto-ipv4")]
 impl From<::core::net::SocketAddrV4> for ListenEndpoint {
     fn from(x: ::core::net::SocketAddrV4) -> ListenEndpoint {
-        ListenEndpoint {
-            addr: Some((*x.ip()).into()),
-            port: x.port(),
-        }
+        ListenEndpoint::with_addr((*x.ip()).into(), x.port())
     }
 }
 
 #[cfg(feature = "proto-ipv6")]
 impl From<::core::net::SocketAddrV6> for ListenEndpoint {
     fn from(x: ::core::net::SocketAddrV6) -> ListenEndpoint {
-        ListenEndpoint {
-            addr: Some((*x.ip()).into()),
-            port: x.port(),
-        }
+        ListenEndpoint::with_addr((*x.ip()).into(), x.port())
     }
 }
 
 impl fmt::Display for ListenEndpoint {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if let Some(addr) = self.addr {
-            write!(f, "{}:{}", addr, self.port)
+        if let Some(addr) = self.addr() {
+            write!(f, "{}:{}", addr, self.port())
         } else {
-            write!(f, "*:{}", self.port)
+            write!(f, "*:{}", self.port())
         }
     }
 }
@@ -601,10 +607,7 @@ impl From<Endpoint> for ListenEndpoint {
 
 impl<T: Into<Address>> From<(T, u16)> for ListenEndpoint {
     fn from((addr, port): (T, u16)) -> ListenEndpoint {
-        ListenEndpoint {
-            addr: Some(addr.into()),
-            port,
-        }
+        ListenEndpoint::with_addr(addr.into(), port)
     }
 }
 
