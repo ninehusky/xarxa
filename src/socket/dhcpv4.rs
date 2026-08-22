@@ -358,10 +358,14 @@ impl<'a> Socket<'a> {
         );
 
         // Copy over the payload into the receive packet buffer.
+        // The length test is spelled out rather than taken from `get_mut(..n)`: that returns
+        // an `Option` whose payload carries no refinement here, so the window's length was
+        // unknown and `copy_from_slice`'s equal-length precondition unprovable. Same test
+        // (`get_mut` is `None` exactly when the range runs past the slice), same bytes.
         if let Some(buffer) = self.receive_packet_buffer.as_mut()
-            && let Some(buffer) = buffer.get_mut(..payload.len())
+            && payload.len() <= buffer.len()
         {
-            buffer.copy_from_slice(payload);
+            crate::wire::copy_window_at(buffer, 0, payload.len(), payload);
         }
 
         match (&mut self.state, dhcp_repr.message_type) {
