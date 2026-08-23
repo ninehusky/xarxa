@@ -834,30 +834,44 @@ impl<'a> fmt::Display for Repr<'a> {
     }
 }
 
-use crate::wire::pretty_print::{PrettyIndent, PrettyPrint};
+use crate::wire::pretty_print::{buffer_ref, PrettyIndent, PrettyPrint};
 
 impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
-    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     fn pretty_print(
         buffer: &dyn AsRef<[u8]>,
         f: &mut fmt::Formatter,
         indent: &mut PrettyIndent,
     ) -> fmt::Result {
-        // `Ref::new` off the `dyn`'s own `as_ref`: the trait signature is fixed, so the buffer
-        // arrives with no length index, and `Ref` is where it acquires one.
-        let packet = match Packet::new_checked_ref(Ref::new(buffer.as_ref())) {
+        // `buffer_ref` off the `dyn`: the trait signature is fixed, so the buffer arrives with
+        // no length index, and `Ref` is where it acquires one.
+        let packet = match Packet::new_checked_ref(buffer_ref(buffer)) {
             Err(err) => return write!(f, "{indent}({err})"),
             Ok(packet) => packet,
         };
-        write!(f, "{indent}{packet}")?;
+        // `new_checked_ref` carries `8 <= b.len` out, which is what both accessors require.
+        let msg_type = packet.msg_type();
+        let data = packet.data();
+        pretty_print_data(&packet, msg_type, data, f, indent)
+    }
+}
 
-        match packet.msg_type() {
-            Message::DstUnreachable | Message::TimeExceeded => {
-                indent.increase(f)?;
-                super::Ipv4Packet::<&[u8]>::pretty_print(&packet.data(), f, indent)
-            }
-            _ => Ok(()),
+/// Write `packet`'s header line, then hand `data` to the IPv4 printer if `msg_type` carries one.
+#[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
+fn pretty_print_data(
+    packet: &Packet<Ref<'_>>,
+    msg_type: Message,
+    data: &[u8],
+    f: &mut fmt::Formatter,
+    indent: &mut PrettyIndent,
+) -> fmt::Result {
+    write!(f, "{indent}{packet}")?;
+
+    match msg_type {
+        Message::DstUnreachable | Message::TimeExceeded => {
+            indent.increase(f)?;
+            super::Ipv4Packet::<&[u8]>::pretty_print(&data, f, indent)
         }
+        _ => Ok(()),
     }
 }
 

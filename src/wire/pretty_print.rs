@@ -43,6 +43,19 @@ assert_eq!(
 use core::fmt;
 use core::marker::PhantomData;
 
+use crate::wire::Ref;
+
+/// The bytes behind a `PrettyPrint` buffer, as a [`Ref`].
+///
+/// The trait's buffer arrives as `&dyn AsRef<[u8]>`, whose `Self` has the unit sort, so
+/// `as_ref_reft` is applied to a `Tuple0` and fixpoint cannot sort-check the `Ref[n]` it
+/// produces. Nothing is lost by trusting it: a `dyn`'s length is not statable either way, and
+/// the callers all recover a length from `new_checked_ref` on the `Ref` this returns.
+#[flux_rs::trusted(yes, reason = "ICE fixpoint_encoding.rs:800: `The sort Tuple0 is not numeric` on `<dyn AsRef<[u8]>>::as_ref`. See ICE-INBOX.md.")]
+pub(crate) fn buffer_ref(buffer: &dyn AsRef<[u8]>) -> Ref<'_> {
+    Ref::new(buffer.as_ref())
+}
+
 /// Indentation state.
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
