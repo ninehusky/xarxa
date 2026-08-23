@@ -907,7 +907,7 @@ impl Repr {
     #[flux_rs::trusted(no, reason = "carries the per-variant header length to `emit`'s callers")]
     #[flux_rs::sig(
         fn(self: &Self[@r]) -> usize{n:
-            (r.ip_ty == 0 => n == 20) && (r.ip_ty == 1 => n == 40)
+            20 <= n && (r.ip_ty == 0 => n == 20) && (r.ip_ty == 1 => n == 40)
         }
     )]
     #[flux_rs::no_panic]

@@ -874,14 +874,29 @@ impl InterfaceInner {
     }
 
     #[allow(unused)] // unused depending on which sockets are enabled
-    // ASSUMED, NOT PROVEN: that the IP MTU leaves room for an IPv4 header. This is the device
-    // capability boundary -- `caps.max_transmission_unit` comes from the driver, is not refined,
-    // and on Ethernet this body subtracts 14 from it without a guard, so a device reporting an
-    // MTU under 14 would underflow here too. RFC 791 puts the IPv4 minimum at 576, so 20 is far
-    // inside any conforming device's range. Stating it here is what lets
-    // `max_ipv4_fragment_size` require `h <= m` instead of silently assuming it.
+    // ASSUMED, NOT PROVEN, and the floor is the RFC's rather than a convenient one. This is
+    // the device capability boundary: `caps.max_transmission_unit` comes from the driver, is not
+    // refined, and on Ethernet this body subtracts 14 from it without a guard, so a device
+    // reporting an MTU under 14 already underflows here.
+    //
+    // 576 is RFC 791's IPv4 minimum reassembly buffer, and every IPv6 link is required to carry
+    // 1280 (RFC 8200 section 5), so any conforming device clears it. It has to be at least 40,
+    // because `socket::tcp`'s `dispatch` computes `ip_mtu() - ip_repr.header_len()` and an IPv6
+    // header is 40 octets -- with the old floor of 20 that subtraction could underflow, and
+    // flux was right to refuse it. Raising the floor is what makes the segment-length chain
+    // hold; it is a *stronger assumption about the driver*, not a proof, which is why it is
+    // spelled out here.
+    //
+    // 65535 is the other end, and unlike the floor it is a property of IP rather than of the
+    // device: `Ipv4Repr` and `Ipv6Repr` both write the payload length into a 16-bit field, so a
+    // larger MTU cannot be described by a conforming packet at all.
+    //
+    // Both bounds are in the signature rather than a body precisely so they read as
+    // assumptions. The floor lets `max_ipv4_fragment_size` require `h <= m` instead of silently
+    // assuming it; the pair is what carries a segment's payload length to
+    // `IpRepr::set_payload_len` in `socket::tcp`.
     #[flux_rs::trusted(yes, reason = "device MTU is unrefined; RFC 791 minimum is 576")]
-    #[flux_rs::sig(fn(&Self) -> usize{v: 20 <= v})]
+    #[flux_rs::sig(fn(&Self) -> usize{v: 576 <= v && v <= 65535})]
     #[flux_rs::no_panic]
     pub(crate) fn ip_mtu(&self) -> usize {
         match self.medium {

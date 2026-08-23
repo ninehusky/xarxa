@@ -5,7 +5,7 @@
 use core::fmt::Display;
 #[cfg(feature = "async")]
 use core::task::Waker;
-use core::{fmt, mem};
+use core::{cmp, fmt, mem};
 
 #[cfg(feature = "async")]
 use crate::socket::WakerRegistration;
@@ -2714,12 +2714,19 @@ impl<'a> Socket<'a> {
                 // 2. MSS the remote is willing to accept, probably determined by their MTU
                 // 3. MSS we can send, determined by our MTU.
                 // 4. Our congestion window
-                let options_len = repr.header_len() - TCP_HEADER_LEN;
-                let local_mss = cx.ip_mtu() - ip_repr.header_len() - TCP_HEADER_LEN;
-                let effective_mss = local_mss.min(self.remote_mss).saturating_sub(options_len);
+                // `20` rather than `TCP_HEADER_LEN`: the const is `field::URGENT.end`, and
+                // flux cannot see through the `Range` it comes from. Same value.
+                //
+                // `cmp::min` rather than the `Ord::min` method: identical function, and the
+                // free one is the one with a spec. Without it the segment length is
+                // unconstrained, and `IpRepr::set_payload_len`'s ceiling has nothing to rest on.
+                let options_len = repr.header_len() - 20;
+                let local_mss = cx.ip_mtu() - ip_repr.header_len() - 20;
+                let effective_mss =
+                    cmp::min(local_mss, self.remote_mss).saturating_sub(options_len);
 
                 let offset = if self.pending_fast_retransmit {
-                    let size = effective_mss.min(self.tx_buffer.len());
+                    let size = cmp::min(effective_mss, self.tx_buffer.len());
                     repr.seq_number = self.local_seq_no;
                     repr.payload = self.tx_buffer.get_allocated(0, size);
 
@@ -2759,9 +2766,9 @@ impl<'a> Socket<'a> {
                         // an empty segment elicits no reply, so capping the probe to a
                         // zero length would stall the connection if a window update from
                         // the remote got lost.
-                        win_limit.min(effective_mss)
+                        cmp::min(win_limit, effective_mss)
                     } else {
-                        win_limit.min(effective_mss).min(self.cwnd_remaining())
+                        cmp::min(cmp::min(win_limit, effective_mss), self.cwnd_remaining())
                     };
 
                     let offset = self.flight_size();
@@ -2980,7 +2987,7 @@ fn trace_flags(control: TcpControl, ack_number: Option<TcpSeqNumber>, payload_is
 /// truncates. Same family as the UDP defect at `udp.rs:557`.
 #[flux_rs::trusted(no, reason = "makes and checks Socket::dispatch's payload-length contract")]
 #[flux_rs::sig(
-    fn(&mut Context, IpRepr, SizedTcpRepr, F) -> R
+    fn(&mut Context, IpRepr, {SizedTcpRepr[@t] | t.blen <= 65535}, F) -> R
     where
         F: FnOnce(&mut Context, (IpRepr[@i], SizedTcpRepr{t: i.plen == t.blen})) -> R
 )]
