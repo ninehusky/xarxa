@@ -1632,11 +1632,12 @@ impl<'a> Socket<'a> {
         }
     }
 
-    // FIXME(flux): fixpoint chokes on this function; it's ~700 lines of code that
-    // seem far larger than any other function in the crate. fixpoint grows
-    // to the point where it runs out of memory and never terminates -- we're
-    // trusting for now until we can refactor into smaller functions.
-    #[flux_rs::trusted(reason = "Fixpoint chokes (see above documentation)")]
+    // Three obligations in this body are owed rather than met, and they are real: the slice
+    // range at the reassembly copy below, and the two ring-buffer preconditions at
+    // `dequeue_allocated` and `enqueue_unallocated`. They are reported because the body is
+    // checked. Trusting it to silence them would erase all three along with the other ~700
+    // lines, which is what this annotation is here to say is not happening.
+    #[flux_rs::trusted(no, reason = "checked; three obligations below are owed, not erased")]
     pub(crate) fn process(
         &mut self,
         cx: &mut Context,
@@ -2518,14 +2519,14 @@ impl<'a> Socket<'a> {
         )
     }
 
-    // FIXME(flux): same fixpoint blowup as `process` above (~680KB constraint, fixpoint
-    // reaches 7GB RSS without terminating). Trusted until it is split up.
+    // The `Fn` bound is not assumed. It is *created and consumed* inside [`set_len_and_emit`],
+    // which is checked: this body never sets a payload length and never calls `emit`, it only
+    // hands both to the shim. Nothing about the length crosses a trusted boundary.
     //
-    // The `Fn` bound is not assumed on that account. It is *created and consumed* inside
-    // [`set_len_and_emit`], which is checked: this body never sets a payload length and never
-    // calls `emit`, it only hands both to the shim. Nothing about the length crosses the
-    // trusted boundary.
-    #[flux_rs::trusted]
+    // The body checks in full, tail included, only because the flag tracing lives in
+    // [`trace_flags`]. Put those twelve lines back inline and fixpoint runs past 9 GB RSS here
+    // without terminating.
+    #[flux_rs::trusted(no, reason = "checked; see trace_flags for why it terminates")]
     #[flux_rs::sig(
         fn(self: &mut Socket, &mut Context, F) -> Result<(), E>
         where F: FnOnce(&mut Context, (IpRepr[@ipr], SizedTcpRepr{t: ipr.plen == t.blen}))
@@ -2810,18 +2811,7 @@ impl<'a> Socket<'a> {
                 self.flight_size()
             );
         }
-        if repr.control != TcpControl::None || repr.payload.is_empty() {
-            let flags = match (repr.control, repr.ack_number) {
-                (TcpControl::Syn, None) => "SYN",
-                (TcpControl::Syn, Some(_)) => "SYN|ACK",
-                (TcpControl::Fin, Some(_)) => "FIN|ACK",
-                (TcpControl::Rst, Some(_)) => "RST|ACK",
-                (TcpControl::Psh, Some(_)) => "PSH|ACK",
-                (TcpControl::None, Some(_)) => "ACK",
-                _ => "<unreachable>",
-            };
-            tcp_trace!("sending {}", flags);
-        }
+        trace_flags(repr.control, repr.ack_number, repr.payload.is_empty());
 
         if repr.control == TcpControl::Syn {
             // Fill the MSS option. See RFC 6691 for an explanation of this calculation.
@@ -2946,6 +2936,30 @@ impl<'a> Socket<'a> {
                 .min()
                 .unwrap_or(&PollAt::Ingress)
         }
+    }
+}
+
+/// Traces the flag combination a segment carries.
+///
+/// A free function rather than twelve lines inside [`Socket::dispatch`], for the verifier's
+/// sake. The `match` on the `(control, ack_number)` pair splits the path seven ways in the
+/// middle of a 372-line body, and every split multiplies what follows it: with these lines
+/// inline, fixpoint passes 9 GB RSS on `dispatch` without terminating, and with them out it
+/// finishes in seconds. Hoisting them costs no proof -- the arms pick a `&'static str` for a
+/// log line, so no refinement crosses the boundary in either direction, and this body is
+/// checked like any other.
+fn trace_flags(control: TcpControl, ack_number: Option<TcpSeqNumber>, payload_is_empty: bool) {
+    if control != TcpControl::None || payload_is_empty {
+        let flags = match (control, ack_number) {
+            (TcpControl::Syn, None) => "SYN",
+            (TcpControl::Syn, Some(_)) => "SYN|ACK",
+            (TcpControl::Fin, Some(_)) => "FIN|ACK",
+            (TcpControl::Rst, Some(_)) => "RST|ACK",
+            (TcpControl::Psh, Some(_)) => "PSH|ACK",
+            (TcpControl::None, Some(_)) => "ACK",
+            _ => "<unreachable>",
+        };
+        tcp_trace!("sending {}", flags);
     }
 }
 
