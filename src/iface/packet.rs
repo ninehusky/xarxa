@@ -252,21 +252,21 @@ impl<'p> Packet<'p> {
             IpPayload::Dhcpv4(udp_repr, dhcp_repr) => {
                 // Routed through `Buf` so `udp::Repr::emit`'s buffer bound binds something: the
                 // window is `8 + dhcp_repr.buffer_len()` wide, which is this variant's index.
+                // `emit`'s two halves rather than `emit` itself. `emit` hands its closure a
+                // bare `&mut [u8]`, which loses its length on the way in (flux-rs/flux#1714),
+                // so `DhcpRepr::emit`'s 240-octet bound has nothing to argue from; a refined
+                // bound on the `FnOnce` parameter does not infer here either. Called in
+                // sequence, the window is an ordinary `Buf` whose length `emit_ports_and_len`
+                // has just pinned, and `SizedDhcpRepr`'s floor discharges the bound.
                 let mut udp_packet = UdpPacket::new_unchecked(Buf::new(payload));
-                udp_repr.emit(
+                udp_repr.emit_ports_and_len(&mut udp_packet, dhcp_repr.buffer_len());
+                dhcp_repr
+                    .emit(&mut DhcpPacket::new_unchecked(udp_packet.payload_buf()))
+                    .unwrap();
+                udp_repr.emit_checksum(
                     &mut udp_packet,
                     &_ip_repr.src_addr(),
                     &_ip_repr.dst_addr(),
-                    dhcp_repr.buffer_len(),
-                    // Routed through `Buf` for the same reason as the arms above: a bare
-                    // `&mut [u8]` instantiates core's blanket `AsMut for &mut T`, which carries
-                    // no associated refinement, and `DhcpRepr::emit`'s buffer bound would then
-                    // abort this closure rather than pose anything.
-                    |buf| {
-                        dhcp_repr
-                            .emit(&mut DhcpPacket::new_unchecked(Buf::new(buf)))
-                            .unwrap()
-                    },
                     &caps.checksum,
                 )
             }
