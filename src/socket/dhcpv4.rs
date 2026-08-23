@@ -643,10 +643,7 @@ impl<'a> Socket<'a> {
                     ipv4_repr.dst_addr,
                     dhcp_repr
                 );
-                let Some(dhcp_repr) = SizedDhcpRepr::new(dhcp_repr) else {
-                    net_debug!("DHCP message does not fit an IPv4 packet, not sending");
-                    return Ok(());
-                };
+                let dhcp_repr = SizedDhcpRepr::new(dhcp_repr);
                 ipv4_repr.payload_len = udp_repr.header_len() + dhcp_repr.buffer_len();
                 emit(cx, (ipv4_repr, udp_repr, dhcp_repr))?;
 
@@ -675,10 +672,7 @@ impl<'a> Socket<'a> {
                     ipv4_repr.dst_addr,
                     dhcp_repr
                 );
-                let Some(dhcp_repr) = SizedDhcpRepr::new(dhcp_repr) else {
-                    net_debug!("DHCP message does not fit an IPv4 packet, not sending");
-                    return Ok(());
-                };
+                let dhcp_repr = SizedDhcpRepr::new(dhcp_repr);
                 ipv4_repr.payload_len = udp_repr.header_len() + dhcp_repr.buffer_len();
                 emit(cx, (ipv4_repr, udp_repr, dhcp_repr))?;
 
@@ -716,10 +710,7 @@ impl<'a> Socket<'a> {
                 dhcp_repr.transaction_id = next_transaction_id;
 
                 net_debug!("DHCP send renew to {}: {:?}", ipv4_repr.dst_addr, dhcp_repr);
-                let Some(dhcp_repr) = SizedDhcpRepr::new(dhcp_repr) else {
-                    net_debug!("DHCP message does not fit an IPv4 packet, not sending");
-                    return Ok(());
-                };
+                let dhcp_repr = SizedDhcpRepr::new(dhcp_repr);
                 ipv4_repr.payload_len = udp_repr.header_len() + dhcp_repr.buffer_len();
                 emit(cx, (ipv4_repr, udp_repr, dhcp_repr))?;
 

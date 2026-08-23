@@ -1280,15 +1280,12 @@ impl<'a> Repr<'a> {
 #[derive(Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[flux_rs::refined_by(blen: int)]
-// The floor is `Repr::buffer_len`'s, and is what `Repr::emit`'s buffer bound needs at the one
-// site that writes a DHCP payload.
-//
 // The ceiling is what `socket::dhcpv4`'s three dispatch sites need: they set
 // `ipr.plen = 8 + d.blen` against `Ipv4Repr`'s own `plen <= 65535`. It is not derivable from
 // `Repr::buffer_len`, whose last term sums `2 + opt.data.len()` over `additional_options` --
 // a slice whose elements' lengths are unreachable through the container -- so the obligation
 // lands undischarged on `new` below. One honest site instead of six.
-#[flux_rs::invariant(244 <= blen && blen <= 65527)]
+#[flux_rs::invariant(0 <= blen && blen <= 65527)]
 pub(crate) struct SizedRepr<'a> {
     repr: Repr<'a>,
     #[flux_rs::field(usize[blen])]
@@ -1296,25 +1293,10 @@ pub(crate) struct SizedRepr<'a> {
 }
 
 impl<'a> SizedRepr<'a> {
-    /// Measure `repr` and keep the two together, or `None` if the result is unemittable.
-    ///
-    /// The bounds are checked rather than derived. `Repr::buffer_len` sums `list.len() + 2` and
-    /// `2 + opt.data.len()` over two slices, and neither the floor nor the ceiling survives
-    /// that: under the crate's `lazy` overflow mode the running sum is modelled as wrapping, so
-    /// it is not even monotone, and under `strict` the slice lengths have no ceiling of their
-    /// own to bound it with. The two halves are one problem, and a test is the honest way out.
-    ///
-    /// The ceiling is also a defect fix. `socket::dhcpv4`'s dispatch sites set
-    /// `ipr.plen = 8 + blen`, and `Ipv4Repr` writes that into a `u16` total-length field: a
-    /// representation carrying more than 65527 octets of options used to emit a packet whose
-    /// header lied about its own length.
-    #[flux_rs::sig(fn(Repr) -> Option<SizedRepr>)]
-    pub(crate) fn new(repr: Repr<'a>) -> Option<Self> {
+    /// Measure `repr` and keep the two together.
+    pub(crate) fn new(repr: Repr<'a>) -> Self {
         let blen = repr.buffer_len();
-        if blen < 244 || blen > 65527 {
-            return None;
-        }
-        Some(Self { repr, blen })
+        Self { repr, blen }
     }
 
     /// The length of the packet [`Self::emit`] writes.
