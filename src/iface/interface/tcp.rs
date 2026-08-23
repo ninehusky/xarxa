@@ -3,7 +3,17 @@ use super::*;
 use crate::socket::tcp::Socket;
 
 impl InterfaceInner {
+    /// `ip_payload.len() <= 65535`: the payload is an IP packet's, and both families bound
+    /// their extent with a sixteen-bit length field -- IPv4's `total_len`, IPv6's
+    /// `payload_len`. `Repr::parse_ref` needs it because `verify_checksum` hands the whole
+    /// buffer to `checksum::data`, whose own precondition it is. Nothing is assumed here: the
+    /// two callers read the bound off the header they already parsed. Same shape as
+    /// `process_icmpv4`.
     #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
+    #[flux_rs::sig(
+        fn(&mut Self, &mut SocketSet, bool, IpRepr, &[u8][@n]) -> Option<Packet>
+        requires n <= 65535
+    )]
     pub(crate) fn process_tcp<'frame>(
         &mut self,
         sockets: &mut SocketSet,
@@ -22,8 +32,10 @@ impl InterfaceInner {
             return None;
         }
 
-        let tcp_packet = check!(TcpPacket::new_checked(ip_payload));
-        let tcp_repr = check!(TcpRepr::parse(
+        // Through `Ref` and `parse_ref`, as `process_icmpv4` does: the generic `parse` is over
+        // a `&T` self type whose unit sort cannot state `parse_ref`'s buffer bound.
+        let tcp_packet = check!(TcpPacket::new_checked_ref(Ref::new(ip_payload)));
+        let tcp_repr = check!(TcpRepr::parse_ref(
             &tcp_packet,
             &src_addr,
             &dst_addr,

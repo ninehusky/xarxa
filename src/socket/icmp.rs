@@ -463,8 +463,11 @@ impl<'a> Socket<'a> {
                 &Icmpv4Repr::DstUnreachable { data, header, .. }
                 | &Icmpv4Repr::TimeExceeded { data, header, .. },
             ) if endpoint.addr.is_none() || endpoint.addr == Some(ip_repr.dst_addr.into()) => {
-                let packet = TcpPacket::new_unchecked(data);
-                match TcpRepr::parse(
+                // Through `Ref`: the generic `parse` is gone, because at a `&T` self type the
+                // buffer's extent is not statable and `parse_ref`'s 65535 bound could never be
+                // discharged there.
+                let packet = TcpPacket::new_unchecked(Ref::new(data));
+                match TcpRepr::parse_ref(
                     &packet,
                     &header.src_addr.into(),
                     &header.dst_addr.into(),
@@ -525,8 +528,11 @@ impl<'a> Socket<'a> {
                 &Icmpv6Repr::DstUnreachable { data, header, .. }
                 | &Icmpv6Repr::TimeExceeded { data, header, .. },
             ) if endpoint.addr.is_none() || endpoint.addr == Some(ip_repr.dst_addr.into()) => {
-                let packet = TcpPacket::new_unchecked(data);
-                match TcpRepr::parse(
+                // Through `Ref`: the generic `parse` is gone, because at a `&T` self type the
+                // buffer's extent is not statable and `parse_ref`'s 65535 bound could never be
+                // discharged there.
+                let packet = TcpPacket::new_unchecked(Ref::new(data));
+                match TcpRepr::parse_ref(
                     &packet,
                     &header.src_addr.into(),
                     &header.dst_addr.into(),

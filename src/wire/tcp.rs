@@ -1581,35 +1581,23 @@ fn header_len_of(
 }
 
 impl<'a> Repr<'a> {
-    /// Parse a Transmission Control Protocol packet and return a high-level representation.
+    /// [`parse_ref`](Self::parse_ref) has no generic twin.
     ///
-    /// A reference in type-parameter position has the unit sort, so no bound on `T`'s buffer is
-    /// statable here and neither window below would be provable. The body therefore lives on
-    /// [`parse_ref`](Self::parse_ref), over a buffer whose length is nameable; this re-wraps the
-    /// same bytes and forwards, which repeats no work the old body did not do.
-    pub fn parse<T>(
-        packet: &Packet<&'a T>,
-        src_addr: &IpAddress,
-        dst_addr: &IpAddress,
-        checksum_caps: &ChecksumCapabilities,
-    ) -> Result<Repr<'a>>
-    where
-        T: AsRef<[u8]> + ?Sized,
-    {
-        Repr::parse_ref(
-            &Packet::new_unchecked(Ref::new(packet.buffer.as_ref())),
-            src_addr,
-            dst_addr,
-            checksum_caps,
-        )
-    }
-
+    /// There used to be a `parse` over `&Packet<&'a T>` that re-wrapped the bytes and forwarded.
+    /// It cannot survive `parse_ref`'s `p.buffer.len <= 65535`: a reference in type-parameter
+    /// position has the unit sort, so core's blanket `AsRef for &T` carries no associated
+    /// refinement and the bound is not statable at that self type -- by the caller either. The
+    /// three call sites build a [`Ref`] instead, which is where the length lives.
     /// [`parse`](Self::parse) over a [`Ref`], where the buffer's length is in the refinement.
     ///
     /// `checked_len` rather than `check_len`: the same test, but its `Ok` arm names the three
     /// facts the accessors below need -- the buffer's length, that the header-length field is
     /// not a lie about it, and that the options window does not run backwards -- and over `Ref`
     /// they are statable.
+    #[flux_rs::sig(
+        fn(&Packet<Ref>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities) -> Result<Repr>
+        requires p.buffer.len <= 65535
+    )]
     pub fn parse_ref(
         packet: &Packet<Ref<'a>>,
         src_addr: &IpAddress,
@@ -2288,8 +2276,8 @@ mod test {
     #[test]
     #[cfg(feature = "proto-ipv4")]
     fn test_parse() {
-        let packet = Packet::new_unchecked(&SYN_PACKET_BYTES[..]);
-        let repr = Repr::parse(
+        let packet = Packet::new_unchecked(Ref::new(&SYN_PACKET_BYTES[..]));
+        let repr = Repr::parse_ref(
             &packet,
             &SRC_ADDR.into(),
             &DST_ADDR.into(),
