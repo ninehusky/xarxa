@@ -32,6 +32,21 @@ flux_rs::defs! {
             + (if a || b || c { sack_len(a, b, c) + 2 } else { 0 })
     }
 
+    // A 32-bit two's-complement wrap, as `wrapping_add`/`wrapping_sub` compute it. Correct for
+    // any `x` that overshoots by at most one period -- which covers the difference of two
+    // `i32`s, and the sum of an `i32` with a `usize` the caller has already bounded by
+    // `i32::MAX`. Written as a conditional rather than with `%` so fixpoint sees linear
+    // arithmetic. Same device as flux-core's `wrap_once`.
+    fn wrap32(x: int) -> int {
+        if x > 2147483647 {
+            x - 4294967296
+        } else if x < -2147483648 {
+            x + 4294967296
+        } else {
+            x
+        }
+    }
+
     // The header length the options imply: the fixed 20 octets plus the options, rounded up to
     // a multiple of four. Written out rather than as `20 + opt_len(..)` because a `defn` does
     // not unfold inside another `defn`; `header_len_of`'s signature is what keeps the two in
@@ -83,13 +98,24 @@ flux_rs::defs! {
 /// A sequence number is a monotonically advancing integer modulo 2<sup>32</sup>.
 /// Sequence numbers do not have a discontiguity when compared pairwise across a signed overflow.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
-pub struct SeqNumber(pub i32);
+#[flux_rs::refined_by(v: int)]
+pub struct SeqNumber(#[flux_rs::field(i32[v])] pub i32);
 
 impl SeqNumber {
+    #[flux_rs::sig(
+        fn(SeqNumber[@a], SeqNumber[@b])
+            -> SeqNumber[if wrap32(a.v - b.v) > 0 { a.v } else { b.v }]
+    )]
+    #[flux_rs::no_panic]
     pub fn max(self, rhs: Self) -> Self {
         if self > rhs { self } else { rhs }
     }
 
+    #[flux_rs::sig(
+        fn(SeqNumber[@a], SeqNumber[@b])
+            -> SeqNumber[if wrap32(a.v - b.v) < 0 { a.v } else { b.v }]
+    )]
+    #[flux_rs::no_panic]
     pub fn min(self, rhs: Self) -> Self {
         if self < rhs { self } else { rhs }
     }
@@ -111,6 +137,12 @@ impl defmt::Format for SeqNumber {
 impl ops::Add<usize> for SeqNumber {
     type Output = SeqNumber;
 
+    // No signature, though one is *writable*: with `flux_util::usize_to_i32` discharging the
+    // cast from the guard below, `-> SeqNumber[wrap32(a.v + n)]` is provable in principle. It
+    // is left off because fixpoint does not terminate on it -- a full check ran past 30 minutes
+    // against a ~7 minute norm and was killed. The `wrap32` case split multiplied across this
+    // body's callers is the suspect. Retry when the sequence-number work needs it, and bisect
+    // the blowup rather than assuming the whole body is at fault.
     fn add(self, rhs: usize) -> SeqNumber {
         if rhs > i32::MAX as usize {
             panic!("attempt to add to sequence number with unsigned overflow")
@@ -122,6 +154,7 @@ impl ops::Add<usize> for SeqNumber {
 impl ops::Sub<usize> for SeqNumber {
     type Output = SeqNumber;
 
+    // No signature, for the same reason as `Add<usize>` above.
     fn sub(self, rhs: usize) -> SeqNumber {
         if rhs > i32::MAX as usize {
             panic!("attempt to subtract to sequence number with unsigned overflow")
@@ -139,6 +172,9 @@ impl ops::AddAssign<usize> for SeqNumber {
 impl ops::Sub for SeqNumber {
     type Output = usize;
 
+    // The underflow panic stays, and is the reason the result is nameable at all: past it, the
+    // wrapped difference is known non-negative, so it is the distance between the two numbers.
+    #[flux_rs::sig(fn(SeqNumber[@a], SeqNumber[@b]) -> usize[wrap32(a.v - b.v)])]
     fn sub(self, rhs: SeqNumber) -> usize {
         let result = self.0.wrapping_sub(rhs.0);
         if result < 0 {
@@ -148,9 +184,43 @@ impl ops::Sub for SeqNumber {
     }
 }
 
+/// The order is **modular, and therefore not transitive**: with `a = 0`, `b = 2^30` and
+/// `c = 2^31` one has `a < b`, `b < c` and `c < a`. It is the standard TCP comparison and it is
+/// correct exactly while every pair under comparison is within 2^31 of the other, which is what
+/// a well-formed window guarantees.
+///
+/// The four provided methods are overridden rather than left to `partial_cmp` so each can carry
+/// a signature. `partial_cmp` itself cannot: it returns `Option<Ordering>`, and neither
+/// `core::Option` nor `Ordering` can be refined here. The bodies compute what `partial_cmp`
+/// computes, so nothing about the comparison changes -- this is where the fact becomes visible,
+/// not where it becomes true.
 impl cmp::PartialOrd for SeqNumber {
     fn partial_cmp(&self, other: &SeqNumber) -> Option<cmp::Ordering> {
         self.0.wrapping_sub(other.0).partial_cmp(&0)
+    }
+
+    #[flux_rs::sig(fn(&SeqNumber[@a], &SeqNumber[@b]) -> bool[wrap32(a.v - b.v) < 0])]
+    #[flux_rs::no_panic]
+    fn lt(&self, other: &SeqNumber) -> bool {
+        self.0.wrapping_sub(other.0) < 0
+    }
+
+    #[flux_rs::sig(fn(&SeqNumber[@a], &SeqNumber[@b]) -> bool[wrap32(a.v - b.v) <= 0])]
+    #[flux_rs::no_panic]
+    fn le(&self, other: &SeqNumber) -> bool {
+        self.0.wrapping_sub(other.0) <= 0
+    }
+
+    #[flux_rs::sig(fn(&SeqNumber[@a], &SeqNumber[@b]) -> bool[wrap32(a.v - b.v) > 0])]
+    #[flux_rs::no_panic]
+    fn gt(&self, other: &SeqNumber) -> bool {
+        self.0.wrapping_sub(other.0) > 0
+    }
+
+    #[flux_rs::sig(fn(&SeqNumber[@a], &SeqNumber[@b]) -> bool[wrap32(a.v - b.v) >= 0])]
+    #[flux_rs::no_panic]
+    fn ge(&self, other: &SeqNumber) -> bool {
+        self.0.wrapping_sub(other.0) >= 0
     }
 }
 
