@@ -138,7 +138,7 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     /// Shorthand for `(self.read + idx) % self.capacity()` with an
     /// additional check to ensure that the capacity is not zero.
     #[flux_rs::trusted(no, reason = "the zero-guarded %; its value backs every storage index")]
-    #[flux_rs::sig(fn(&Self[@r], usize[@idx]) -> usize[idx_of(r.cap, r.read_at, idx)])]
+    #[flux_rs::sig(fn(&Self[@r], usize[@idx]) -> usize[idx_of(r.cap, r.read_at, idx)] requires idx <= 9223372036854775807)]
     #[flux_rs::no_panic]
     fn get_idx(&self, idx: usize) -> usize {
         let len = self.capacity();
@@ -152,7 +152,7 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     /// Shorthand for `(self.read + idx) % self.capacity()` with no
     /// additional checks to ensure the capacity is not zero.
     #[flux_rs::trusted(no, reason = "panic site: rem-by-zero at `% self.capacity()`")]
-    #[flux_rs::sig(fn(&Self[@r], usize[@idx]) -> usize[idx_of(r.cap, r.read_at, idx)] requires r.cap > 0)]
+    #[flux_rs::sig(fn(&Self[@r], usize[@idx]) -> usize[idx_of(r.cap, r.read_at, idx)] requires r.cap > 0 && idx <= 9223372036854775807)]
     #[flux_rs::no_panic]
     fn get_idx_unchecked(&self, idx: usize) -> usize {
         (self.read_at + idx) % self.capacity()
@@ -392,11 +392,12 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     #[flux_rs::trusted(no, reason = "panic site: storage[start_at..start_at + size]")]
     #[flux_rs::sig(fn(&mut Self[@r], usize, usize[@size]) -> &mut [T]{n: n <= size})]
     pub fn get_unallocated(&mut self, offset: usize, size: usize) -> &mut [T] {
-        let start_at = self.get_idx(self.length + offset);
-        // We can't access past the end of unallocated data.
+        // We can't access past the end of unallocated data. This guard also bounds
+        // `self.length + offset` by the capacity, so the sum below cannot overflow.
         if offset > self.window() {
             return &mut [];
         }
+        let start_at = self.get_idx(self.length + offset);
         // We can't enqueue more than there is free space.
         let clamped_window = self.window() - offset;
         // `let`-shadow rather than reassigning `size`: assigning through a `mut` binding
@@ -451,11 +452,12 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     #[flux_rs::trusted(no, reason = "panic site: storage[start_at..start_at + size]")]
     #[flux_rs::sig(fn(&Self[@r], usize, usize[@size]) -> &[T]{n: n <= size})]
     pub fn get_allocated(&self, offset: usize, size: usize) -> &[T] {
-        let start_at = self.get_idx(offset);
-        // We can't read past the end of the allocated data.
+        // We can't read past the end of the allocated data. This guard also bounds
+        // `offset` by the capacity, so the sum inside `get_idx` cannot overflow.
         if offset > self.length {
             return &mut [];
         }
+        let start_at = self.get_idx(offset);
         // We can't read more than we have allocated.
         let clamped_length = self.length - offset;
         // `let`-shadow rather than reassigning `size`: assigning through a `mut` binding
