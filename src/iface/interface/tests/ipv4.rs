@@ -975,11 +975,11 @@ fn test_raw_socket_no_reply_tcp(#[case] medium: Medium) {
         seq_number: TcpSeqNumber(1),
         ack_number: None,
         window_len: 10,
-        window_scale: None,
-        max_seg_size: None,
+        window_scale: Maybe::Nothing,
+        max_seg_size: Maybe::Nothing,
         sack_permitted: false,
         sack_ranges: SackRanges::none(),
-        timestamp: None,
+        timestamp: Maybe::Nothing,
         payload: &PAYLOAD,
     };
     let ipv4_repr = Ipv4Repr {

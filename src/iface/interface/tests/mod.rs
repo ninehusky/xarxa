@@ -167,11 +167,11 @@ pub fn tcp_not_accepted() {
         seq_number: TcpSeqNumber(-10001),
         ack_number: None,
         window_len: 256,
-        window_scale: None,
-        max_seg_size: None,
+        window_scale: Maybe::Nothing,
+        max_seg_size: Maybe::Nothing,
         sack_permitted: false,
         sack_ranges: SackRanges::none(),
-        timestamp: None,
+        timestamp: Maybe::Nothing,
         payload: &[],
     };
 
@@ -212,11 +212,11 @@ pub fn tcp_not_accepted() {
                 seq_number: TcpSeqNumber(0),
                 ack_number: Some(TcpSeqNumber(-10000)),
                 window_len: 0,
-                window_scale: None,
-                max_seg_size: None,
+                window_scale: Maybe::Nothing,
+                max_seg_size: Maybe::Nothing,
                 sack_permitted: false,
                 sack_ranges: SackRanges::none(),
-                timestamp: None,
+                timestamp: Maybe::Nothing,
                 payload: &[],
             }))
         ))
@@ -267,11 +267,11 @@ pub fn tcp_listen_drops_unspecified_src() {
         seq_number: TcpSeqNumber(0),
         ack_number: None,
         window_len: 1024,
-        window_scale: None,
-        max_seg_size: Some(1460),
+        window_scale: Maybe::Nothing,
+        max_seg_size: Maybe::Just(1460),
         sack_permitted: false,
         sack_ranges: SackRanges::none(),
-        timestamp: None,
+        timestamp: Maybe::Nothing,
         payload: &[],
     };
 

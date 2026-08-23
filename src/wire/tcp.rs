@@ -31,6 +31,51 @@ flux_rs::defs! {
             + (if ts { 10 } else { 0 })
             + (if a || b || c { sack_len(a, b, c) + 2 } else { 0 })
     }
+
+    // The header length the options imply: the fixed 20 octets plus the options, rounded up to
+    // a multiple of four. Written out rather than as `20 + opt_len(..)` because a `defn` does
+    // not unfold inside another `defn`; `header_len_of`'s signature is what keeps the two in
+    // lockstep, and the shape below is the body's, so the round up matches statement for
+    // statement.
+    fn hdr_len(mss: bool, ws: bool, sp: bool, ts: bool, a: bool, b: bool, c: bool) -> int {
+        if (20
+            + (if mss { 4 } else { 0 })
+            + (if ws { 3 } else { 0 })
+            + (if sp { 2 } else { 0 })
+            + (if ts { 10 } else { 0 })
+            + (if a || b || c {
+                (if a { 8 } else { 0 }) + (if b { 8 } else { 0 }) + (if c { 8 } else { 0 }) + 2
+            } else {
+                0
+            })) % 4 == 0 { (20
+            + (if mss { 4 } else { 0 })
+            + (if ws { 3 } else { 0 })
+            + (if sp { 2 } else { 0 })
+            + (if ts { 10 } else { 0 })
+            + (if a || b || c {
+                (if a { 8 } else { 0 }) + (if b { 8 } else { 0 }) + (if c { 8 } else { 0 }) + 2
+            } else {
+                0
+            })) } else { (20
+            + (if mss { 4 } else { 0 })
+            + (if ws { 3 } else { 0 })
+            + (if sp { 2 } else { 0 })
+            + (if ts { 10 } else { 0 })
+            + (if a || b || c {
+                (if a { 8 } else { 0 }) + (if b { 8 } else { 0 }) + (if c { 8 } else { 0 }) + 2
+            } else {
+                0
+            })) + 4 - (20
+            + (if mss { 4 } else { 0 })
+            + (if ws { 3 } else { 0 })
+            + (if sp { 2 } else { 0 })
+            + (if ts { 10 } else { 0 })
+            + (if a || b || c {
+                (if a { 8 } else { 0 }) + (if b { 8 } else { 0 }) + (if c { 8 } else { 0 }) + 2
+            } else {
+                0
+            })) % 4 }
+    }
 }
 
 /// A TCP sequence number.
@@ -975,6 +1020,23 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         let data = self.buffer.as_mut();
         &mut data[header_len..]
     }
+
+    /// Return the payload window, carrying its length in the refinement.
+    ///
+    /// Same relation to [`payload_mut`](Self::payload_mut) as
+    /// [`options_buf`](Self::options_buf) has to `options_mut`, and for the same reason: a
+    /// returned `&mut` loses its length index (flux-rs/flux#1714), so the payload copy in
+    /// [`Repr::emit`] cannot be shown to fit the window it is copied into.
+    #[flux_rs::trusted(yes, reason = "returned &mut loses its length; see flux-rs/flux#1714")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p]) -> Buf[<T as AsMut<[u8]>>::as_mut_reft(p.buffer) - p.hlen]
+        requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer) && p.hlen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
+    #[inline]
+    pub fn payload_buf(&mut self) -> Buf<'_> {
+        Buf::new(self.payload_mut())
+    }
 }
 
 #[flux_rs::assoc(
@@ -1352,7 +1414,7 @@ impl Control {
 // every construction site rather than owed -- the 492 struct literals across the crate are
 // untouched.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-#[flux_rs::refined_by(plen: int)]
+#[flux_rs::refined_by(plen: int, mss: bool, ws: bool, sp: bool, ts: bool, a: bool, b: bool, c: bool)]
 pub struct Repr<'a> {
     pub src_port: u16,
     pub dst_port: u16,
@@ -1360,11 +1422,16 @@ pub struct Repr<'a> {
     pub seq_number: SeqNumber,
     pub ack_number: Option<SeqNumber>,
     pub window_len: u16,
-    pub window_scale: Option<u8>,
-    pub max_seg_size: Option<u16>,
+    #[flux_rs::field(Maybe<u8>[ws])]
+    pub window_scale: Maybe<u8>,
+    #[flux_rs::field(Maybe<u16>[mss])]
+    pub max_seg_size: Maybe<u16>,
+    #[flux_rs::field(bool[sp])]
     pub sack_permitted: bool,
+    #[flux_rs::field(SackRanges[a, b, c])]
     pub sack_ranges: SackRanges,
-    pub timestamp: Option<TcpTimestampRepr>,
+    #[flux_rs::field(Maybe<TcpTimestampRepr>[ts])]
+    pub timestamp: Maybe<TcpTimestampRepr>,
     #[flux_rs::field(&[u8][plen])]
     pub payload: &'a [u8],
 }
@@ -1408,8 +1475,7 @@ impl TcpTimestampRepr {
 #[flux_rs::sig(
     fn(mss: &Maybe<u16>[@m], ws: &Maybe<u8>[@w], sp: bool[@s], ts: &Maybe<TcpTimestampRepr>[@t],
        ranges: &SackRanges[@r])
-        -> usize{v: 20 <= v && v <= 68
-                 && 20 + opt_len(m, w, s, t, r.a, r.b, r.c) <= (v / 4) * 4}
+        -> usize{v: v == hdr_len(m, w, s, t, r.a, r.b, r.c) && 20 <= v && v <= 68}
 )]
 #[flux_rs::no_panic]
 fn header_len_of(
@@ -1511,18 +1577,18 @@ impl<'a> Repr<'a> {
         // however, most deployed systems (e.g. Linux) are *not* standards-compliant, and would
         // cut the byte at the urgent pointer from the stream.
 
-        let mut max_seg_size = None;
-        let mut window_scale = None;
+        let mut max_seg_size = Maybe::Nothing;
+        let mut window_scale = Maybe::Nothing;
         let mut options = packet.options();
         let mut sack_permitted = false;
         let mut sack_ranges = SackRanges::none();
-        let mut timestamp = None;
+        let mut timestamp = Maybe::Nothing;
         while !options.is_empty() {
             let (next_options, option) = TcpOption::parse(options)?;
             match option {
                 TcpOption::EndOfList => break,
                 TcpOption::NoOperation => (),
-                TcpOption::MaxSegmentSize(value) => max_seg_size = Some(value),
+                TcpOption::MaxSegmentSize(value) => max_seg_size = Maybe::Just(value),
                 TcpOption::WindowScale(value) => {
                     // RFC 1323: Thus, the shift count must be limited to 14 (which allows windows
                     // of 2**30 = 1 Gigabyte). If a Window Scale option is received with a shift.cnt
@@ -1536,15 +1602,15 @@ impl<'a> Repr<'a> {
                             dst_addr,
                             packet.dst_port()
                         );
-                        Some(14)
+                        Maybe::Just(14)
                     } else {
-                        Some(value)
+                        Maybe::Just(value)
                     };
                 }
                 TcpOption::SackPermitted => sack_permitted = true,
                 TcpOption::SackRange(slice) => sack_ranges = slice,
                 TcpOption::TimeStamp { tsval, tsecr } => {
-                    timestamp = Some(TcpTimestampRepr::new(tsval, tsecr));
+                    timestamp = Maybe::Just(TcpTimestampRepr::new(tsval, tsecr));
                 }
                 _ => (),
             }
@@ -1583,14 +1649,14 @@ impl<'a> Repr<'a> {
     /// multiple of four. The ceiling is what keeps the sum in `buffer_len` from reading as a
     /// wrapping one, and what bounds the `as u8` cast in `emit`.
     #[flux_rs::trusted(no, reason = "bounds the emitted header length")]
-    #[flux_rs::sig(fn(&Self) -> usize{v: 20 <= v && v <= 68})]
+    #[flux_rs::sig(fn(&Self[@r]) -> usize{v: v == hdr_len(r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c) && 20 <= v && v <= 68})]
     #[flux_rs::no_panic]
     pub fn header_len(&self) -> usize {
         header_len_of(
-            &Maybe::from_option(self.max_seg_size),
-            &Maybe::from_option(self.window_scale),
+            &self.max_seg_size,
+            &self.window_scale,
             self.sack_permitted,
-            &Maybe::from_option(self.timestamp),
+            &self.timestamp,
             &self.sack_ranges,
         )
     }
@@ -1603,8 +1669,8 @@ impl<'a> Repr<'a> {
     ///
     /// `byte_len` rather than `.len()` so the sum carries the `isize::MAX` ceiling; without it
     /// `check_overflow = "lazy"` models the addition as wrapping and the floor is lost.
-    #[flux_rs::trusted(no, reason = "floor on the emitted packet length")]
-    #[flux_rs::sig(fn(&Self[@r]) -> usize{v: 20 <= v && v <= 68 + r.plen})]
+    #[flux_rs::trusted(no, reason = "the emitted packet length, exactly")]
+    #[flux_rs::sig(fn(&Self[@r]) -> usize{v: v == hdr_len(r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c) + r.plen && 20 <= v})]
     pub fn buffer_len(&self) -> usize {
         self.header_len() + crate::flux_util::byte_len(self.payload)
     }
@@ -1632,9 +1698,9 @@ impl<'a> Repr<'a> {
     // is still `&mut Packet<T>`. Same move as `ipv4::Repr::emit`.
     #[flux_rs::trusted(no, reason = "panic site: the header setters and the payload copy")]
     #[flux_rs::sig(
-        fn(&Self, packet: &strg Packet<T>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities)
-        requires 20 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
-              && 20 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+        fn(&Self[@r], packet: &strg Packet<T>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities)
+        requires hdr_len(r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c) + r.plen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+              && hdr_len(r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c) + r.plen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
               && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
         ensures packet: Packet<T>{q: q.buffer == p.buffer}
     )]
@@ -1657,9 +1723,9 @@ impl<'a> Repr<'a> {
         // computed from the first would then say nothing about the branch taken by the second,
         // and every option write would be unbounded. `header_len_of` and the block below share
         // these five locals for exactly that reason.
-        let mss = Maybe::from_option(self.max_seg_size);
-        let ws = Maybe::from_option(self.window_scale);
-        let ts = Maybe::from_option(self.timestamp);
+        let mss = self.max_seg_size;
+        let ws = self.window_scale;
+        let ts = self.timestamp;
         let sack_permitted = self.sack_permitted;
         let sack_ranges = self.sack_ranges;
         let header_len = header_len_of(&mss, &ws, sack_permitted, &ts, &sack_ranges);
@@ -1705,7 +1771,8 @@ impl<'a> Repr<'a> {
             }
         }
         packet.set_urgent_at(0);
-        packet.payload_mut()[..self.payload.len()].copy_from_slice(self.payload);
+        let mut window = packet.payload_buf();
+        window.as_mut()[..self.payload.len()].copy_from_slice(self.payload);
 
         if checksum_caps.tcp.tx() {
             packet.fill_checksum(src_addr, dst_addr)
@@ -1746,10 +1813,12 @@ impl<'a> Repr<'a> {
 /// Same device as `dhcpv4::SizedRepr`.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 // 20 is `Repr::buffer_len`'s floor, the fixed part of the TCP header.
-#[flux_rs::refined_by(blen: int, plen: int)]
+#[flux_rs::refined_by(blen: int, plen: int, mss: bool, ws: bool, sp: bool, ts: bool,
+                      a: bool, b: bool, c: bool)]
 #[flux_rs::invariant(20 <= blen)]
+#[flux_rs::invariant(blen == hdr_len(mss, ws, sp, ts, a, b, c) + plen)]
 pub(crate) struct SizedRepr<'a> {
-    #[flux_rs::field(Repr[plen])]
+    #[flux_rs::field(Repr[plen, mss, ws, sp, ts, a, b, c])]
     repr: Repr<'a>,
     #[flux_rs::field(usize[blen])]
     blen: usize,
@@ -1762,7 +1831,8 @@ impl<'a> SizedRepr<'a> {
     /// a caller holding a short payload -- `Socket::reply` builds one with `payload: &[]` --
     /// discharge `IpRepr::new`'s and `set_payload_len`'s `plen <= 65535`.
     #[flux_rs::sig(
-        fn(Repr[@r]) -> SizedRepr{s: 20 <= s.blen && s.blen <= 68 + r.plen && s.plen == r.plen}
+        fn(Repr[@r]) -> SizedRepr[hdr_len(r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c) + r.plen,
+                                  r.plen, r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c]
     )]
     pub(crate) fn new(repr: Repr<'a>) -> Self {
         let blen = repr.buffer_len();
@@ -1777,7 +1847,7 @@ impl<'a> SizedRepr<'a> {
     }
 
     /// The header length, as [`Repr::header_len`] reports it.
-    #[flux_rs::sig(fn(&Self) -> usize{v: 20 <= v && v <= 68})]
+    #[flux_rs::sig(fn(&Self[@r]) -> usize{v: v == hdr_len(r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c) && 20 <= v && v <= 68})]
     pub(crate) fn header_len(&self) -> usize {
         self.repr.header_len()
     }
@@ -1793,21 +1863,21 @@ impl<'a> SizedRepr<'a> {
     /// `&strg` so the caller keeps `blen`, as for the three setters below. None of these four
     /// fields is part of what [`Repr::buffer_len`] counts, and each postcondition is proved
     /// rather than stated -- the body writes `repr` and leaves the measured length alone.
-    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], u16) ensures self: SizedRepr[r.blen, r.plen])]
+    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], u16) ensures self: SizedRepr[r.blen, r.plen, r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c])]
     #[flux_rs::no_panic]
     pub(crate) fn set_window_len(&mut self, value: u16) {
         self.repr.window_len = value;
     }
 
     /// Set the control flag.
-    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], Control) ensures self: SizedRepr[r.blen, r.plen])]
+    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], Control) ensures self: SizedRepr[r.blen, r.plen, r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c])]
     #[flux_rs::no_panic]
     pub(crate) fn set_control(&mut self, value: Control) {
         self.repr.control = value;
     }
 
     /// Set the sequence number.
-    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], SeqNumber) ensures self: SizedRepr[r.blen, r.plen])]
+    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], SeqNumber) ensures self: SizedRepr[r.blen, r.plen, r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c])]
     #[flux_rs::no_panic]
     pub(crate) fn set_seq_number(&mut self, value: SeqNumber) {
         self.repr.seq_number = value;
@@ -1818,7 +1888,7 @@ impl<'a> SizedRepr<'a> {
     /// The sACK option is the one whose presence turns on `ack_number`, and
     /// [`Repr::header_len`] counts it either way, so this does not move the length.
     #[flux_rs::sig(
-        fn(self: &strg SizedRepr[@r], Option<SeqNumber>) ensures self: SizedRepr[r.blen, r.plen]
+        fn(self: &strg SizedRepr[@r], Option<SeqNumber>) ensures self: SizedRepr[r.blen, r.plen, r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c]
     )]
     #[flux_rs::no_panic]
     pub(crate) fn set_ack_number(&mut self, value: Option<SeqNumber>) {
@@ -1829,17 +1899,18 @@ impl<'a> SizedRepr<'a> {
     ///
     /// The payload length comes back out with it: `ack_reply` unwraps, sets the sACK slots and
     /// re-measures, and without this the re-measured `buffer_len` would have no ceiling again.
-    #[flux_rs::sig(fn(SizedRepr[@s]) -> Repr[s.plen])]
+    #[flux_rs::sig(fn(SizedRepr[@s]) -> Repr[s.plen, s.mss, s.ws, s.sp, s.ts, s.a, s.b, s.c])]
     pub(crate) fn into_repr(self) -> Repr<'a> {
         self.repr
     }
 
     /// Emit the representation into `packet`, exactly as [`Repr::emit`] would.
     #[flux_rs::sig(
-        fn(&Self, packet: &mut Packet<T>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities)
-        requires 20 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
-              && 20 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+        fn(&Self[@s], packet: &strg Packet<T>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities)
+        requires s.blen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+              && s.blen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
               && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
+        ensures packet: Packet<T>{q: q.buffer == p.buffer}
     )]
     pub(crate) fn emit<T>(
         &self,
@@ -1942,7 +2013,7 @@ impl<'a> fmt::Display for Repr<'a> {
         }
         write!(f, " win={}", self.window_len)?;
         write!(f, " len={}", self.payload.len())?;
-        if let Some(max_seg_size) = self.max_seg_size {
+        if let Maybe::Just(max_seg_size) = self.max_seg_size {
             write!(f, " mss={max_seg_size}")?;
         }
         Ok(())
@@ -1966,7 +2037,7 @@ impl<'a> defmt::Format for Repr<'a> {
         }
         defmt::write!(fmt, " win={}", self.window_len);
         defmt::write!(fmt, " len={}", self.payload.len());
-        if let Some(max_seg_size) = self.max_seg_size {
+        if let Maybe::Just(max_seg_size) = self.max_seg_size {
             defmt::write!(fmt, " mss={}", max_seg_size);
         }
     }
@@ -2134,12 +2205,12 @@ mod test {
             seq_number: SeqNumber(0x01234567),
             ack_number: None,
             window_len: 0x0123,
-            window_scale: None,
+            window_scale: Maybe::Nothing,
             control: Control::Syn,
-            max_seg_size: None,
+            max_seg_size: Maybe::Nothing,
             sack_permitted: false,
             sack_ranges: SackRanges::none(),
-            timestamp: None,
+            timestamp: Maybe::Nothing,
             payload: &PAYLOAD_BYTES,
         }
     }
@@ -2177,7 +2248,7 @@ mod test {
     #[cfg(feature = "proto-ipv4")]
     fn test_header_len_multiple_of_4() {
         let mut repr = packet_repr();
-        repr.window_scale = Some(0); // This TCP Option needs 3 bytes.
+        repr.window_scale = Maybe::Just(0); // This TCP Option needs 3 bytes.
         assert_eq!(repr.header_len() % 4, 0); // Should e.g. be 28 instead of 27.
     }
 

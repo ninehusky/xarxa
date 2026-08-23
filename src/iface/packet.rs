@@ -241,8 +241,9 @@ impl<'p> Packet<'p> {
 
                 // Routed through `Buf` for the same reason as the Icmpv4 arm above: the window
                 // is `tcp_repr.buffer_len()` wide, which is this variant's index.
+                let mut tcp_packet = TcpPacket::new_unchecked(Buf::new(payload));
                 tcp_repr.emit(
-                    &mut TcpPacket::new_unchecked(Buf::new(payload)),
+                    &mut tcp_packet,
                     &_ip_repr.src_addr(),
                     &_ip_repr.dst_addr(),
                     &caps.checksum,

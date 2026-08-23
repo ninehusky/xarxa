@@ -13,7 +13,7 @@ use crate::socket::{Context, PollAt};
 use crate::storage::{Assembler, RingBuffer};
 use crate::time::{Duration, Instant};
 use crate::wire::{
-    IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, SackBlock, SackRanges,
+    IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, Maybe, SackBlock, SackRanges,
     SizedTcpRepr,
     TCP_HEADER_LEN, TcpControl,
     TcpRepr, TcpSeqNumber, TcpTimestampGenerator, TcpTimestampRepr,
@@ -1460,11 +1460,11 @@ impl<'a> Socket<'a> {
             seq_number: TcpSeqNumber(0),
             ack_number: None,
             window_len: 0,
-            window_scale: None,
-            max_seg_size: None,
+            window_scale: Maybe::Nothing,
+            max_seg_size: Maybe::Nothing,
             sack_permitted: false,
             sack_ranges: SackRanges::none(),
-            timestamp: None,
+            timestamp: Maybe::Nothing,
             payload: &[],
         };
         let reply_repr = SizedTcpRepr::new(reply_repr);
@@ -1515,9 +1515,10 @@ impl<'a> Socket<'a> {
         // Back to a plain `Repr`: the sACK slots below are part of what `buffer_len` counts,
         // so the measurement has to be redone once they are set.
         let mut reply_repr = reply_repr.into_repr();
-        reply_repr.timestamp = repr
-            .timestamp
-            .and_then(|tcp_ts| tcp_ts.generate_reply(self.tsval_generator));
+        reply_repr.timestamp = match repr.timestamp {
+            Maybe::Just(tcp_ts) => Maybe::from_option(tcp_ts.generate_reply(self.tsval_generator)),
+            Maybe::Nothing => Maybe::Nothing,
+        };
 
         // From RFC 793:
         // [...] an empty acknowledgment segment containing the current send-sequence number
@@ -1956,7 +1957,7 @@ impl<'a> Socket<'a> {
             // SYN packets in the LISTEN state change it to SYN-RECEIVED.
             (State::Listen, TcpControl::Syn) => {
                 tcp_trace!("received SYN");
-                if let Some(max_seg_size) = repr.max_seg_size {
+                if let Maybe::Just(max_seg_size) = repr.max_seg_size {
                     // Treat a zero MSS as if the option were absent, like Linux does.
                     if max_seg_size != 0 {
                         self.remote_mss = (max_seg_size as usize).max(MIN_REMOTE_MSS);
@@ -1975,13 +1976,13 @@ impl<'a> Socket<'a> {
                 self.remote_seq_no = repr.seq_number + 1;
                 self.remote_last_seq = self.local_seq_no;
                 self.remote_has_sack = repr.sack_permitted;
-                self.remote_win_scale = repr.window_scale;
+                self.remote_win_scale = repr.window_scale.as_option();
                 // Remote doesn't support window scaling, don't do it.
                 if self.remote_win_scale.is_none() {
                     self.remote_win_shift = 0;
                 }
                 // Remote doesn't support timestamping, don't do it.
-                if repr.timestamp.is_none() {
+                if !repr.timestamp.is_present() {
                     self.tsval_generator = None;
                 }
                 self.set_state(State::SynReceived);
@@ -2010,7 +2011,7 @@ impl<'a> Socket<'a> {
                 } else {
                     tcp_trace!("received SYN");
                 }
-                if let Some(max_seg_size) = repr.max_seg_size {
+                if let Maybe::Just(max_seg_size) = repr.max_seg_size {
                     // Treat a zero MSS as if the option were absent, like Linux does.
                     if max_seg_size != 0 {
                         self.remote_mss = (max_seg_size as usize).max(MIN_REMOTE_MSS);
@@ -2024,13 +2025,13 @@ impl<'a> Socket<'a> {
                 self.remote_last_seq = self.local_seq_no + 1;
                 self.remote_last_ack = Some(repr.seq_number);
                 self.remote_has_sack = repr.sack_permitted;
-                self.remote_win_scale = repr.window_scale;
+                self.remote_win_scale = repr.window_scale.as_option();
                 // Remote doesn't support window scaling, don't do it.
                 if self.remote_win_scale.is_none() {
                     self.remote_win_shift = 0;
                 }
                 // Remote doesn't support timestamping, don't do it.
-                if repr.timestamp.is_none() {
+                if !repr.timestamp.is_present() {
                     self.tsval_generator = None;
                 }
 
@@ -2221,7 +2222,7 @@ impl<'a> Socket<'a> {
         }
 
         // update last remote tsval
-        if let Some(timestamp) = repr.timestamp {
+        if let Maybe::Just(timestamp) = repr.timestamp {
             self.last_remote_tsval = timestamp.tsval;
         }
 
@@ -2657,14 +2658,14 @@ impl<'a> Socket<'a> {
             seq_number: self.remote_last_seq,
             ack_number: Some(self.remote_seq_no + self.rx_buffer.len()),
             window_len: self.scaled_window(),
-            window_scale: None,
-            max_seg_size: None,
+            window_scale: Maybe::Nothing,
+            max_seg_size: Maybe::Nothing,
             sack_permitted: false,
             sack_ranges: SackRanges::none(),
-            timestamp: TcpTimestampRepr::generate_reply_with_tsval(
+            timestamp: Maybe::from_option(TcpTimestampRepr::generate_reply_with_tsval(
                 self.tsval_generator,
                 self.last_remote_tsval,
-            ),
+            )),
             payload: &[],
         };
 
@@ -2689,11 +2690,11 @@ impl<'a> Socket<'a> {
                 repr.window_len = u16::try_from(self.rx_buffer.window()).unwrap_or(u16::MAX);
                 if self.state == State::SynSent {
                     repr.ack_number = None;
-                    repr.window_scale = Some(self.remote_win_shift);
+                    repr.window_scale = Maybe::Just(self.remote_win_shift);
                     repr.sack_permitted = true;
                 } else {
                     repr.sack_permitted = self.remote_has_sack;
-                    repr.window_scale = self.remote_win_scale.map(|_| self.remote_win_shift);
+                    repr.window_scale = Maybe::from_option(self.remote_win_scale.map(|_| self.remote_win_shift));
                 }
             }
 
@@ -2825,7 +2826,7 @@ impl<'a> Socket<'a> {
         if repr.control == TcpControl::Syn {
             // Fill the MSS option. See RFC 6691 for an explanation of this calculation.
             let max_segment_size = cx.ip_mtu() - ip_repr.header_len() - TCP_HEADER_LEN;
-            repr.max_seg_size = Some(max_segment_size as u16);
+            repr.max_seg_size = Maybe::Just(max_segment_size as u16);
         }
 
         // Actually send the packet. If this succeeds, it means the packet is in
@@ -2990,11 +2991,12 @@ where
 /// tuple cannot carry that -- flux rejects an `@` binder in return position, so the second
 /// component has no way to name the first.
 #[derive(Debug)]
-#[flux_rs::refined_by(ip_ty: int, blen: int, plen: int)]
+#[flux_rs::refined_by(ip_ty: int, blen: int, plen: int, mss: bool, ws: bool, sp: bool, ts: bool,
+                      a: bool, b: bool, c: bool)]
 pub(crate) struct Reply<'a> {
     #[flux_rs::field(IpRepr[ip_ty, blen])]
     pub(crate) ip_repr: IpRepr,
-    #[flux_rs::field(SizedTcpRepr[blen, plen])]
+    #[flux_rs::field(SizedTcpRepr[blen, plen, mss, ws, sp, ts, a, b, c])]
     pub(crate) repr: SizedTcpRepr<'a>,
 }
 
@@ -3093,11 +3095,11 @@ mod test {
         seq_number: TcpSeqNumber(0),
         ack_number: Some(TcpSeqNumber(0)),
         window_len: 256,
-        window_scale: None,
-        max_seg_size: None,
+        window_scale: Maybe::Nothing,
+        max_seg_size: Maybe::Nothing,
         sack_permitted: false,
         sack_ranges: SackRanges::none(),
-        timestamp: None,
+        timestamp: Maybe::Nothing,
         payload: &[],
     };
     const _RECV_IP_TEMPL: IpRepr = IpReprIpvX(IpvXRepr {
@@ -3114,11 +3116,11 @@ mod test {
         seq_number: TcpSeqNumber(0),
         ack_number: Some(TcpSeqNumber(0)),
         window_len: 64,
-        window_scale: None,
-        max_seg_size: None,
+        window_scale: Maybe::Nothing,
+        max_seg_size: Maybe::Nothing,
         sack_permitted: false,
         sack_ranges: SackRanges::none(),
-        timestamp: None,
+        timestamp: Maybe::Nothing,
         payload: &[],
     };
 
@@ -3474,7 +3476,7 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: Some(REMOTE_SEQ + 1),
-                max_seg_size: Some(BASE_MSS),
+                max_seg_size: Maybe::Just(BASE_MSS),
                 ..RECV_TEMPL
             }]
         );
@@ -3497,7 +3499,7 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: Some(REMOTE_SEQ + 1),
-                max_seg_size: Some(BASE_MSS),
+                max_seg_size: Maybe::Just(BASE_MSS),
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -3530,7 +3532,7 @@ mod test {
                     control: TcpControl::Syn,
                     seq_number: REMOTE_SEQ,
                     ack_number: None,
-                    window_scale: Some(0),
+                    window_scale: Maybe::Just(0),
                     ..SEND_TEMPL
                 }
             );
@@ -3541,8 +3543,8 @@ mod test {
                     control: TcpControl::Syn,
                     seq_number: LOCAL_SEQ,
                     ack_number: Some(REMOTE_SEQ + 1),
-                    max_seg_size: Some(BASE_MSS),
-                    window_scale: Some(*shift_amt),
+                    max_seg_size: Maybe::Just(BASE_MSS),
+                    window_scale: Maybe::Just(*shift_amt),
                     window_len: u16::try_from(*buffer_size).unwrap_or(u16::MAX),
                     ..RECV_TEMPL
                 }]
@@ -3559,7 +3561,7 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: REMOTE_SEQ,
                 ack_number: None,
-                max_seg_size: Some(10),
+                max_seg_size: Maybe::Just(10),
                 ..SEND_TEMPL
             }
         );
@@ -3576,7 +3578,7 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: REMOTE_SEQ,
                 ack_number: None,
-                max_seg_size: Some(0),
+                max_seg_size: Maybe::Just(0),
                 ..SEND_TEMPL
             }
         );
@@ -3670,7 +3672,7 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: Some(REMOTE_SEQ + 1),
-                max_seg_size: Some(BASE_MSS),
+                max_seg_size: Maybe::Just(BASE_MSS),
                 ..RECV_TEMPL
             }]
         );
@@ -3702,7 +3704,7 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: Some(REMOTE_SEQ + 1),
-                max_seg_size: Some(BASE_MSS),
+                max_seg_size: Maybe::Just(BASE_MSS),
                 ..RECV_TEMPL
             }]
         );
@@ -3726,7 +3728,7 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: Some(REMOTE_SEQ + 1),
-                max_seg_size: Some(BASE_MSS),
+                max_seg_size: Maybe::Just(BASE_MSS),
                 ..RECV_TEMPL
             }]
         );
@@ -3757,7 +3759,7 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: Some(REMOTE_SEQ + 1),
-                max_seg_size: Some(BASE_MSS),
+                max_seg_size: Maybe::Just(BASE_MSS),
                 ..RECV_TEMPL
             }]
         );
@@ -3788,7 +3790,7 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: Some(REMOTE_SEQ + 1),
-                max_seg_size: Some(BASE_MSS),
+                max_seg_size: Maybe::Just(BASE_MSS),
                 ..RECV_TEMPL
             }]
         );
@@ -3829,7 +3831,7 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: Some(REMOTE_SEQ + 1),
-                max_seg_size: Some(BASE_MSS),
+                max_seg_size: Maybe::Just(BASE_MSS),
                 ..RECV_TEMPL
             }]
         );
@@ -3867,8 +3869,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: Some(REMOTE_SEQ + 1),
-                max_seg_size: Some(BASE_MSS),
-                window_scale: None,
+                max_seg_size: Maybe::Just(BASE_MSS),
+                window_scale: Maybe::Nothing,
                 ..RECV_TEMPL
             }]
         );
@@ -3877,7 +3879,7 @@ mod test {
             TcpRepr {
                 seq_number: REMOTE_SEQ + 1,
                 ack_number: Some(LOCAL_SEQ + 1),
-                window_scale: None,
+                window_scale: Maybe::Nothing,
                 ..SEND_TEMPL
             }
         );
@@ -3895,7 +3897,7 @@ mod test {
                     control: TcpControl::Syn,
                     seq_number: REMOTE_SEQ,
                     ack_number: None,
-                    window_scale: Some(scale),
+                    window_scale: Maybe::Just(scale),
                     ..SEND_TEMPL
                 }
             );
@@ -3907,8 +3909,8 @@ mod test {
                     control: TcpControl::Syn,
                     seq_number: LOCAL_SEQ,
                     ack_number: Some(REMOTE_SEQ + 1),
-                    max_seg_size: Some(BASE_MSS),
-                    window_scale: Some(0),
+                    max_seg_size: Maybe::Just(BASE_MSS),
+                    window_scale: Maybe::Just(0),
                     ..RECV_TEMPL
                 }]
             );
@@ -3917,7 +3919,7 @@ mod test {
                 TcpRepr {
                     seq_number: REMOTE_SEQ + 1,
                     ack_number: Some(LOCAL_SEQ + 1),
-                    window_scale: None,
+                    window_scale: Maybe::Nothing,
                     ..SEND_TEMPL
                 }
             );
@@ -3974,8 +3976,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: None,
-                max_seg_size: Some(BASE_MSS),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS),
+                window_scale: Maybe::Just(0),
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -3986,8 +3988,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: REMOTE_SEQ,
                 ack_number: Some(LOCAL_SEQ + 1),
-                max_seg_size: Some(BASE_MSS - 80),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS - 80),
+                window_scale: Maybe::Just(0),
                 ..SEND_TEMPL
             }
         );
@@ -4007,8 +4009,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: None,
-                max_seg_size: Some(BASE_MSS),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS),
+                window_scale: Maybe::Just(0),
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4019,8 +4021,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: REMOTE_SEQ,
                 ack_number: Some(LOCAL_SEQ + 1),
-                max_seg_size: Some(10),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(10),
+                window_scale: Maybe::Just(0),
                 ..SEND_TEMPL
             }
         );
@@ -4041,8 +4043,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: None,
-                max_seg_size: Some(BASE_MSS),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS),
+                window_scale: Maybe::Just(0),
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4053,8 +4055,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: REMOTE_SEQ,
                 ack_number: Some(LOCAL_SEQ + 1),
-                max_seg_size: Some(0),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(0),
+                window_scale: Maybe::Just(0),
                 ..SEND_TEMPL
             }
         );
@@ -4104,8 +4106,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: None,
-                max_seg_size: Some(BASE_MSS),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS),
+                window_scale: Maybe::Just(0),
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4116,8 +4118,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: REMOTE_SEQ,
                 ack_number: Some(LOCAL_SEQ + 1),
-                max_seg_size: Some(BASE_MSS - 80),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS - 80),
+                window_scale: Maybe::Just(0),
                 ..SEND_TEMPL
             }
         );
@@ -4143,8 +4145,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: None,
-                max_seg_size: Some(BASE_MSS),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS),
+                window_scale: Maybe::Just(0),
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4157,8 +4159,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: REMOTE_SEQ,
                 ack_number: None,
-                max_seg_size: Some(BASE_MSS - 80),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS - 80),
+                window_scale: Maybe::Just(0),
                 ..SEND_TEMPL
             }
         );
@@ -4171,8 +4173,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: Some(REMOTE_SEQ + 1),
-                max_seg_size: Some(BASE_MSS),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS),
+                window_scale: Maybe::Just(0),
                 ..RECV_TEMPL
             }]
         );
@@ -4186,8 +4188,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: Some(REMOTE_SEQ + 1),
-                max_seg_size: Some(BASE_MSS),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS),
+                window_scale: Maybe::Just(0),
                 ..RECV_TEMPL
             })
         );
@@ -4215,8 +4217,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: None,
-                max_seg_size: Some(BASE_MSS),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS),
+                window_scale: Maybe::Just(0),
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4227,8 +4229,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: REMOTE_SEQ,
                 ack_number: Some(LOCAL_SEQ), // WRONG
-                max_seg_size: Some(BASE_MSS - 80),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS - 80),
+                window_scale: Maybe::Just(0),
                 ..SEND_TEMPL
             },
             Some(TcpRepr {
@@ -4251,8 +4253,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: None,
-                max_seg_size: Some(BASE_MSS),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS),
+                window_scale: Maybe::Just(0),
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4265,8 +4267,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: REMOTE_SEQ,
                 ack_number: None,
-                max_seg_size: Some(BASE_MSS - 80),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS - 80),
+                window_scale: Maybe::Just(0),
                 ..SEND_TEMPL
             }
         );
@@ -4339,8 +4341,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: None,
-                max_seg_size: Some(BASE_MSS),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS),
+                window_scale: Maybe::Just(0),
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4369,8 +4371,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: None,
-                max_seg_size: Some(BASE_MSS),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS),
+                window_scale: Maybe::Just(0),
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4405,8 +4407,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: None,
-                max_seg_size: Some(BASE_MSS),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS),
+                window_scale: Maybe::Just(0),
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4448,8 +4450,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: None,
-                max_seg_size: Some(BASE_MSS),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS),
+                window_scale: Maybe::Just(0),
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4460,8 +4462,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: REMOTE_SEQ,
                 ack_number: Some(LOCAL_SEQ + 1),
-                max_seg_size: Some(BASE_MSS - 80),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS - 80),
+                window_scale: Maybe::Just(0),
                 sack_permitted: true,
                 ..SEND_TEMPL
             }
@@ -4475,8 +4477,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: None,
-                max_seg_size: Some(BASE_MSS),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS),
+                window_scale: Maybe::Just(0),
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4487,8 +4489,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: REMOTE_SEQ,
                 ack_number: Some(LOCAL_SEQ + 1),
-                max_seg_size: Some(BASE_MSS - 80),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS - 80),
+                window_scale: Maybe::Just(0),
                 sack_permitted: false,
                 ..SEND_TEMPL
             }
@@ -4522,8 +4524,8 @@ mod test {
                     control: TcpControl::Syn,
                     seq_number: LOCAL_SEQ,
                     ack_number: None,
-                    max_seg_size: Some(BASE_MSS),
-                    window_scale: Some(*shift_amt),
+                    max_seg_size: Maybe::Just(BASE_MSS),
+                    window_scale: Maybe::Just(*shift_amt),
                     window_len: u16::try_from(*buffer_size).unwrap_or(u16::MAX),
                     sack_permitted: true,
                     ..RECV_TEMPL
@@ -4541,10 +4543,10 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: None,
-                max_seg_size: Some(BASE_MSS),
+                max_seg_size: Maybe::Just(BASE_MSS),
                 // scaling does NOT apply to the window value in SYN packets
                 window_len: 65535,
-                window_scale: Some(5),
+                window_scale: Maybe::Just(5),
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4556,8 +4558,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: REMOTE_SEQ,
                 ack_number: Some(LOCAL_SEQ + 1),
-                max_seg_size: Some(BASE_MSS - 80),
-                window_scale: None,
+                max_seg_size: Maybe::Just(BASE_MSS - 80),
+                window_scale: Maybe::Nothing,
                 window_len: 42,
                 ..SEND_TEMPL
             }
@@ -4577,8 +4579,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: None,
-                max_seg_size: Some(BASE_MSS),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS),
+                window_scale: Maybe::Just(0),
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4589,8 +4591,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: REMOTE_SEQ,
                 ack_number: Some(LOCAL_SEQ + 1),
-                max_seg_size: Some(BASE_MSS - 80),
-                window_scale: Some(7),
+                max_seg_size: Maybe::Just(BASE_MSS - 80),
+                window_scale: Maybe::Just(7),
                 window_len: 42,
                 ..SEND_TEMPL
             }
@@ -5338,7 +5340,7 @@ mod test {
                 seq_number: LOCAL_SEQ + 1,
                 ack_number: Some(REMOTE_SEQ + 1),
                 payload: &[0; EFFECTIVE_MSS - 12],
-                timestamp: Some(TcpTimestampRepr::new(1, 0)),
+                timestamp: Maybe::Just(TcpTimestampRepr::new(1, 0)),
                 ..RECV_TEMPL
             }]
         );
@@ -5362,7 +5364,7 @@ mod test {
                 seq_number: LOCAL_SEQ + 1,
                 ack_number: Some(REMOTE_SEQ + 1),
                 payload: &[0; EFFECTIVE_MSS - 12],
-                timestamp: Some(TcpTimestampRepr::new(1, 0)),
+                timestamp: Maybe::Just(TcpTimestampRepr::new(1, 0)),
                 ..RECV_TEMPL
             }]
         );
@@ -5386,10 +5388,10 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: None,
-                max_seg_size: Some(BASE_MSS),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS),
+                window_scale: Maybe::Just(0),
                 sack_permitted: true,
-                timestamp: Some(TcpTimestampRepr::new(1, 0)),
+                timestamp: Maybe::Just(TcpTimestampRepr::new(1, 0)),
                 ..RECV_TEMPL
             }]
         );
@@ -5399,9 +5401,9 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: REMOTE_SEQ,
                 ack_number: Some(LOCAL_SEQ + 1),
-                max_seg_size: Some(10),
-                window_scale: Some(0),
-                timestamp: Some(TcpTimestampRepr::new(500, 1)),
+                max_seg_size: Maybe::Just(10),
+                window_scale: Maybe::Just(0),
+                timestamp: Maybe::Just(TcpTimestampRepr::new(500, 1)),
                 ..SEND_TEMPL
             }
         );
@@ -5415,7 +5417,7 @@ mod test {
                 seq_number: LOCAL_SEQ + 1,
                 ack_number: Some(REMOTE_SEQ + 1),
                 payload: &[0; MIN_REMOTE_MSS - 12],
-                timestamp: Some(TcpTimestampRepr::new(1, 500)),
+                timestamp: Maybe::Just(TcpTimestampRepr::new(1, 500)),
                 ..RECV_TEMPL
             }]
         );
@@ -6133,7 +6135,7 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: Some(REMOTE_SEQ + 1),
-                max_seg_size: Some(BASE_MSS),
+                max_seg_size: Maybe::Just(BASE_MSS),
                 ..RECV_TEMPL
             }]
         );
@@ -6808,14 +6810,14 @@ mod test {
             control:    TcpControl::Syn,
             seq_number: LOCAL_SEQ,
             ack_number: Some(REMOTE_SEQ + 1),
-            max_seg_size: Some(BASE_MSS),
+            max_seg_size: Maybe::Just(BASE_MSS),
             ..RECV_TEMPL
         }));
         recv!(s, time 1050, Ok(TcpRepr { // retransmit
             control:    TcpControl::Syn,
             seq_number: LOCAL_SEQ,
             ack_number: Some(REMOTE_SEQ + 1),
-            max_seg_size: Some(BASE_MSS),
+            max_seg_size: Maybe::Just(BASE_MSS),
             ..RECV_TEMPL
         }));
         send!(
@@ -7630,7 +7632,7 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: REMOTE_SEQ,
                 ack_number: None,
-                max_seg_size: Some(1000),
+                max_seg_size: Maybe::Just(1000),
                 ..SEND_TEMPL
             }
         );
@@ -7640,7 +7642,7 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: Some(REMOTE_SEQ + 1),
-                max_seg_size: Some(BASE_MSS),
+                max_seg_size: Maybe::Just(BASE_MSS),
                 ..RECV_TEMPL
             }]
         );
@@ -8592,8 +8594,8 @@ mod test {
             control:    TcpControl::Syn,
             seq_number: LOCAL_SEQ,
             ack_number: None,
-            max_seg_size: Some(BASE_MSS),
-            window_scale: Some(0),
+            max_seg_size: Maybe::Just(BASE_MSS),
+            window_scale: Maybe::Just(0),
             sack_permitted: true,
             ..RECV_TEMPL
         }));
@@ -8606,7 +8608,7 @@ mod test {
             control:    TcpControl::Rst,
             seq_number: LOCAL_SEQ + 1,
             ack_number: Some(TcpSeqNumber(0)),
-            window_scale: None,
+            window_scale: Maybe::Nothing,
             ..RECV_TEMPL
         }));
         assert_eq!(s.state, State::Closed);
@@ -9449,7 +9451,7 @@ mod test {
                 seq_number: LOCAL_SEQ + 1,
                 ack_number: Some(REMOTE_SEQ + 1),
                 payload: &b"abcdef"[..],
-                timestamp: Some(TcpTimestampRepr::new(1, 0)),
+                timestamp: Maybe::Just(TcpTimestampRepr::new(1, 0)),
                 ..RECV_TEMPL
             }]
         );
@@ -9463,7 +9465,7 @@ mod test {
                 seq_number: LOCAL_SEQ + 1 + 6,
                 ack_number: Some(REMOTE_SEQ + 1),
                 payload: &[0; EFFECTIVE_MSS - 12],
-                timestamp: Some(TcpTimestampRepr::new(1, 0)),
+                timestamp: Maybe::Just(TcpTimestampRepr::new(1, 0)),
                 ..RECV_TEMPL
             }]
         );
@@ -9634,7 +9636,7 @@ mod test {
                 seq_number: LOCAL_SEQ + 1,
                 ack_number: Some(REMOTE_SEQ + 1),
                 payload: &b"abcdef"[..],
-                timestamp: Some(TcpTimestampRepr::new(1, 0)),
+                timestamp: Maybe::Just(TcpTimestampRepr::new(1, 0)),
                 ..RECV_TEMPL
             }]
         );
@@ -9644,7 +9646,7 @@ mod test {
             TcpRepr {
                 seq_number: REMOTE_SEQ + 1,
                 ack_number: Some(LOCAL_SEQ + 1 + 6),
-                timestamp: Some(TcpTimestampRepr::new(500, 1)),
+                timestamp: Maybe::Just(TcpTimestampRepr::new(500, 1)),
                 ..SEND_TEMPL
             }
         );
@@ -9657,7 +9659,7 @@ mod test {
                 seq_number: LOCAL_SEQ + 1 + 6,
                 ack_number: Some(REMOTE_SEQ + 1),
                 payload: &b"foobar"[..],
-                timestamp: Some(TcpTimestampRepr::new(1, 500)),
+                timestamp: Maybe::Just(TcpTimestampRepr::new(1, 500)),
                 ..RECV_TEMPL
             }]
         );
@@ -9695,7 +9697,7 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: Some(REMOTE_SEQ + 1),
-                max_seg_size: Some(BASE_MSS),
+                max_seg_size: Maybe::Just(BASE_MSS),
                 ..RECV_TEMPL
             }]
         );
@@ -9723,7 +9725,7 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: REMOTE_SEQ,
                 ack_number: None,
-                timestamp: Some(TcpTimestampRepr::new(500, 0)),
+                timestamp: Maybe::Just(TcpTimestampRepr::new(500, 0)),
                 ..SEND_TEMPL
             }
         );
@@ -9736,7 +9738,7 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: Some(REMOTE_SEQ + 1),
-                max_seg_size: Some(BASE_MSS),
+                max_seg_size: Maybe::Just(BASE_MSS),
                 ..RECV_TEMPL
             }]
         );
@@ -9769,10 +9771,10 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: None,
-                max_seg_size: Some(BASE_MSS),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS),
+                window_scale: Maybe::Just(0),
                 sack_permitted: true,
-                timestamp: Some(TcpTimestampRepr::new(1, 0)),
+                timestamp: Maybe::Just(TcpTimestampRepr::new(1, 0)),
                 ..RECV_TEMPL
             }]
         );
@@ -9782,9 +9784,9 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: REMOTE_SEQ,
                 ack_number: Some(LOCAL_SEQ + 1),
-                max_seg_size: Some(BASE_MSS - 80),
-                window_scale: Some(0),
-                timestamp: None,
+                max_seg_size: Maybe::Just(BASE_MSS - 80),
+                window_scale: Maybe::Just(0),
+                timestamp: Maybe::Nothing,
                 ..SEND_TEMPL
             }
         );
@@ -9796,7 +9798,7 @@ mod test {
                 seq_number: LOCAL_SEQ + 1,
                 ack_number: Some(REMOTE_SEQ + 1),
                 payload: &b"abcdef"[..],
-                timestamp: None,
+                timestamp: Maybe::Nothing,
                 ..RECV_TEMPL
             }]
         );
@@ -9818,8 +9820,8 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: LOCAL_SEQ,
                 ack_number: None,
-                max_seg_size: Some(BASE_MSS),
-                window_scale: Some(0),
+                max_seg_size: Maybe::Just(BASE_MSS),
+                window_scale: Maybe::Just(0),
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -9830,9 +9832,9 @@ mod test {
                 control: TcpControl::Syn,
                 seq_number: REMOTE_SEQ,
                 ack_number: Some(LOCAL_SEQ + 1),
-                max_seg_size: Some(BASE_MSS - 80),
-                window_scale: Some(0),
-                timestamp: Some(TcpTimestampRepr::new(500, 0)),
+                max_seg_size: Maybe::Just(BASE_MSS - 80),
+                window_scale: Maybe::Just(0),
+                timestamp: Maybe::Just(TcpTimestampRepr::new(500, 0)),
                 ..SEND_TEMPL
             }
         );
@@ -9844,7 +9846,7 @@ mod test {
                 seq_number: LOCAL_SEQ + 1,
                 ack_number: Some(REMOTE_SEQ + 1),
                 payload: &b"abcdef"[..],
-                timestamp: None,
+                timestamp: Maybe::Nothing,
                 ..RECV_TEMPL
             }]
         );
