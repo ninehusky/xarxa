@@ -356,18 +356,39 @@ impl Assembler {
     ///
     /// Would return the ranges: ``(0, 100), (300, 400)``
     pub fn iter_data(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
-        let mut offset = 0;
-        self.contigs.iter().filter_map(move |contig| {
-            offset += contig.hole_size;
-            let left = offset;
-            offset += contig.data_size;
-            let right = offset;
+        IterData {
+            contigs: self.contigs.iter(),
+            offset: 0,
+        }
+    }
+}
+
+/// The iterator behind [`Assembler::iter_data`].
+///
+/// The running offset is a field rather than a closure capture: flux pins a `move`-captured
+/// local to the index of its initializer, so an accumulator started at `0` has type `usize[0]`
+/// and no assignment can re-establish it. A struct field carries no such index. `scan` moves
+/// the accumulator into a parameter too, but flux has no spec for it or for `flatten`, and the
+/// pair fails parameter inference.
+struct IterData<'a> {
+    contigs: core::slice::Iter<'a, Contig>,
+    offset: usize,
+}
+
+impl Iterator for IterData<'_> {
+    type Item = (usize, usize);
+
+    fn next(&mut self) -> Option<(usize, usize)> {
+        loop {
+            let contig = self.contigs.next()?;
+            self.offset += contig.hole_size;
+            let left = self.offset;
+            self.offset += contig.data_size;
+            let right = self.offset;
             if left < right {
-                Some((left, right))
-            } else {
-                None
+                return Some((left, right));
             }
-        })
+        }
     }
 }
 
