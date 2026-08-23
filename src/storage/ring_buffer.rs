@@ -282,7 +282,8 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
         let write_at = self.get_idx(self.length);
         let max_size = self.contiguous_window();
         let (size, result) = f(&mut self.storage[write_at..write_at + max_size]);
-        assert!(size <= max_size);
+        // STEP-3 PROBE. Original: `assert!(size <= max_size);`
+        flux_rs::assert(size <= max_size);
         self.length += size;
         (size, result)
     }
@@ -338,7 +339,8 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
         let capacity = self.capacity();
         let max_size = cmp::min(self.len(), capacity - self.read_at);
         let (size, result) = f(&mut self.storage[self.read_at..self.read_at + max_size]);
-        assert!(size <= max_size);
+        // STEP-3 PROBE. Original: `assert!(size <= max_size);`
+        flux_rs::assert(size <= max_size);
         self.read_at = if capacity > 0 {
             (self.read_at + size) % capacity
         } else {
@@ -442,7 +444,8 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     #[flux_rs::sig(fn(self: &mut Self[@r], {usize[@count] | count <= r.cap - r.length})
         ensures self: Self[r.cap, r.read_at, r.length + count])]
     pub fn enqueue_unallocated(&mut self, count: usize) {
-        assert!(count <= self.window());
+        // STEP-3 PROBE. Original: `assert!(count <= self.window());`
+        flux_rs::assert(count <= self.window());
         self.length += count;
     }
 

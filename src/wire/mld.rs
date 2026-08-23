@@ -514,7 +514,8 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> AddressRecord<T> {
     )]
     #[inline]
     pub fn set_mcast_addr(&mut self, addr: Ipv6Address) {
-        assert!(addr.is_multicast());
+        // STEP-3 PROBE. Original: `assert!(addr.is_multicast());`
+        flux_rs::assert(addr.is_multicast());
         let data = self.buffer.as_mut();
         write_octets16_at(data, 4, &addr.octets()) // field::RECORD_MCAST_ADDR
     }
