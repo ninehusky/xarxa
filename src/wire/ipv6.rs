@@ -972,12 +972,11 @@ impl defmt::Format for Repr {
     }
 }
 
-use crate::wire::pretty_print::{PrettyIndent, PrettyPrint};
+use crate::wire::pretty_print::{buffer_ref, PrettyIndent, PrettyPrint};
 
 // TODO: This is very similar to the implementation for IPv4. Make
 // a way to have less copy and pasted code here.
 impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
-    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     fn pretty_print(
         buffer: &dyn AsRef<[u8]>,
         f: &mut fmt::Formatter,
@@ -985,19 +984,31 @@ impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
     ) -> fmt::Result {
         // Over `Ref`: the accessors below are provable only at that self type, and the
         // `&'a T` twin of `payload` no longer exists.
-        let (ip_repr, payload) = match Packet::new_checked_ref(Ref::new(buffer.as_ref())) {
+        let ip_packet = match Packet::new_checked_ref(buffer_ref(buffer)) {
             Err(err) => return write!(f, "{indent}({err})"),
-            Ok(ip_packet) => match Repr::parse_ref(&ip_packet) {
-                Err(_) => return Ok(()),
-                Ok(ip_repr) => {
-                    write!(f, "{indent}{ip_repr}")?;
-                    (ip_repr, ip_packet.payload())
-                }
-            },
+            Ok(ip_packet) => ip_packet,
         };
+        let ip_repr = match Repr::parse_ref(&ip_packet) {
+            Err(_) => return Ok(()),
+            Ok(ip_repr) => ip_repr,
+        };
+        // `new_checked_ref` carries the payload window out, which is what `payload` requires.
+        let payload = ip_packet.payload();
 
-        pretty_print_ip_payload(f, indent, ip_repr, payload)
+        pretty_print_header_and_payload(f, indent, ip_repr, payload)
     }
+}
+
+/// Write the header line, then the payload listing one level deeper.
+#[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
+fn pretty_print_header_and_payload(
+    f: &mut fmt::Formatter,
+    indent: &mut PrettyIndent,
+    ip_repr: Repr,
+    payload: &[u8],
+) -> fmt::Result {
+    write!(f, "{indent}{ip_repr}")?;
+    pretty_print_ip_payload(f, indent, ip_repr, payload)
 }
 
 #[cfg(test)]

@@ -45,6 +45,28 @@ pub struct PacketBuffer<'a, H: 'a> {
     payload_ring: RingBuffer<'a, u8>,
 }
 
+/// Hand one dequeued packet's header and payload to `f`, and report how much to dequeue.
+///
+/// Kept out of [`PacketBuffer::dequeue_with`], whose two nested closures leave
+/// `self.payload_ring` blocked at the exit join and so cannot be checked. This is the half of
+/// that operation that carries obligations.
+fn dequeue_one<'c, H, R, E, F>(
+    metadata: &mut PacketMetadata<H>,
+    payload_buf: &'c mut [u8],
+    f: F,
+) -> (usize, Result<R, E>)
+where
+    F: FnOnce(&mut H, &'c mut [u8]) -> Result<R, E>,
+{
+    debug_assert!(payload_buf.len() >= metadata.size);
+
+    let size = metadata.size;
+    match f(metadata.header.as_mut().unwrap(), &mut payload_buf[..size]) {
+        Ok(val) => (size, Ok(val)),
+        Err(err) => (0, Err(err)),
+    }
+}
+
 impl<'a, H> PacketBuffer<'a, H> {
     /// Create a new packet buffer with the provided metadata and payload storage.
     ///
@@ -128,7 +150,6 @@ impl<'a, H> PacketBuffer<'a, H> {
 
     /// Call `f` with a packet from the buffer large enough to fit `max_size` bytes. The packet
     /// is shrunk to the size returned from `f` and enqueued into the buffer.
-    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     pub fn enqueue_with_infallible<'b, F>(
         &'b mut self,
         max_size: usize,
@@ -190,7 +211,9 @@ impl<'a, H> PacketBuffer<'a, H> {
 
     /// Call `f` with a single packet from the buffer, and dequeue the packet if `f`
     /// returns successfully, or return `Err(EmptyError)` if the buffer is empty.
-    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
+    ///
+    /// The body is only plumbing; the work is in [`dequeue_one`], which is checked.
+    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: the two nested closures leave `self.payload_ring` blocked (`†`) at the exit join. See ICE-INBOX.md.")]
     pub fn dequeue_with<'c, R, E, F>(&'c mut self, f: F) -> Result<Result<R, E>, Empty>
     where
         F: FnOnce(&mut H, &'c mut [u8]) -> Result<R, E>,
@@ -199,17 +222,7 @@ impl<'a, H> PacketBuffer<'a, H> {
 
         self.metadata_ring.dequeue_one_with(|metadata| {
             self.payload_ring
-                .dequeue_many_with(|payload_buf| {
-                    debug_assert!(payload_buf.len() >= metadata.size);
-
-                    match f(
-                        metadata.header.as_mut().unwrap(),
-                        &mut payload_buf[..metadata.size],
-                    ) {
-                        Ok(val) => (metadata.size, Ok(val)),
-                        Err(err) => (0, Err(err)),
-                    }
-                })
+                .dequeue_many_with(|payload_buf| dequeue_one(metadata, payload_buf, f))
                 .1
         })
     }
