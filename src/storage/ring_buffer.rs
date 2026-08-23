@@ -33,7 +33,11 @@ flux_rs::defs! {
 /// of UDP packets, and advanced ones such as a TCP reassembly buffer.
 #[derive(Debug)]
 #[flux_rs::refined_by(cap: int, read_at: int, length: int)]
+// `cap <= isize::MAX` is a language guarantee about the backing allocation, not an index: no
+// slice is longer. Without it `length + count` in `enqueue_unallocated` is modelled as
+// wrapping and its postcondition cannot be proved.
 #[flux_rs::invariant(0 <= read_at && 0 <= length && length <= cap)]
+#[flux_rs::invariant(cap <= 9223372036854775807)]
 #[flux_rs::invariant(read_at < cap || read_at == 0)]
 pub struct RingBuffer<'a, T: 'a> {
     #[flux_rs::field(ManagedSlice<T>[cap])]

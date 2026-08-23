@@ -42,6 +42,10 @@ impl State {
         xorshift32(&mut self.rng_seed) % 100 < pct as u32
     }
 
+    // No signature: `% buffer.len()` divides by zero on an empty frame, but the bound has to be
+    // stated over `<T as AsMut<[u8]>>::as_mut_reft`, and at a generic `T` that resolves to
+    // core's blanket `AsMut for &mut T`, which carries no associated refinement -- naming it
+    // aborts this body outright. Same wall as the `&T` accessors in `wire`.
     fn corrupt<T: AsMut<[u8]>>(&mut self, mut buffer: T) {
         let buffer = buffer.as_mut();
         // We introduce a single bitflip, as the most likely, and the hardest to detect, error.
