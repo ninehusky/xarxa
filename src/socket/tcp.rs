@@ -1631,11 +1631,12 @@ impl<'a> Socket<'a> {
         }
     }
 
-    // FIXME(flux): fixpoint chokes on this function; it's ~700 lines of code that
-    // seem far larger than any other function in the crate. fixpoint grows
-    // to the point where it runs out of memory and never terminates -- we're
-    // trusting for now until we can refactor into smaller functions.
-    #[flux_rs::trusted(reason = "Fixpoint chokes (see above documentation)")]
+    // Three obligations in this body are owed rather than met, and they are real: the slice
+    // range at the reassembly copy below, and the two ring-buffer preconditions at
+    // `dequeue_allocated` and `enqueue_unallocated`. They are reported because the body is
+    // checked. Trusting it to silence them would erase all three along with the other ~700
+    // lines, which is what this annotation is here to say is not happening.
+    #[flux_rs::trusted(no, reason = "checked; three obligations below are owed, not erased")]
     pub(crate) fn process(
         &mut self,
         cx: &mut Context,
