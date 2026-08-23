@@ -1127,11 +1127,11 @@ pub fn pretty_print_ip_payload<T: Into<Repr>>(
         }
         Protocol::Udp => {
             indent.increase(f)?;
-            match UdpPacket::new_checked_ref(Ref::new(payload)) {
+            match UdpPacket::new_checked_display(Ref::new(payload)) {
                 Err(err) => write!(f, "{indent}({err})"),
                 Ok(udp_packet) => {
                     match UdpRepr::parse(
-                        &udp_packet,
+                        udp_packet.as_packet(),
                         &repr.src_addr(),
                         &repr.dst_addr(),
                         &checksum_caps,
@@ -1146,8 +1146,9 @@ pub fn pretty_print_ip_payload<T: Into<Repr>>(
                                 udp_packet.payload().len()
                             )?;
                             let valid =
-                                udp_packet.verify_checksum(&repr.src_addr(), &repr.dst_addr());
+                                udp_packet.as_packet().verify_checksum(&repr.src_addr(), &repr.dst_addr());
                             let partially_valid = udp_packet
+                                .as_packet()
                                 .verify_partial_checksum(&repr.src_addr(), &repr.dst_addr());
 
                             format_checksum(f, valid, partially_valid)

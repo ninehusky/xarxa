@@ -675,18 +675,48 @@ impl Repr {
 // why the `Packet<&T>` twin above is unprovable. Here the check is taken inside the body instead:
 // `checked_len`'s `Ok` arm proves every bound the three accessors want, and the `Err` arm no
 // longer indexes a buffer it never validated. The twin panics on a truncated datagram.
-impl fmt::Display for Packet<Ref<'_>> {
+/// A [`Packet`] over a [`Ref`] whose header has been validated. DEMO.
+///
+/// The invariant is the whole point: it is what `Display` below reads, and it is only
+/// establishable by [`new_checked_display`](Packet::new_checked_display), which runs
+/// `checked_len`. No runtime check is added anywhere and no panic is replaced -- the check that
+/// establishes this already existed, and this type is how its result reaches a fixed trait
+/// signature.
+#[flux_rs::refined_by(buffer: Ref, len: int)]
+#[flux_rs::invariant(8 <= len && len <= buffer.len)]
+pub struct CheckedPacket<'a>(#[flux_rs::field(Packet<Ref>[buffer, len])] Packet<Ref<'a>>);
+
+impl<'a> CheckedPacket<'a> {
+    /// The packet underneath, for callers that only need the unrefined view.
+    ///
+    /// The invariant does not travel with the reference -- it belongs to `CheckedPacket` -- so
+    /// this is for consumers like `UdpRepr::parse` that re-derive what they need.
+    #[flux_rs::sig(fn(&Self[@c]) -> &Packet<Ref>[c.buffer, c.len])]
+    #[flux_rs::no_panic]
+    pub fn as_packet(&self) -> &Packet<Ref<'a>> {
+        &self.0
+    }
+
+    /// The payload window. Provable here, where the invariant is in scope.
+    #[flux_rs::sig(fn(&Self[@c]) -> &[u8][c.len - 8])]
+    pub fn payload(&self) -> &'a [u8] {
+        self.0.payload()
+    }
+}
+
+impl fmt::Display for CheckedPacket<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // Cannot use Repr::parse because we don't have the IP addresses.
         write!(
             f,
             "UDP src={} dst={} len={}",
-            self.src_port(),
-            self.dst_port(),
-            self.payload().len()
+            self.0.src_port(),
+            self.0.dst_port(),
+            self.0.payload().len()
         )
     }
 }
+
 
 #[cfg(feature = "defmt")]
 impl defmt::Format for Packet<Ref<'_>> {
@@ -727,7 +757,9 @@ impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
     ) -> fmt::Result {
         // `Ref::new` off the `dyn`'s own `as_ref`: the trait signature is fixed, so the buffer
         // arrives with no length index, and `Ref` is where it acquires one.
-        match Packet::new_checked_ref(Ref::new(buffer.as_ref())) {
+        // The only consumer of the `Display` impl, and it already validated. Switching it to
+        // `new_checked_display` is the entire call-site cost of the change in this file.
+        match Packet::new_checked_display(Ref::new(buffer.as_ref())) {
             Err(err) => write!(f, "{indent}({err})"),
             Ok(packet) => write!(f, "{indent}{packet}"),
         }
@@ -894,6 +926,20 @@ impl<'a> Packet<Ref<'a>> {
         let packet = Packet::new_unchecked(buffer);
         packet.checked_len()?;
         Ok(packet)
+    }
+
+    /// [`new_checked_ref`](Self::new_checked_ref), returning a [`CheckedPacket`].
+    ///
+    /// DEMO of the receiver-invariant route. `new_checked_ref` already carries
+    /// `8 <= p.len && p.len <= b.len` out through its `Ok` arm, but that is an *existential*
+    /// refinement and it does not survive `fmt::Display::fmt`, whose signature is fixed and
+    /// cannot carry a `requires`. A type **invariant** does survive, because it travels with the
+    /// type rather than with the value's index -- so the bound has to live on a type that only
+    /// a checked construction can produce.
+    pub fn new_checked_display(buffer: Ref<'a>) -> Result<CheckedPacket<'a>> {
+        let packet = Packet::new_unchecked(buffer);
+        packet.checked_len()?;
+        Ok(CheckedPacket(packet))
     }
 
     /// Return a pointer to the payload.
