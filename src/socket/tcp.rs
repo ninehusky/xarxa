@@ -476,6 +476,19 @@ pub enum CongestionControl {
 /// accept several connections, as many sockets must be allocated, or any new connection
 /// attempts will be reset.
 #[derive(Debug)]
+// FIXME(flux): three of the crate's remaining obligations want a relation between two of the
+// fields below -- `process`'s `dequeue_allocated` wants `ack_len <= tx_buffer.len()`, its
+// `enqueue_unallocated` wants `contig_len <= rx_buffer.window()`, and
+// `wire::tcp::accepted_window` wants the receive window to be shorter than half a sequence
+// period. None is statable while this struct has no `refined_by`.
+//
+// Refining it is not a three-site job. Measured 2026-08-24: adding `refined_by(win_shift: int)`
+// and one `#[field(u8[win_shift])]` on `remote_win_shift`, with **no invariant at all**, takes
+// the crate from 15 errors to 41. All 26 are in this file: two `assignment might be unsafe` on
+// `self.remote_win_shift = 0` (a mutating method needs `&strg self` to say how it moves the
+// index), one `error jumping to join point` in `ack_reply`, which does not touch the field, and
+// the rest spread across `process`. That is the entry price for one field before any invariant
+// is written.
 pub struct Socket<'a> {
     state: State,
     timer: Timer,
