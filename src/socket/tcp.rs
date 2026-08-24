@@ -1638,6 +1638,37 @@ impl<'a> Socket<'a> {
     // checked. Trusting it to silence them would erase all three along with the other ~700
     // lines, which is what this annotation is here to say is not happening.
     #[flux_rs::trusted(no, reason = "checked; three obligations below are owed, not erased")]
+    /// The part of a segment that lies inside the receive window: the payload octets, and
+    /// their offset from the window's start.
+    ///
+    /// Lifted out of [`process`](Self::process) for the proof, not for the code. The two
+    /// obligations on the slice below are statements about modular sequence arithmetic, and
+    /// `wrap32` turns each comparison into a three-way case split; inside a 700-line body those
+    /// splits multiply across every unrelated branch, which is what put fixpoint past 30 minutes
+    /// the last time the `Add<usize>` signature was tried. Here the reasoning is local to six
+    /// lines.
+    ///
+    /// Same expressions, same order, same values, and the `debug_assert!` comes with them --
+    /// `process` differs only by the call.
+    fn accepted_window<'p>(
+        payload: &'p [u8],
+        segment_start: TcpSeqNumber,
+        segment_end: TcpSeqNumber,
+        window_start: TcpSeqNumber,
+        window_end: TcpSeqNumber,
+    ) -> (&'p [u8], usize) {
+        let overlap_start = window_start.max(segment_start);
+        let overlap_end = window_end.min(segment_end);
+
+        // the checks done above imply this.
+        debug_assert!(overlap_start <= overlap_end);
+
+        (
+            &payload[overlap_start - segment_start..overlap_end - segment_start],
+            overlap_start - window_start,
+        )
+    }
+
     pub(crate) fn process(
         &mut self,
         cx: &mut Context,
@@ -1826,17 +1857,14 @@ impl<'a> Socket<'a> {
                 };
 
                 if segment_in_window {
-                    let overlap_start = window_start.max(segment_start);
-                    let overlap_end = window_end.min(segment_end);
-
-                    // the checks done above imply this.
-                    debug_assert!(overlap_start <= overlap_end);
-
                     self.local_rx_last_seq = Some(repr.seq_number);
 
-                    (
-                        &repr.payload[overlap_start - segment_start..overlap_end - segment_start],
-                        overlap_start - window_start,
+                    Self::accepted_window(
+                        repr.payload,
+                        segment_start,
+                        segment_end,
+                        window_start,
+                        window_end,
                     )
                 } else {
                     // Out-of-window RSTs are silently dropped, per RFC 9293
