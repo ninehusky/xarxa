@@ -361,6 +361,17 @@ impl<'a> Frame<Ref<'a>> {
         Ok(frame)
     }
 
+    /// [`new_checked_ref`](Self::new_checked_ref), returning a [`CheckedFrame`].
+    ///
+    /// The only producer of the invariant `Display` reads. `checked_len`'s `Ok` arm proves
+    /// `14 <= as_ref_reft(f.buffer)`, and at `T = Ref` that associated refinement *is*
+    /// `buffer.len` -- so the invariant discharges here and nowhere else.
+    pub fn new_checked_display(buffer: Ref<'a>) -> Result<CheckedFrame<'a>> {
+        let frame = Frame::new_unchecked(buffer);
+        frame.checked_len()?;
+        Ok(CheckedFrame(frame))
+    }
+
     /// Return a pointer to the payload, without checking for 802.1Q.
     ///
     /// The `Frame<&'a T>` twin of this cannot be proved: a reference in type-parameter position
@@ -481,17 +492,44 @@ impl<T: AsRef<[u8]>> AsRef<[u8]> for Frame<T> {
     }
 }
 
-// A trait impl's signature is fixed, so this cannot carry the accessors' `requires`. The check
-// is taken inside the body instead: `checked_len`'s `Ok` arm proves the bound all three
-// accessors want, and the `Err` arm no longer reads a header it never validated.
-impl<T: AsRef<[u8]>> fmt::Display for Frame<T> {
+/// A [`Frame`] over a [`Ref`] whose length has been checked, carrying that check as a type
+/// invariant.
+///
+/// `fmt::Display`'s signature is fixed, so it cannot carry the `requires` its three header reads
+/// need. [`checked_len`](Frame::checked_len) already proves all three, but its `Ok` arm is an
+/// *existential* refinement on the returned length and that does not survive a trait boundary.
+/// A type **invariant** does, because it travels with the type rather than with a value's index
+/// -- so the bound lives on a type only a checked construction can produce.
+///
+/// No runtime check is added and no panic is replaced. The check establishing this invariant is
+/// the one `pretty_print` already ran; a short buffer still takes the `Err` arm and still prints
+/// `({err})`. What changes is that the three reads on the `Ok` path are now proved rather than
+/// undischarged.
+///
+/// `ethertype`'s bound is the strongest of the three and implies the other two.
+#[flux_rs::refined_by(frame: Frame<Ref>)]
+#[flux_rs::invariant(14 <= frame.buffer.len)]
+pub struct CheckedFrame<'a>(#[flux_rs::field(Frame<Ref>[frame])] Frame<Ref<'a>>);
+
+impl<'a> CheckedFrame<'a> {
+    /// The frame underneath, for consumers that re-derive what they need.
+    ///
+    /// The invariant belongs to `CheckedFrame` and does not travel with the reference.
+    #[flux_rs::sig(fn(&Self[@c]) -> &Frame<Ref>[c.frame])]
+    #[flux_rs::no_panic]
+    pub fn as_frame(&self) -> &Frame<Ref<'a>> {
+        &self.0
+    }
+}
+
+impl fmt::Display for CheckedFrame<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
             "EthernetII src={} dst={} type={}",
-            self.src_addr(),
-            self.dst_addr(),
-            self.ethertype()
+            self.0.src_addr(),
+            self.0.dst_addr(),
+            self.0.ethertype()
         )
     }
 }
@@ -506,13 +544,13 @@ impl<T: AsRef<[u8]>> PrettyPrint for Frame<T> {
     ) -> fmt::Result {
         // `buffer_ref` off the `dyn`: the trait signature is fixed, so the buffer arrives with
         // no length index, and `Ref` is where it acquires one.
-        let frame = match Frame::new_checked_ref(buffer_ref(buffer)) {
+        let frame = match Frame::new_checked_display(buffer_ref(buffer)) {
             Err(err) => return write!(f, "{indent}({err})"),
             Ok(frame) => frame,
         };
-        // `new_checked_ref` carries `14 <= b.len` out, which is what both accessors require.
-        let ethertype = frame.ethertype();
-        let payload = frame.payload();
+        // `CheckedFrame`'s invariant is `14 <= b.len`, which is what both accessors require.
+        let ethertype = frame.as_frame().ethertype();
+        let payload = frame.as_frame().payload();
         pretty_print_payload(&frame, ethertype, payload, f, indent)
     }
 }
@@ -520,7 +558,7 @@ impl<T: AsRef<[u8]>> PrettyPrint for Frame<T> {
 /// Write `frame`'s header line, then hand `payload` to the printer for `ethertype`.
 #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
 fn pretty_print_payload(
-    frame: &Frame<Ref<'_>>,
+    frame: &CheckedFrame<'_>,
     ethertype: EtherType,
     payload: &[u8],
     f: &mut fmt::Formatter,
