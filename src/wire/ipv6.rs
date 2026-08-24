@@ -5,7 +5,7 @@ use core::fmt;
 
 use super::{Error, Result};
 use crate::wire::HardwareAddress;
-use crate::wire::ip::pretty_print_ip_payload;
+use crate::wire::ip::{pretty_print_ip_payload, SizedPayload};
 use crate::wire::{copy_window_at, read_u16_at, read_u32_at, sub, Ref};
 
 pub use super::IpProtocol as Protocol;
@@ -993,7 +993,9 @@ impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
             Ok(ip_repr) => ip_repr,
         };
         // `new_checked_ref` carries the payload window out, which is what `payload` requires.
-        let payload = ip_packet.payload();
+        // `plen <= 65535` is `Packet`'s own invariant and `payload` is exactly that many
+        // octets, so the sixteen-bit bound `SizedPayload` carries discharges here.
+        let payload = SizedPayload::new(ip_packet.payload());
 
         pretty_print_header_and_payload(f, indent, ip_repr, payload)
     }
@@ -1005,7 +1007,7 @@ fn pretty_print_header_and_payload(
     f: &mut fmt::Formatter,
     indent: &mut PrettyIndent,
     ip_repr: Repr,
-    payload: &[u8],
+    payload: SizedPayload<'_>,
 ) -> fmt::Result {
     write!(f, "{indent}{ip_repr}")?;
     pretty_print_ip_payload(f, indent, ip_repr, payload)
