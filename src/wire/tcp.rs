@@ -248,6 +248,46 @@ impl cmp::PartialOrd for SeqNumber {
     }
 }
 
+/// The part of a segment that lies inside the receive window: the payload octets, and their
+/// offset from the window's start.
+///
+/// Here rather than in `socket::tcp`, which is the only caller. The two obligations on the
+/// slice below are statements about modular sequence arithmetic, and the `wrap32` defns that
+/// name it resolve only inside the module holding their `defs!` block -- a crate-root block
+/// exports nothing, so a signature written in `socket::tcp` cannot mention them. `#[reveal]`
+/// unfolds them for these six lines; `Socket::process` leaves them hidden, which is what keeps
+/// fixpoint terminating over its seven hundred.
+///
+/// The one premise is the shape of `segment_end`, which the caller already has: it is
+/// `seq_number + payload.len()`, and that is exactly `Add<usize>`'s postcondition. It buys the
+/// second obligation, `range.end <= payload.len()`. The first, `range.start <= range.end`, is
+/// the overlap ordering and needs the segment-acceptability facts, which the `bool` that
+/// carries them in `process` has already flattened -- see the call site.
+#[flux_rs::reveal(wrap32, wrap32_up)]
+#[flux_rs::sig(
+    fn(&[u8][@plen], SeqNumber[@ss], SeqNumber[@se], SeqNumber[@ws], SeqNumber[@we])
+        -> (&[u8], usize)
+    requires se.v == wrap32_up(ss.v + plen)
+)]
+pub(crate) fn accepted_window<'p>(
+    payload: &'p [u8],
+    segment_start: SeqNumber,
+    segment_end: SeqNumber,
+    window_start: SeqNumber,
+    window_end: SeqNumber,
+) -> (&'p [u8], usize) {
+    let overlap_start = window_start.max(segment_start);
+    let overlap_end = window_end.min(segment_end);
+
+    // the checks done above imply this.
+    debug_assert!(overlap_start <= overlap_end);
+
+    (
+        &payload[overlap_start - segment_start..overlap_end - segment_start],
+        overlap_start - window_start,
+    )
+}
+
 /// A ghost field: carries an integer in the refinement and nothing at runtime.
 ///
 /// TCP's options window is `20..header_len` and its payload is `header_len..`, and `header_len`
