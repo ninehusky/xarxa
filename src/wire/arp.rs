@@ -1,6 +1,6 @@
 use core::fmt;
 
-use super::{Error, Result};
+use super::{Error, Ref, Result};
 use super::{EthernetAddress, Ipv4Address};
 use super::{copy_window_at, read_u16_at, sub, write_u16_at};
 
@@ -366,6 +366,19 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 }
 
+impl<'a> Packet<Ref<'a>> {
+    /// [`new_checked`](Self::new_checked), returning a [`CheckedPacket`].
+    ///
+    /// The only producer of the invariant `Display` reads. `checked_len`'s `Ok` arm states
+    /// `8 + 2*p.hlen + 2*p.plen <= as_ref_reft(p.buffer)`, and at `T = Ref` that associated
+    /// refinement *is* `buffer.len` -- so the invariant discharges here and nowhere else.
+    pub fn new_checked_display(buffer: Ref<'a>) -> Result<CheckedPacket<'a>> {
+        let packet = Packet::new_unchecked(buffer);
+        packet.checked_len()?;
+        Ok(CheckedPacket(packet))
+    }
+}
+
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set the hardware type field.
     #[flux_rs::trusted(no, reason = "panic site: writes into the header at a fixed offset")]
@@ -636,32 +649,63 @@ impl Repr {
     }
 }
 
-// A trait impl's signature is fixed, so it cannot carry the nine accessors' `requires`, and the
-// unrecognized arm below reads nine header fields out of a buffer nothing has validated. Those
-// nine obligations are undischarged on purpose: the panic is reachable on a truncated frame, so
-// it is a defect to report rather than a site to gate. See `~/research/xarxa-real-bugs.md`.
-impl<T: AsRef<[u8]>> fmt::Display for Packet<T> {
+/// A [`Packet`] over a [`Ref`] whose header has been validated. DEMO.
+///
+/// `fmt::Display::fmt`'s signature is fixed, so it cannot carry the nine accessors' `requires`.
+/// [`checked_len`](Packet::checked_len) already proves every one of them, but its `Ok` arm is an
+/// *existential* refinement on the returned length and that does not survive a trait boundary.
+/// A type **invariant** does, because it travels with the type rather than with a value's index
+/// -- so the bound lives on a type only a checked construction can produce.
+///
+/// No runtime check is added and no panic is replaced. The check establishing this invariant is
+/// the one `pretty_print` already ran; a short buffer still takes the `Err` arm and still prints
+/// `({err})`. What changes is that the nine reads on the `Ok` path are now proved rather than
+/// undischarged.
+///
+/// The strongest of the nine bounds is `target_protocol_addr`'s, and it implies the other eight:
+/// `hlen` and `plen` are non-negative, so `8 + 2*hlen + 2*plen <= len` gives `8 <= len` and every
+/// intermediate offset. `Packet`'s own octet bounds are restated here because a struct invariant
+/// does not reach through to the wrapper's index.
+#[flux_rs::refined_by(buffer: Ref, hlen: int, plen: int)]
+#[flux_rs::invariant(0 <= hlen && hlen <= 255 && 0 <= plen && plen <= 255)]
+#[flux_rs::invariant(8 + 2 * hlen + 2 * plen <= buffer.len)]
+pub struct CheckedPacket<'a>(
+    #[flux_rs::field(Packet<Ref>[buffer, hlen, plen])] Packet<Ref<'a>>,
+);
+
+impl<'a> CheckedPacket<'a> {
+    /// The packet underneath, for consumers that re-derive what they need.
+    ///
+    /// The invariant belongs to `CheckedPacket` and does not travel with the reference.
+    #[flux_rs::sig(fn(&Self[@c]) -> &Packet<Ref>[c.buffer, c.hlen, c.plen])]
+    #[flux_rs::no_panic]
+    pub fn as_packet(&self) -> &Packet<Ref<'a>> {
+        &self.0
+    }
+}
+
+impl fmt::Display for CheckedPacket<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match Repr::parse(self) {
+        match Repr::parse(&self.0) {
             Ok(repr) => write!(f, "{repr}"),
             _ => {
                 write!(f, "ARP (unrecognized)")?;
                 write!(
                     f,
                     " htype={:?} ptype={:?} hlen={:?} plen={:?} op={:?}",
-                    self.hardware_type(),
-                    self.protocol_type(),
-                    self.hardware_len(),
-                    self.protocol_len(),
-                    self.operation()
+                    self.0.hardware_type(),
+                    self.0.protocol_type(),
+                    self.0.hardware_len(),
+                    self.0.protocol_len(),
+                    self.0.operation()
                 )?;
                 write!(
                     f,
                     " sha={:?} spa={:?} tha={:?} tpa={:?}",
-                    self.source_hardware_addr(),
-                    self.source_protocol_addr(),
-                    self.target_hardware_addr(),
-                    self.target_protocol_addr()
+                    self.0.source_hardware_addr(),
+                    self.0.source_protocol_addr(),
+                    self.0.target_hardware_addr(),
+                    self.0.target_protocol_addr()
                 )?;
                 Ok(())
             }
@@ -696,7 +740,11 @@ impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
         f: &mut fmt::Formatter,
         indent: &mut PrettyIndent,
     ) -> fmt::Result {
-        match Packet::new_checked(buffer) {
+        // `Ref::new` off the `dyn`'s own `as_ref`: the trait signature is fixed, so the buffer
+        // arrives with no length index, and `Ref` is where it acquires one. This already
+        // validated before formatting; switching to `new_checked_display` is the entire
+        // call-site cost of the change in this file.
+        match Packet::new_checked_display(Ref::new(buffer.as_ref())) {
             Err(err) => write!(f, "{indent}({err})"),
             Ok(packet) => write!(f, "{indent}{packet}"),
         }
