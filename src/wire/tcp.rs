@@ -37,6 +37,24 @@ flux_rs::defs! {
     // `i32`s, and the sum of an `i32` with a `usize` the caller has already bounded by
     // `i32::MAX`. Written as a conditional rather than with `%` so fixpoint sees linear
     // arithmetic. Same device as flux-core's `wrap_once`.
+    // `wrap32` for the `Add<usize>` result. `a.v` is an `i32` and the guard in `add` gives
+    // `n <= i32::MAX`, so `a.v + n` lies in `[-2^31, 2^32-2]`: it can exceed `i32::MAX` but can
+    // never fall below `i32::MIN`, and `wrap32`'s lower branch is dead. Same value as `wrap32`
+    // on that domain; the point is that this is one conditional rather than two, and `process`
+    // applies it nine times against eighteen comparisons that each apply `wrap32` again.
+    #[hide]
+    fn wrap32_up(x: int) -> int {
+        if x > 2147483647 { x - 4294967296 } else { x }
+    }
+
+    // The mirror, for `Sub<usize>`: `a.v - n` lies in `[-2^32+1, 2^31-1]`, so it can fall below
+    // `i32::MIN` but never exceed `i32::MAX`, and `wrap32`'s upper branch is dead.
+    #[hide]
+    fn wrap32_down(x: int) -> int {
+        if x < -2147483648 { x + 4294967296 } else { x }
+    }
+
+    #[hide]
     fn wrap32(x: int) -> int {
         if x > 2147483647 {
             x - 4294967296
@@ -137,29 +155,30 @@ impl defmt::Format for SeqNumber {
 impl ops::Add<usize> for SeqNumber {
     type Output = SeqNumber;
 
-    // No signature, though one is *writable*: with `flux_util::usize_to_i32` discharging the
-    // cast from the guard below, `-> SeqNumber[wrap32(a.v + n)]` is provable in principle. It
-    // is left off because fixpoint does not terminate on it -- a full check ran past 30 minutes
-    // against a ~7 minute norm and was killed. The `wrap32` case split multiplied across this
-    // body's callers is the suspect. Retry when the sequence-number work needs it, and bisect
-    // the blowup rather than assuming the whole body is at fault.
+    // The guard below is what discharges `usize_to_i32`'s bound; the panic stays and this
+    // retires none of it. `rhs as i32` became `usize_to_i32(rhs)`, which is the same cast --
+    // flux does not model the `as`, and that is all the helper supplies.
+    #[flux_rs::reveal(wrap32_up)]
+    #[flux_rs::sig(fn(SeqNumber[@a], usize[@n]) -> SeqNumber[wrap32_up(a.v + n)])]
     fn add(self, rhs: usize) -> SeqNumber {
         if rhs > i32::MAX as usize {
             panic!("attempt to add to sequence number with unsigned overflow")
         }
-        SeqNumber(self.0.wrapping_add(rhs as i32))
+        SeqNumber(self.0.wrapping_add(crate::flux_util::usize_to_i32(rhs)))
     }
 }
 
 impl ops::Sub<usize> for SeqNumber {
     type Output = SeqNumber;
 
-    // No signature, for the same reason as `Add<usize>` above.
+    // See `Add<usize>` above.
+    #[flux_rs::reveal(wrap32_down)]
+    #[flux_rs::sig(fn(SeqNumber[@a], usize[@n]) -> SeqNumber[wrap32_down(a.v - n)])]
     fn sub(self, rhs: usize) -> SeqNumber {
         if rhs > i32::MAX as usize {
             panic!("attempt to subtract to sequence number with unsigned overflow")
         }
-        SeqNumber(self.0.wrapping_sub(rhs as i32))
+        SeqNumber(self.0.wrapping_sub(crate::flux_util::usize_to_i32(rhs)))
     }
 }
 
@@ -174,6 +193,7 @@ impl ops::Sub for SeqNumber {
 
     // The underflow panic stays, and is the reason the result is nameable at all: past it, the
     // wrapped difference is known non-negative, so it is the distance between the two numbers.
+    #[flux_rs::reveal(wrap32)]
     #[flux_rs::sig(fn(SeqNumber[@a], SeqNumber[@b]) -> usize[wrap32(a.v - b.v)])]
     fn sub(self, rhs: SeqNumber) -> usize {
         let result = self.0.wrapping_sub(rhs.0);
@@ -199,24 +219,28 @@ impl cmp::PartialOrd for SeqNumber {
         self.0.wrapping_sub(other.0).partial_cmp(&0)
     }
 
+    #[flux_rs::reveal(wrap32)]
     #[flux_rs::sig(fn(&SeqNumber[@a], &SeqNumber[@b]) -> bool[wrap32(a.v - b.v) < 0])]
     #[flux_rs::no_panic]
     fn lt(&self, other: &SeqNumber) -> bool {
         self.0.wrapping_sub(other.0) < 0
     }
 
+    #[flux_rs::reveal(wrap32)]
     #[flux_rs::sig(fn(&SeqNumber[@a], &SeqNumber[@b]) -> bool[wrap32(a.v - b.v) <= 0])]
     #[flux_rs::no_panic]
     fn le(&self, other: &SeqNumber) -> bool {
         self.0.wrapping_sub(other.0) <= 0
     }
 
+    #[flux_rs::reveal(wrap32)]
     #[flux_rs::sig(fn(&SeqNumber[@a], &SeqNumber[@b]) -> bool[wrap32(a.v - b.v) > 0])]
     #[flux_rs::no_panic]
     fn gt(&self, other: &SeqNumber) -> bool {
         self.0.wrapping_sub(other.0) > 0
     }
 
+    #[flux_rs::reveal(wrap32)]
     #[flux_rs::sig(fn(&SeqNumber[@a], &SeqNumber[@b]) -> bool[wrap32(a.v - b.v) >= 0])]
     #[flux_rs::no_panic]
     fn ge(&self, other: &SeqNumber) -> bool {

@@ -1689,6 +1689,13 @@ impl<'a> Socket<'a> {
         };
         let control_len = (sent_syn as usize) + (sent_fin as usize);
 
+        // The ACK number a SYN of ours must draw. Read once rather than in each of the four
+        // arms below that compare against it: `local_seq_no` is not written inside the match, and
+        // `+ 1` neither panics nor has an effect, so this is the same value at each use. It is
+        // hoisted for the proof -- every `SeqNumber` addition is a `wrap32` term, and `wrap32` is
+        // a three-way conditional, so four copies cost fixpoint four independent case splits.
+        let syn_ack_number = self.local_seq_no + 1;
+
         // Reject unacceptable acknowledgements.
         match (self.state, repr.control, repr.ack_number) {
             // An RST received in response to initial SYN is acceptable if it acknowledges
@@ -1698,7 +1705,7 @@ impl<'a> Socket<'a> {
                 return None;
             }
             (State::SynSent, TcpControl::Rst, Some(ack_number)) => {
-                if ack_number != self.local_seq_no + 1 {
+                if ack_number != syn_ack_number {
                     net_debug!("unacceptable RST|ACK in response to initial SYN");
                     return None;
                 }
@@ -1711,7 +1718,7 @@ impl<'a> Socket<'a> {
             (State::Listen, _, Some(_)) => unreachable!(),
             // SYN|ACK in the SYN-SENT state must have the exact ACK number.
             (State::SynSent, TcpControl::Syn, Some(ack_number)) => {
-                if ack_number != self.local_seq_no + 1 {
+                if ack_number != syn_ack_number {
                     net_debug!("unacceptable SYN|ACK in response to initial SYN");
                     return Some(Self::rst_reply(ip_repr, repr));
                 }
@@ -1726,7 +1733,7 @@ impl<'a> Socket<'a> {
                 // I'm not sure why, I think it may be a workaround for broken TCP
                 // servers, or a defense against reordering. Either way, if Linux
                 // does it, we do too.
-                if ack_number == self.local_seq_no + 1 {
+                if ack_number == syn_ack_number {
                     net_debug!(
                         "expecting a SYN|ACK, received an ACK with the right ack_number, ignoring."
                     );
@@ -1750,7 +1757,7 @@ impl<'a> Socket<'a> {
             }
             // ACK in the SYN-RECEIVED state must have the exact ACK number, or we RST it.
             (State::SynReceived, _, Some(ack_number)) => {
-                if ack_number != self.local_seq_no + 1 {
+                if ack_number != syn_ack_number {
                     net_debug!("unacceptable ACK in response to SYN|ACK");
                     return Some(Self::rst_reply(ip_repr, repr));
                 }
