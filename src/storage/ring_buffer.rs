@@ -253,9 +253,22 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
 //     where F: FnOnce(&mut [T][@n]) -> Written<R>{w: w.written <= n}
 // Probed on the real `enqueue_many_with` body: 1 checked, 16 constraints, the `assert!`
 // discharges. Negative control (weaken the bound to `<= n + 1`) puts the `assert!` error
-// back, so the discharge is genuine. Not landed: it is a public API change -- `f` would
-// return `Written<R>` instead of `(usize, R)`, and the obligation rides out to
-// `tcp::Socket::{send,recv}` and `{raw,icmp,udp}::Socket::send_with`.
+// back, so the discharge is genuine.
+//
+// NOT LANDED, and the reason is the *net*, measured crate-wide: both `assert!`s go, but the
+// obligation reappears one level up and the count moves 16 -> 16. Three new sites --
+// `packet_buffer.rs:191` (the closure at `enqueue_with_infallible` cannot show the size it
+// returns fits the slice) and `socket/tcp.rs:{send,recv}` (each forwards a caller's `f`
+// whose bound carries no refinement). The last two are recoverable by refining `send`/`recv`'s
+// own `F` bound, which exposes the obligation to the caller rather than failing -- except that
+// both use `f` from inside a closure passed to `send_impl`/`recv_impl`, where a refined `Fn`
+// bound naming an outer parameter does not infer.
+//
+// `packet_buffer.rs:191` is not recoverable that way. It needs `max_size <= data.len()`, i.e.
+// `enqueue_many_with`'s bound saying `n == r.contiguous_window` exactly, plus the padding
+// geometry that establishes `max_size <= contiguous_window` at that call. Until that chain is
+// done this trade is a public API change -- `f` returns `Written<R>` instead of `(usize, R)`,
+// and the obligation rides out to `{raw,icmp,udp}::Socket::send_with` -- for a net of zero.
 
 /// This is the "continuous" ring buffer interface: it operates with element slices,
 /// and boundary conditions (empty/full) simply result in empty slices.
