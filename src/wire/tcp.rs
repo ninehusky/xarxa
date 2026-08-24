@@ -260,9 +260,18 @@ impl cmp::PartialOrd for SeqNumber {
 ///
 /// The one premise is the shape of `segment_end`, which the caller already has: it is
 /// `seq_number + payload.len()`, and that is exactly `Add<usize>`'s postcondition. It buys the
-/// second obligation, `range.end <= payload.len()`. The first, `range.start <= range.end`, is
-/// the overlap ordering and needs the segment-acceptability facts, which the `bool` that
-/// carries them in `process` has already flattened -- see the call site.
+/// second obligation, `range.end <= payload.len()`.
+///
+/// The first, `range.start <= range.end`, is the overlap ordering, and it does **not** follow
+/// from the segment-acceptability test. Lifting that test in here too and having it return
+/// `bool{b: b => ...}` rather than a plain `bool` was tried: all three of its accepting arms
+/// fail, because modular comparison is not antisymmetric at exactly half a period. `ss < we` is
+/// `wrap32(ss - we) < 0`, and at `wrap32(ss - we) == -2^31` the mirror `wrap32(we - ss)` is
+/// `-2^31` as well, so both orders hold at once and no interval can be read off. The missing
+/// premise is that the receive window is shorter than 2^31 octets -- true, since
+/// `window_end - window_start` is a `u16` shifted left by at most 14, but the shift is a field
+/// of the unrefined `Socket`, so it is the same wall as the two ring-buffer obligations in
+/// `process`.
 #[flux_rs::reveal(wrap32, wrap32_up)]
 #[flux_rs::sig(
     fn(&[u8][@plen], SeqNumber[@ss], SeqNumber[@se], SeqNumber[@ws], SeqNumber[@we])
