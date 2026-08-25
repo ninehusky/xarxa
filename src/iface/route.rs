@@ -89,8 +89,6 @@ impl Routes {
     }
 
     /// Update the routes of this node.
-    #[flux_rs::no_panic_if(F::no_panic())]
-    #[flux_rs::sig(fn(&mut Self, F))]
     pub fn update<F: FnOnce(&mut Vec<Route, IFACE_MAX_ROUTE_COUNT>)>(&mut self, f: F) {
         f(&mut self.storage);
     }
