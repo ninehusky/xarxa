@@ -605,6 +605,7 @@ impl Repr {
     // needs; the window's own obligation is the caller's, and `emit_slice` is the way to
     // discharge it.
     #[flux_rs::trusted(no, reason = "panic site: the header setters and the payload window")]
+    #[flux_rs::no_panic_if(F::no_panic())]
     #[flux_rs::sig(
         fn(
             &Self,
@@ -620,13 +621,13 @@ impl Repr {
               && 8 + payload_len <= 65535
         ensures packet: Packet<T>[p.buffer, 8 + payload_len]
     )]
-    pub fn emit<T>(
+    pub fn emit<T, F: FnOnce(&mut [u8])>(
         &self,
         packet: &mut Packet<T>,
         src_addr: &IpAddress,
         dst_addr: &IpAddress,
         payload_len: usize,
-        emit_payload: impl FnOnce(&mut [u8]),
+        emit_payload: F,
         checksum_caps: &ChecksumCapabilities,
     ) where
         T: AsRef<[u8]> + AsMut<[u8]>,

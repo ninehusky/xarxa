@@ -158,6 +158,8 @@ impl<'a, H> PacketBuffer<'a, H> {
 
     /// Call `f` with a packet from the buffer large enough to fit `max_size` bytes. The packet
     /// is shrunk to the size returned from `f` and enqueued into the buffer.
+    #[flux_rs::no_panic_if(F::no_panic())]
+    #[flux_rs::sig(fn(&mut Self, usize, H, f: F) -> Result<usize, Full>)]
     pub fn enqueue_with_infallible<'b, F>(
         &'b mut self,
         max_size: usize,
