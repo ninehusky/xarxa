@@ -12,6 +12,7 @@
 //! | [`slice`] | `copy_from_slice`, `SliceIndex for RangeFull` | check the claim |
 //! | [`cmp`] | `min` | check the claim |
 //! | [`intrinsics`] | `discriminant_value` | check the claim |
+//! | [`iter`] | `slice::Iter::next` | check the claim |
 //! | [`byteorder`] | `BigEndian::{read_u16, write_u16}` | check the claim |
 //! | [`managed`] | `Vec`, `ManagedSlice` and its `Deref`/`DerefMut` impls | check the claim |
 //! | [`net`] | `Ipv6Addr::is_multicast` | check the claim |
@@ -24,6 +25,7 @@ mod cmp;
 mod convert;
 mod flux_core;
 mod intrinsics;
+mod iter;
 mod managed;
 mod net;
 mod num;
