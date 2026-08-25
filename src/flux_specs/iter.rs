@@ -1,6 +1,6 @@
 //! `core::slice`/`core::iter` specs xarxa states on its own behalf.
 
-use core::slice::Iter;
+use core::slice::{Iter, IterMut};
 
 use flux_rs::*;
 
@@ -16,3 +16,15 @@ impl<'a, T> Iterator for Iter<'a, T> {
     #[no_panic]
     fn next(&mut self) -> Option<&'a T>;
 }
+
+// Same argument, mutable side.
+#[extern_spec(core::slice)]
+impl<'a, T> Iterator for IterMut<'a, T> {
+    #[no_panic]
+    fn next(&mut self) -> Option<&'a mut T>;
+}
+
+// Deliberately NOT specified here: `array::equality::eq`, `PartialEq::ne`,
+// `Iterator::{find, any, find_map, map}`. Each delegates to caller-supplied code -- an
+// element's `eq`, or a closure -- so a blanket `no_panic` would be a false axiom rather
+// than a missing one. They want `no_panic_if(..)` over the callee's own condition.
