@@ -34,4 +34,5 @@ mod net;
 mod num;
 mod option;
 mod range;
+mod result;
 mod slice;
