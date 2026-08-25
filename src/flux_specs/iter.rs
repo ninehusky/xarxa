@@ -18,6 +18,36 @@ use flux_rs::*;
 impl<'a, T> Iterator for Iter<'a, T> {
     #[no_panic]
     fn next(&mut self) -> Option<&'a T>;
+
+    // `slice::Iter` specialises these rather than inheriting the trait's defaults, so the
+    // trait-level specs above do not reach them.
+    #[flux_rs::no_panic_if(P::no_panic())]
+    #[spec(fn(&mut Self, p: P) -> Option<<Self as Iterator>::Item>)]
+    fn find<P>(&mut self, predicate: P) -> Option<&'a T>
+    where
+        Self: Sized,
+        P: FnMut(&&'a T) -> bool;
+
+    #[flux_rs::no_panic_if(F::no_panic())]
+    #[spec(fn(&mut Self, f: F) -> bool)]
+    fn any<F>(&mut self, f: F) -> bool
+    where
+        Self: Sized,
+        F: FnMut(&'a T) -> bool;
+
+    #[flux_rs::no_panic_if(F::no_panic())]
+    #[spec(fn(&mut Self, f: F) -> Option<B>)]
+    fn find_map<B, F>(&mut self, f: F) -> Option<B>
+    where
+        Self: Sized,
+        F: FnMut(&'a T) -> Option<B>;
+
+    // No closure: `count` on a slice iterator is a length read.
+    #[no_panic]
+    #[spec(fn(Self) -> usize)]
+    fn count(self) -> usize
+    where
+        Self: Sized;
 }
 
 // Same argument, mutable side.
