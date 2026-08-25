@@ -95,18 +95,30 @@ impl InterfaceInner {
         })
     }
 
+    /// The `requires` is `Packet::new_checked_ref`'s `Ok` arm verbatim, which is how every
+    /// caller builds the packet, so the caller's proof survives the call instead of being
+    /// thrown away and redone.
+    ///
+    /// It is stated *alongside* the re-check below, not instead of it. Both production callers
+    /// discharge it, but the check is what the crate's own tests reach this body through --
+    /// `tests/ipv4.rs` builds its packet with `new_unchecked` -- and deleting a guard is only
+    /// licensed once every caller proves it cannot fire. Retained, the `requires` costs nothing:
+    /// the check is a no-op on every path that discharges it.
+    #[flux_rs::sig(
+        fn(&mut Self, &mut SocketSet, PacketMeta, HardwareAddress,
+           &Ipv4Packet<Ref>[@p], &mut FragmentsBuffer) -> Option<Packet>
+        requires 20 <= p.buffer.len && 20 <= p.hlen && p.hlen <= p.tlen
+              && p.tlen <= p.buffer.len && p.tlen <= 65535
+    )]
     pub(super) fn process_ipv4<'a>(
         &mut self,
         sockets: &mut SocketSet,
         meta: PacketMeta,
         source_hardware_addr: HardwareAddress,
-        ipv4_packet: &Ipv4Packet<&'a [u8]>,
+        ipv4_packet: &Ipv4Packet<Ref<'a>>,
         frag: &'a mut FragmentsBuffer,
     ) -> Option<Packet<'a>> {
-        // Re-check over a `Ref`, where the buffer's length is in the refinement: the caller's
-        // `Packet<&[u8]>` ran the same test and threw the answer away, and the `payload()`
-        // below needs it. The test is the one that already ran; nothing is removed.
-        let ipv4_packet = &check!(Ipv4Packet::new_checked_ref(ipv4_packet.as_window()));
+        check!(ipv4_packet.check_len());
         let mut ipv4_repr = check!(Ipv4Repr::parse_ref(ipv4_packet, &self.caps.checksum));
         if !self.is_unicast_v4(ipv4_repr.src_addr) && !ipv4_repr.src_addr.is_unspecified() {
             // Discard packets with non-unicast source addresses but allow unspecified
@@ -256,11 +268,18 @@ impl InterfaceInner {
         }
     }
 
+    /// `14 <= f.buffer.len` is what `Frame<Ref>::payload` requires -- the fixed part of the
+    /// Ethernet header. The caller has it from `new_checked_ref`, or from having already read
+    /// the ethertype to get here.
     #[cfg(feature = "medium-ethernet")]
+    #[flux_rs::sig(
+        fn(&mut Self, Instant, &EthernetFrame<Ref>[@f]) -> Option<EthernetPacket>
+        requires 14 <= f.buffer.len
+    )]
     pub(super) fn process_arp<'frame>(
         &mut self,
         timestamp: Instant,
-        eth_frame: &EthernetFrame<&'frame [u8]>,
+        eth_frame: &EthernetFrame<Ref<'frame>>,
     ) -> Option<EthernetPacket<'frame>> {
         let arp_packet = check!(ArpPacket::new_checked(eth_frame.payload()));
         let arp_repr = check!(ArpRepr::parse(&arp_packet));
@@ -322,14 +341,24 @@ impl InterfaceInner {
         }
     }
 
+    /// `ip_payload.len() <= 65535`: the payload is an IPv4 packet's, whose extent is the
+    /// sixteen-bit `total_len`, and `Icmpv4Repr::parse_ref` needs it so the returned datagram
+    /// it may carry stays representable in the reply's own header.
+    #[flux_rs::sig(
+        fn(&mut Self, &mut SocketSet, Ipv4Repr, &[u8][@n]) -> Option<Packet>
+        requires n <= 65535
+    )]
     pub(super) fn process_icmpv4<'frame>(
         &mut self,
         _sockets: &mut SocketSet,
         ip_repr: Ipv4Repr,
         ip_payload: &'frame [u8],
     ) -> Option<Packet<'frame>> {
-        let icmp_packet = check!(Icmpv4Packet::new_checked(ip_payload));
-        let icmp_repr = check!(Icmpv4Repr::parse(&icmp_packet, &self.caps.checksum));
+        // Through `Ref` and `parse_ref`: the generic `parse` is over a `&T` self type, whose
+        // unit sort means it cannot state `parse_ref`'s `p.buffer.len <= 65535` -- the bound
+        // that keeps a returned datagram's length representable in the reply's IPv4 header.
+        let icmp_packet = check!(Icmpv4Packet::new_checked_ref(Ref::new(ip_payload)));
+        let icmp_repr = check!(Icmpv4Repr::parse_ref(&icmp_packet, &self.caps.checksum));
 
         #[cfg(feature = "socket-icmp")]
         let mut handled_by_icmp_socket = false;

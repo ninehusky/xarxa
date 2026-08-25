@@ -241,8 +241,9 @@ impl<'p> Packet<'p> {
 
                 // Routed through `Buf` for the same reason as the Icmpv4 arm above: the window
                 // is `tcp_repr.buffer_len()` wide, which is this variant's index.
+                let mut tcp_packet = TcpPacket::new_unchecked(Buf::new(payload));
                 tcp_repr.emit(
-                    &mut TcpPacket::new_unchecked(Buf::new(payload)),
+                    &mut tcp_packet,
                     &_ip_repr.src_addr(),
                     &_ip_repr.dst_addr(),
                     &caps.checksum,
@@ -252,21 +253,21 @@ impl<'p> Packet<'p> {
             IpPayload::Dhcpv4(udp_repr, dhcp_repr) => {
                 // Routed through `Buf` so `udp::Repr::emit`'s buffer bound binds something: the
                 // window is `8 + dhcp_repr.buffer_len()` wide, which is this variant's index.
+                // `emit`'s two halves rather than `emit` itself. `emit` hands its closure a
+                // bare `&mut [u8]`, which loses its length on the way in (flux-rs/flux#1714),
+                // so `DhcpRepr::emit`'s 240-octet bound has nothing to argue from; a refined
+                // bound on the `FnOnce` parameter does not infer here either. Called in
+                // sequence, the window is an ordinary `Buf` whose length `emit_ports_and_len`
+                // has just pinned, and `SizedDhcpRepr`'s floor discharges the bound.
                 let mut udp_packet = UdpPacket::new_unchecked(Buf::new(payload));
-                udp_repr.emit(
+                udp_repr.emit_ports_and_len(&mut udp_packet, dhcp_repr.buffer_len());
+                dhcp_repr
+                    .emit(&mut DhcpPacket::new_unchecked(udp_packet.payload_buf()))
+                    .unwrap();
+                udp_repr.emit_checksum(
                     &mut udp_packet,
                     &_ip_repr.src_addr(),
                     &_ip_repr.dst_addr(),
-                    dhcp_repr.buffer_len(),
-                    // Routed through `Buf` for the same reason as the arms above: a bare
-                    // `&mut [u8]` instantiates core's blanket `AsMut for &mut T`, which carries
-                    // no associated refinement, and `DhcpRepr::emit`'s buffer bound would then
-                    // abort this closure rather than pose anything.
-                    |buf| {
-                        dhcp_repr
-                            .emit(&mut DhcpPacket::new_unchecked(Buf::new(buf)))
-                            .unwrap()
-                    },
                     &caps.checksum,
                 )
             }
@@ -332,7 +333,9 @@ pub(crate) struct PacketV6<'p> {
 // lengths are a `Vec` sum. A floor is enough for that arm's obligations, which are all of the
 // form `offset <= payload.len()`.
 #[flux_rs::refined_by(blen: int, minlen: int)]
-#[flux_rs::invariant(blen == -1 || 8 <= blen)]
+// 4 rather than 8: `Icmpv6Repr`'s own floor is 4, and its arm now carries an exact `blen`
+// rather than `-1`.
+#[flux_rs::invariant(blen == -1 || 4 <= blen)]
 #[flux_rs::invariant(0 <= minlen)]
 #[flux_rs::invariant(blen != -1 => minlen <= blen)]
 pub(crate) enum IpPayload<'p> {
@@ -343,16 +346,21 @@ pub(crate) enum IpPayload<'p> {
     #[flux_rs::variant((IgmpRepr) -> IpPayload[-1, 0])]
     Igmp(IgmpRepr),
     #[cfg(feature = "proto-ipv6")]
-    // `Icmpv6Repr`'s `blen` is a floor on its `buffer_len()`, not an equality -- the `Ndisc`
-    // arm's trailing options contribute a length `NdiscOptionRepr` cannot state -- so it goes
-    // in `minlen`, not `blen`. It is what `Repr::emit`'s `r.blen <= buffer` conjunct needs.
-    #[flux_rs::variant((Icmpv6Repr[@c]) -> IpPayload[-1, c.blen])]
+    // `Icmpv6Repr`'s `blen` is now an equality with its `buffer_len()`, not a floor: the
+    // `Ndisc` arm's trailing options used to contribute a length `NdiscOptionRepr` could not
+    // state, and `ndisc::Repr` is indexed by its full `buffer_len()` now. So it goes in `blen`
+    // as well as `minlen`, which is what lets `emit_payload` hand `Icmpv6Repr::emit` the exact
+    // buffer length its `Mld` arm needs.
+    #[flux_rs::variant((Icmpv6Repr[@c]) -> IpPayload[c.blen, c.blen])]
     Icmpv6(Icmpv6Repr<'p>),
     #[cfg(feature = "proto-ipv6")]
     // 2 is `Ipv6ExtHeaderRepr::header_len()`, which `emit_payload` writes before the
     // hop-by-hop options; the ICMPv6 packet then starts at `2 + h.blen`, so its own floor
     // adds on top.
-    #[flux_rs::variant((Ipv6HopByHopRepr[@h], Icmpv6Repr[@c]) -> IpPayload[-1, 2 + h.blen + c.blen])]
+    #[flux_rs::variant(
+        (Ipv6HopByHopRepr[@h], Icmpv6Repr[@c])
+            -> IpPayload[2 + h.blen + c.blen, 2 + h.blen + c.blen]
+    )]
     HopByHopIcmpv6(Ipv6HopByHopRepr<'p>, Icmpv6Repr<'p>),
     #[cfg(feature = "socket-raw")]
     #[flux_rs::variant((&[u8]) -> IpPayload[-1, 0])]
@@ -398,8 +406,19 @@ impl<'p> IpPayload<'p> {
 }
 
 #[cfg(any(feature = "proto-ipv4", feature = "proto-ipv6"))]
+// `requires header_len * 2 + 8 <= mtu` rather than a saturating subtraction: it is what stops
+// the `mtu - header_len * 2 - 8` below from wrapping, which under `check_overflow = "lazy"` it
+// otherwise may, yielding a budget near `usize::MAX` instead of a small one. Every call site
+// passes compile-time constants -- 20 against `IPV4_MIN_MTU`, 40 against `IPV6_MIN_MTU` -- so
+// it discharges there and the body keeps the arithmetic it had.
+//
+// `v <= mtu` is the half that matters downstream: it is what bounds the ICMP reply's payload,
+// and through it the reply repr's own `blen <= 65535`.
 #[flux_rs::trusted(no, reason = "the `v <= len` is what the reply's `[0..v]` window needs")]
-#[flux_rs::sig(fn(len: usize, usize, usize) -> usize{v: v <= len})]
+#[flux_rs::sig(
+    fn(len: usize, mtu: usize, header_len: usize) -> usize{v: v <= len && v <= mtu}
+    requires header_len * 2 + 8 <= mtu
+)]
 pub(crate) fn icmp_reply_payload_len(len: usize, mtu: usize, header_len: usize) -> usize {
     // Send back as much of the original payload as will fit within
     // the minimum MTU required by IPv4. See RFC 1812 § 4.3.2.3 for

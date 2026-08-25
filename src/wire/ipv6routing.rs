@@ -2,9 +2,10 @@ use super::{Error, Result};
 use core::fmt;
 
 use crate::wire::Ipv6Address as Address;
-use crate::wire::{sub, write_octets16_at};
+use crate::wire::{Ref, sub, write_octets16_at};
 
 enum_with_unknown! {
+    #[refined]
     /// IPv6 Extension Routing Header Routing Type
     pub enum Type(u8) {
         /// Source Route (DEPRECATED)
@@ -49,13 +50,56 @@ impl fmt::Display for Type {
     }
 }
 
-/// A read/write wrapper around an IPv6 Routing Header buffer.
-#[derive(Debug, PartialEq, Eq)]
+/// A ghost carrying the routing-type octet.
+///
+/// The bound `check_len` establishes is conditioned on the routing type -- 22 octets for Type2,
+/// 6 for Rpl -- and that is a property of the buffer's *contents*, so it cannot be a projection
+/// of anything already in the refinement. Same device as `ipv4`'s `hlen`/`tlen` ghosts, and it
+/// is what lets `checked_len` hand the per-type bound to `Repr::parse_ref`.
+#[flux_rs::opaque]
+#[flux_rs::refined_by(val: int)]
+#[flux_rs::invariant(0 <= val && val <= 255)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[flux_rs::refined_by(buffer: T)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+struct Ghost;
+
+impl Ghost {
+    /// A ghost whose value is unconstrained.
+    #[flux_rs::trusted(yes, reason = "opaque: the ghost carries no runtime value")]
+    #[flux_rs::sig(fn() -> Ghost{v: 0 <= v && v <= 255})]
+    #[flux_rs::no_panic]
+    const fn unknown() -> Ghost {
+        Ghost
+    }
+
+    /// A ghost pinned to `val`.
+    #[flux_rs::trusted(yes, reason = "opaque: establishes the ghost value")]
+    #[flux_rs::sig(fn(val: u8) -> Ghost[val])]
+    #[flux_rs::no_panic]
+    const fn from_u8(_val: u8) -> Ghost {
+        Ghost
+    }
+}
+
+/// A read/write wrapper around an IPv6 Routing Header buffer.
+//
+// Written out rather than derived for `Debug` so the ghost stays out of the output.
+#[derive(PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(buffer: T, rtype: int)]
 pub struct Header<T: AsRef<[u8]>> {
     #[flux_rs::field(T[buffer])]
     buffer: T,
+    #[flux_rs::field(Ghost[rtype])]
+    grtype: Ghost,
+}
+
+impl<T: AsRef<[u8]> + fmt::Debug> fmt::Debug for Header<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Header")
+            .field("buffer", &self.buffer)
+            .finish()
+    }
 }
 
 // Format of the Routing Header
@@ -149,7 +193,10 @@ fn read_ipv6_at(data: &[u8], at: usize) -> Address {
 impl<T: AsRef<[u8]>> Header<T> {
     /// Create a raw octet buffer with an IPv6 Routing Header structure.
     pub const fn new_unchecked(buffer: T) -> Header<T> {
-        Header { buffer }
+        Header {
+            buffer,
+            grtype: Ghost::unknown(),
+        }
     }
 
     /// Shorthand for a combination of [new_unchecked] and [check_len].
@@ -162,6 +209,54 @@ impl<T: AsRef<[u8]>> Header<T> {
         Ok(header)
     }
 
+    /// [`check_len`](Self::check_len), carrying its proof out through the `Ok` arm.
+    ///
+    /// The two per-type bounds are conditioned on `rtype`, which the ghost anchors: 22 octets
+    /// for Type2 (code 2, `field::HOME_ADDRESS.end`) and 6 for Rpl (code 3, `field::ADDRESSES`).
+    /// `Repr::parse_ref` matches on the same `routing_type()`, so each arm gets the bound its
+    /// accessors need.
+    #[flux_rs::trusted(no, reason = "carries the buffer length through the Result")]
+    #[flux_rs::sig(
+        fn(&Header<T>[@h])
+            -> Result<usize{v: v == <T as AsRef<[u8]>>::as_ref_reft(h.buffer) && 2 <= v
+                            && (h.rtype == 2 => 22 <= v)
+                            && (h.rtype == 3 => 6 <= v)}>
+    )]
+    fn checked_len(&self) -> Result<usize> {
+        // The test `check_len` used to run, moved here so its `Ok` arm can name what it proved.
+        // 2, 22 and 6 restate `field::MIN_HEADER_SIZE`, `field::HOME_ADDRESS.end` and
+        // `field::ADDRESSES`: flux cannot see through those consts.
+        let len = self.buffer.as_ref().len();
+        if len < 2 {
+            return Err(Error);
+        }
+        // The length test sits *inside* each arm rather than in a match guard: a guard that
+        // fails falls through to `_`, and the arm's `rtype` fact goes with it, so the
+        // postcondition's `h.rtype == 3 => 6 <= v` could not be proved.
+        match self.routing_type() {
+            Type::Type2 => {
+                if len < 22 {
+                    return Err(Error);
+                }
+            }
+            Type::Rpl => {
+                if len < 6 {
+                    return Err(Error);
+                }
+            }
+            // Spelled out rather than `_ => ()`: a catch-all does not give flux the negative
+            // facts, so `h.rtype != 2` was not available on this path and the postcondition's
+            // two implications could not be discharged. Same trap as `TcpOption::emit`.
+            Type::Type0
+            | Type::Nimrod
+            | Type::Reserved
+            | Type::Experiment1
+            | Type::Experiment2
+            | Type::Unknown(_) => (),
+        }
+        Ok(len)
+    }
+
     /// Ensure that no accessor method will panic if called.
     /// Returns `Err(Error)` if the buffer is too short.
     ///
@@ -169,17 +264,7 @@ impl<T: AsRef<[u8]>> Header<T> {
     ///
     /// [set_header_len]: #method.set_header_len
     pub fn check_len(&self) -> Result<()> {
-        let len = self.buffer.as_ref().len();
-        if len < field::MIN_HEADER_SIZE {
-            return Err(Error);
-        }
-
-        match self.routing_type() {
-            Type::Type2 if len < field::HOME_ADDRESS.end => return Err(Error),
-            Type::Rpl if len < field::ADDRESSES => return Err(Error),
-            _ => (),
-        }
-
+        self.checked_len()?;
         Ok(())
     }
 
@@ -191,9 +276,14 @@ impl<T: AsRef<[u8]>> Header<T> {
     /// Return the routing type field.
     // Literal offsets rather than the `field::` consts: flux cannot see through them, so the
     // bound has to be written out. Same throughout this file.
-    #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    /// The anchor for the `rtype` ghost: the return type *claims* the octet at offset 0 is
+    /// `rtype`. Nothing proves that -- the buffer's contents are not in the refinement -- so it
+    /// is the assumption `checked_len`'s per-type bound rests on. What keeps it true is that
+    /// `set_routing_type` is the only writer of that octet and updates the ghost in the same
+    /// step. The read itself stays checked: the bound below is discharged at every call site.
+    #[flux_rs::trusted(yes, reason = "anchors the `rtype` ghost to the octet at offset 0")]
     #[flux_rs::sig(
-        fn(self: &Header<T>[@h]) -> Type
+        fn(self: &Header<T>[@h]) -> Type[h.rtype]
         requires 1 <= <T as AsRef<[u8]>>::as_ref_reft(h.buffer)
     )]
     #[flux_rs::no_panic]
@@ -301,16 +391,24 @@ impl<T: AsRef<[u8]>> Header<T> {
 /// Core setter methods relevant to any routing type.
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     /// Set the routing type.
+    ///
+    /// `&strg` rather than `&mut`: an indexed `&mut` pins every field of the index, `rtype`
+    /// included, so no setter that moves the ghost can be called through it. This is a
+    /// flux-only change -- the Rust signature is still `&mut Header<T>`.
     #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
     #[flux_rs::sig(
-        fn(self: &mut Header<T>[@h], value: Type)
+        fn(self: &strg Header<T>[@h], value: Type[@c])
         requires 1 <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+        ensures self: Header<T>[h.buffer, c]
     )]
     #[flux_rs::no_panic]
     #[inline]
     pub fn set_routing_type(&mut self, value: Type) {
         let data = self.buffer.as_mut();
         data[0] = value.into(); // field::TYPE
+        // `u8::from` rather than `value.into()`: the macro specs `From<Type> for u8` as
+        // code-preserving, but `Into`'s blanket impl carries no spec, so the code is lost.
+        self.grtype = Ghost::from_u8(u8::from(value));
     }
 
     /// Set the segments left field.
@@ -439,28 +537,24 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     /// # Panics
     /// This function may panic if this header is not the RPL Source Routing Header routing type.
     //
-    // No `no_panic`: the `6 <= len` bound gates the window, but `copy_from_slice` panics
-    // unless `value.len()` is exactly `len - 6`, which is a real precondition of this function
-    // that no caller establishes. A returned `&mut` loses its length index
-    // (flux-rs/flux#1714), so `addresses`' length is unknown here and the equal-length assert
-    // stays. Stating it needs a `wire::buf` helper of the shape
-    // `fn(&mut [u8][@n], at: usize, src: &[u8][n - at]) requires at <= n`, which `copy_window_at`
-    // does not cover -- it takes the window length as an argument rather than deriving it.
+    // `copy_from_slice` panics unless `value.len()` is exactly `len - 6`. That is a real
+    // precondition of this function, now stated: `copy_suffix_at` derives the window's length
+    // rather than taking it as an argument, which `copy_window_at` cannot do.
     #[flux_rs::trusted(no, reason = "panic site: writes the address window at a fixed offset")]
     #[flux_rs::sig(
-        fn(self: &mut Header<T>[@h], value: &[u8])
-        requires 6 <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+        fn(self: &mut Header<T>[@h], value: &[u8][@m])
+        requires 6 + m == <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
     )]
+    #[flux_rs::no_panic]
     pub fn set_addresses(&mut self, value: &[u8]) {
         let data = self.buffer.as_mut();
-        let addresses = &mut data[6..]; // field::ADDRESSES
-        addresses.copy_from_slice(value);
+        crate::wire::copy_suffix_at(data, 6, value); // field::ADDRESSES
     }
 }
 
-impl<T: AsRef<[u8]> + ?Sized> fmt::Display for Header<&T> {
+impl fmt::Display for Header<Ref<'_>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match Repr::parse(self) {
+        match Repr::parse_ref(self) {
             Ok(repr) => write!(f, "{repr}"),
             Err(err) => {
                 write!(f, "IPv6 Routing ({err})")?;
@@ -507,11 +601,13 @@ pub enum Repr<'a> {
 
 impl<'a> Repr<'a> {
     /// Parse an IPv6 Routing Header and return a high-level representation.
-    pub fn parse<T>(header: &'a Header<&'a T>) -> Result<Repr<'a>>
-    where
-        T: AsRef<[u8]> + ?Sized,
-    {
-        header.check_len()?;
+    ///
+    /// There is no generic `parse` over `&T`: a reference in type-parameter position has the
+    /// unit sort, so nothing about the buffer's extent is statable there and none of the reads
+    /// below would be provable -- the body was not being refinement-checked at all. Callers
+    /// build a [`Ref`] instead.
+    pub fn parse_ref(header: &'a Header<Ref<'a>>) -> Result<Repr<'a>> {
+        header.checked_len()?;
         match header.routing_type() {
             Type::Type2 => Ok(Repr::Type2 {
                 segments_left: header.segments_left(),
@@ -549,10 +645,17 @@ impl<'a> Repr<'a> {
     //
     // `r.blen` is `buffer_len()`. `clear_reserved` reads the routing type back through `AsRef`,
     // which flux relates to the `AsMut` length nowhere, so both are named.
+    //
+    // `header` is `&strg`, not `&mut Header<T>[@h]`: an indexed `&mut` pins every field of the
+    // index, `rtype` included, so `set_routing_type` cannot be called through it. A `&strg`
+    // place carries the new index out instead. Flux-only; the Rust signature is unchanged.
     #[flux_rs::sig(
-        fn(self: &Self[@r], header: &mut Header<T>[@h])
-        requires r.blen <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+        fn(self: &Self[@r], header: &strg Header<T>[@h])
+        // Equality on the mutable side: `set_addresses` writes `buffer[6..]` from a slice of
+        // exactly `blen - 6`, and `copy_from_slice` panics on any other length.
+        requires r.blen == <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
               && r.blen <= <T as AsRef<[u8]>>::as_ref_reft(h.buffer)
+        ensures header: Header<T>{v: v.buffer == h.buffer}
     )]
     pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, header: &mut Header<T>) {
         match *self {
@@ -716,16 +819,16 @@ mod test {
 
     #[test]
     fn test_repr_parse_valid() {
-        let header = Header::new_checked(&BYTES_TYPE2[..]).unwrap();
-        let repr = Repr::parse(&header).unwrap();
+        let header = Header::new_checked(Ref::new(&BYTES_TYPE2[..])).unwrap();
+        let repr = Repr::parse_ref(&header).unwrap();
         assert_eq!(repr, REPR_TYPE2);
 
-        let header = Header::new_checked(&BYTES_SRH_FULL[..]).unwrap();
-        let repr = Repr::parse(&header).unwrap();
+        let header = Header::new_checked(Ref::new(&BYTES_SRH_FULL[..])).unwrap();
+        let repr = Repr::parse_ref(&header).unwrap();
         assert_eq!(repr, REPR_SRH_FULL);
 
-        let header = Header::new_checked(&BYTES_SRH_ELIDED[..]).unwrap();
-        let repr = Repr::parse(&header).unwrap();
+        let header = Header::new_checked(Ref::new(&BYTES_SRH_ELIDED[..])).unwrap();
+        let repr = Repr::parse_ref(&header).unwrap();
         assert_eq!(repr, REPR_SRH_ELIDED);
     }
 

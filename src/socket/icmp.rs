@@ -623,8 +623,9 @@ impl<'a> Socket<'a> {
                             return Ok(());
                         }
                     };
-                    let packet = Icmpv4Packet::new_unchecked(&*packet_buf);
-                    let repr = match Icmpv4Repr::parse(&packet, &ChecksumCapabilities::ignored()) {
+                    let packet = Icmpv4Packet::new_unchecked(Ref::new(&*packet_buf));
+                    let repr = match Icmpv4Repr::parse_ref(&packet, &ChecksumCapabilities::ignored())
+                    {
                         Ok(x) => x,
                         Err(_) => {
                             net_trace!(
@@ -647,8 +648,8 @@ impl<'a> Socket<'a> {
                 IpAddress::Ipv6(dst_addr) => {
                     let src_addr = cx.get_source_address_ipv6(&dst_addr);
 
-                    let packet = Icmpv6Packet::new_unchecked(&*packet_buf);
-                    let repr = match Icmpv6Repr::parse(
+                    let packet = Icmpv6Packet::new_unchecked(Ref::new(&*packet_buf));
+                    let repr = match Icmpv6Repr::parse_ref(
                         &src_addr,
                         &dst_addr,
                         &packet,

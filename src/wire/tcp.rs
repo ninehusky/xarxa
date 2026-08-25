@@ -5,7 +5,78 @@ use super::{Error, Result};
 use crate::phy::ChecksumCapabilities;
 use crate::wire::ip::checksum;
 use crate::wire::{IpAddress, IpProtocol};
-use crate::wire::{Ref, read_i32_at, read_u16_at, sub, write_i32_at, write_u16_at};
+use crate::wire::{
+    Buf, Maybe, Ref, read_i32_at, read_u16_at, sub, write_i32_at, write_u16_at, write_u32_at,
+};
+
+flux_rs::defs! {
+    // The octets `SackRanges` contributes to the options field, less the two kind/length
+    // octets, as a function of which of the three slots are occupied. Eight octets per
+    // occupied slot: a pair of 32-bit edges. Kept in lockstep with `SackRanges::block_len`
+    // and with `Repr::header_len`'s destructured sum, which is the same value.
+    fn sack_len(a: bool, b: bool, c: bool) -> int {
+        (if a { 8 } else { 0 }) + (if b { 8 } else { 0 }) + (if c { 8 } else { 0 })
+    }
+
+    // The octets the options field occupies, before the round up to a multiple of four.
+    // Kept in lockstep with `header_len_of`, which is the only place it is computed.
+    //
+    // The sACK term is `+ 2` for the kind and length octets, and is present whenever any slot
+    // is -- which is what `Repr::header_len` tests, and it is weaker than what `Repr::emit`
+    // tests, so the space is always at least what is written.
+    fn opt_len(mss: bool, ws: bool, sp: bool, ts: bool, a: bool, b: bool, c: bool) -> int {
+        (if mss { 4 } else { 0 })
+            + (if ws { 3 } else { 0 })
+            + (if sp { 2 } else { 0 })
+            + (if ts { 10 } else { 0 })
+            + (if a || b || c { sack_len(a, b, c) + 2 } else { 0 })
+    }
+
+    // The header length the options imply: the fixed 20 octets plus the options, rounded up to
+    // a multiple of four. Written out rather than as `20 + opt_len(..)` because a `defn` does
+    // not unfold inside another `defn`; `header_len_of`'s signature is what keeps the two in
+    // lockstep, and the shape below is the body's, so the round up matches statement for
+    // statement.
+    fn hdr_len(mss: bool, ws: bool, sp: bool, ts: bool, a: bool, b: bool, c: bool) -> int {
+        if (20
+            + (if mss { 4 } else { 0 })
+            + (if ws { 3 } else { 0 })
+            + (if sp { 2 } else { 0 })
+            + (if ts { 10 } else { 0 })
+            + (if a || b || c {
+                (if a { 8 } else { 0 }) + (if b { 8 } else { 0 }) + (if c { 8 } else { 0 }) + 2
+            } else {
+                0
+            })) % 4 == 0 { (20
+            + (if mss { 4 } else { 0 })
+            + (if ws { 3 } else { 0 })
+            + (if sp { 2 } else { 0 })
+            + (if ts { 10 } else { 0 })
+            + (if a || b || c {
+                (if a { 8 } else { 0 }) + (if b { 8 } else { 0 }) + (if c { 8 } else { 0 }) + 2
+            } else {
+                0
+            })) } else { (20
+            + (if mss { 4 } else { 0 })
+            + (if ws { 3 } else { 0 })
+            + (if sp { 2 } else { 0 })
+            + (if ts { 10 } else { 0 })
+            + (if a || b || c {
+                (if a { 8 } else { 0 }) + (if b { 8 } else { 0 }) + (if c { 8 } else { 0 }) + 2
+            } else {
+                0
+            })) + 4 - (20
+            + (if mss { 4 } else { 0 })
+            + (if ws { 3 } else { 0 })
+            + (if sp { 2 } else { 0 })
+            + (if ts { 10 } else { 0 })
+            + (if a || b || c {
+                (if a { 8 } else { 0 }) + (if b { 8 } else { 0 }) + (if c { 8 } else { 0 }) + 2
+            } else {
+                0
+            })) % 4 }
+    }
+}
 
 /// A TCP sequence number.
 ///
@@ -526,8 +597,8 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// array of ``None`` values will be returned.
     ///
     #[flux_rs::trusted(no, reason = "panic site: reslices the window named by the header length")]
-    #[flux_rs::sig(fn(&Packet<T>[@p]) -> Result<[Option<(u32, u32)>; 3]> requires 20 <= p.hlen && p.hlen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
-    pub fn selective_ack_ranges(&self) -> Result<[Option<(u32, u32)>; 3]> {
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> Result<SackRanges> requires 20 <= p.hlen && p.hlen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    pub fn selective_ack_ranges(&self) -> Result<SackRanges> {
         let header_len = self.header_len() as usize;
         let data = self.buffer.as_ref();
         let mut options = sub(data, 20, header_len - 20); // field::OPTIONS(header_len)
@@ -538,7 +609,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
             }
             options = next_options;
         }
-        Ok([None, None, None])
+        Ok(SackRanges::none())
     }
 
     /// Validate the partial checksum.
@@ -916,6 +987,24 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         &mut data[20..header_len] // field::OPTIONS(header_len)
     }
 
+    /// Return the options window, carrying its length in the refinement.
+    ///
+    /// [`options_mut`](Self::options_mut) cannot: a returned `&mut` loses its length index
+    /// (flux-rs/flux#1714), so the window arrives as an unindexed slice and nothing written into
+    /// it can be shown to fit. `Buf` is how the rest of the crate carries a length across that
+    /// boundary; the length claimed here is the one `options_mut` slices to, and the bound that
+    /// makes that slicing legal is the `requires` below, discharged at the call site.
+    #[flux_rs::trusted(yes, reason = "returned &mut loses its length; see flux-rs/flux#1714")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p]) -> Buf[p.hlen - 20]
+        requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer) && 20 <= p.hlen && p.hlen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
+    #[inline]
+    pub fn options_buf(&mut self) -> Buf<'_> {
+        Buf::new(self.options_mut())
+    }
+
     /// Return a mutable pointer to the payload data.
     //
     // See `options_mut` on why this indexes directly.
@@ -930,6 +1019,23 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         let header_len = self.header_len() as usize;
         let data = self.buffer.as_mut();
         &mut data[header_len..]
+    }
+
+    /// Return the payload window, carrying its length in the refinement.
+    ///
+    /// Same relation to [`payload_mut`](Self::payload_mut) as
+    /// [`options_buf`](Self::options_buf) has to `options_mut`, and for the same reason: a
+    /// returned `&mut` loses its length index (flux-rs/flux#1714), so the payload copy in
+    /// [`Repr::emit`] cannot be shown to fit the window it is copied into.
+    #[flux_rs::trusted(yes, reason = "returned &mut loses its length; see flux-rs/flux#1714")]
+    #[flux_rs::sig(
+        fn(self: &mut Packet<T>[@p]) -> Buf[<T as AsMut<[u8]>>::as_mut_reft(p.buffer) - p.hlen]
+        requires 14 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer) && p.hlen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
+    #[inline]
+    pub fn payload_buf(&mut self) -> Buf<'_> {
+        Buf::new(self.payload_mut())
     }
 }
 
@@ -946,17 +1052,128 @@ impl<T: AsRef<[u8]>> AsRef<[u8]> for Packet<T> {
     }
 }
 
+/// One SACK block: the pair of 32-bit edges, or its absence.
+///
+/// `Option<(u32, u32)>` in all but name. It exists because a refinement cannot be attached to
+/// `core::Option` from outside: `Option` already has flux's default field-less sort, and an
+/// `extern_spec` giving it `refined_by(is_some: bool)` leaves two encodings of the same type
+/// alive at once, which crashes fixpoint's sort elaboration. See `ICE-INBOX.md`, 2026-08-20.
+/// A crate-local enum has no default to conflict with. Same shape as [`HardwareAddress`], which
+/// is refined by a bool and has always verified.
+///
+/// [`HardwareAddress`]: crate::wire::HardwareAddress
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(present: bool)]
+pub enum SackBlock {
+    #[flux_rs::variant(SackBlock[false])]
+    Absent,
+    #[flux_rs::variant((u32, u32) -> SackBlock[true])]
+    Present(u32, u32),
+}
+
+impl SackBlock {
+    /// Whether this block is advertised.
+    #[flux_rs::sig(fn(&SackBlock[@b]) -> bool[b])]
+    pub const fn is_present(&self) -> bool {
+        matches!(self, SackBlock::Present(..))
+    }
+
+    /// The block as an `Option`.
+    ///
+    /// The refinement is lost on the way out -- `Option` is unrefined here, which is the whole
+    /// reason this type exists -- so this is for callers who only want the value.
+    pub const fn as_option(&self) -> Option<(u32, u32)> {
+        match *self {
+            SackBlock::Present(left, right) => Some((left, right)),
+            SackBlock::Absent => None,
+        }
+    }
+
+    /// The block from an `Option`.
+    ///
+    /// The result's `present` is unknown to flux, for the same reason as [`as_option`]. That is
+    /// enough for every bound in this module: `Repr::header_len` sizes the options window from
+    /// the same three bools that `TcpOption::SackRange`'s length is a function of, so they
+    /// cancel whatever they are.
+    ///
+    /// [`as_option`]: Self::as_option
+    pub const fn from_option(value: Option<(u32, u32)>) -> SackBlock {
+        match value {
+            Some((left, right)) => SackBlock::Present(left, right),
+            None => SackBlock::Absent,
+        }
+    }
+}
+
+/// The SACK blocks a segment advertises: up to three, each a pair of 32-bit edges.
+///
+/// Three named fields rather than `[SackBlock; 3]` because `[T; N]` has the unit sort, so the
+/// number of occupied slots is not statable at the array type -- and that count is exactly what
+/// `TcpOption::SackRange`'s length is a function of. As three fields the count is in the
+/// refinement and `sack_len` can name it.
+///
+/// The slots are filled from `first`: a later slot occupied while an earlier one is empty is
+/// not produced by either `Repr::parse` or the socket, but it is representable, and both
+/// `block_len` and `emit` handle it by compacting, as the old `filter()` did.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(a: bool, b: bool, c: bool)]
+pub struct SackRanges {
+    #[flux_rs::field(SackBlock[a])]
+    pub first: SackBlock,
+    #[flux_rs::field(SackBlock[b])]
+    pub second: SackBlock,
+    #[flux_rs::field(SackBlock[c])]
+    pub third: SackBlock,
+}
+
+impl SackRanges {
+    /// No blocks advertised.
+    #[flux_rs::sig(fn() -> SackRanges[false, false, false])]
+    pub const fn none() -> SackRanges {
+        SackRanges {
+            first: SackBlock::Absent,
+            second: SackBlock::Absent,
+            third: SackBlock::Absent,
+        }
+    }
+
+    /// Whether any block is advertised.
+    #[flux_rs::sig(fn(&SackRanges[@s]) -> bool[s.a || s.b || s.c])]
+    pub const fn any(&self) -> bool {
+        self.first.is_present() || self.second.is_present() || self.third.is_present()
+    }
+
+    /// The octets the blocks occupy, less the two kind/length octets.
+    #[flux_rs::sig(fn(&SackRanges[@s]) -> usize[sack_len(s.a, s.b, s.c)])]
+    pub const fn block_len(&self) -> usize {
+        (if self.first.is_present() { 8 } else { 0 })
+            + (if self.second.is_present() { 8 } else { 0 })
+            + (if self.third.is_present() { 8 } else { 0 })
+    }
+}
+
 /// A representation of a single TCP option.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(blen: int)]
 pub enum TcpOption<'a> {
+    #[flux_rs::variant(TcpOption[1])]
     EndOfList,
+    #[flux_rs::variant(TcpOption[1])]
     NoOperation,
+    #[flux_rs::variant((u16) -> TcpOption[4])]
     MaxSegmentSize(u16),
+    #[flux_rs::variant((u8) -> TcpOption[3])]
     WindowScale(u8),
+    #[flux_rs::variant(TcpOption[2])]
     SackPermitted,
-    SackRange([Option<(u32, u32)>; 3]),
+    #[flux_rs::variant((SackRanges[@s]) -> TcpOption[2 + sack_len(s.a, s.b, s.c)])]
+    SackRange(SackRanges),
+    #[flux_rs::variant({u32, u32} -> TcpOption[10])]
     TimeStamp { tsval: u32, tsecr: u32 },
+    #[flux_rs::variant({u8, &[u8][@n]} -> TcpOption[2 + n])]
     Unknown { kind: u8, data: &'a [u8] },
 }
 
@@ -970,15 +1187,15 @@ pub enum TcpOption<'a> {
 ///
 /// RFC 2018: Each contiguous block of data queued at the data receiver is defined in the SACK
 /// option by two 32-bit unsigned integers in network byte order[...]
-#[flux_rs::sig(fn(&[u8][@n], at: usize) -> Option<(u32, u32)> requires at <= 16)]
-fn sack_block(data: &[u8], at: usize) -> Option<(u32, u32)> {
+#[flux_rs::sig(fn(&[u8][@n], at: usize) -> SackBlock requires at <= 16)]
+fn sack_block(data: &[u8], at: usize) -> SackBlock {
     if at + 8 <= data.len() {
-        Some((
+        SackBlock::Present(
             NetworkEndian::read_u32(&data[at..at + 4]),
             NetworkEndian::read_u32(&data[at + 4..at + 8]),
-        ))
+        )
     } else {
-        None
+        SackBlock::Absent
     }
 }
 
@@ -1038,7 +1255,7 @@ impl<'a> TcpOption<'a> {
                             // maximum of 3 SACK blocks will be allowed in this case.
                             net_debug!("sACK with >3 blocks, truncating to 3");
                         }
-                        let sack_ranges: [Option<(u32, u32)>; 3];
+                        let sack_ranges: SackRanges;
 
                         // RFC 2018: Each contiguous block of data queued at the data receiver is
                         // defined in the SACK option by two 32-bit unsigned integers in network
@@ -1047,11 +1264,11 @@ impl<'a> TcpOption<'a> {
                         // `enumerate` hands out an unbounded `usize`, and with `i` unbounded
                         // `i * 8 + 4` is a possible overflow -- enough to lose `left <= mid`
                         // before any bound on `data` is considered.
-                        sack_ranges = [
-                            sack_block(data, 0),
-                            sack_block(data, 8),
-                            sack_block(data, 16),
-                        ];
+                        sack_ranges = SackRanges {
+                            first: sack_block(data, 0),
+                            second: sack_block(data, 8),
+                            third: sack_block(data, 16),
+                        };
                         option = TcpOption::SackRange(sack_ranges);
                     }
                     (field::OPT_TSTAMP, 10) => {
@@ -1066,6 +1283,7 @@ impl<'a> TcpOption<'a> {
         Ok((&buffer[length..], option))
     }
 
+    #[flux_rs::sig(fn(&Self[@o]) -> usize[o.blen])]
     pub fn buffer_len(&self) -> usize {
         match *self {
             TcpOption::EndOfList => 1,
@@ -1073,12 +1291,14 @@ impl<'a> TcpOption<'a> {
             TcpOption::MaxSegmentSize(_) => 4,
             TcpOption::WindowScale(_) => 3,
             TcpOption::SackPermitted => 2,
-            TcpOption::SackRange(s) => s.iter().filter(|s| s.is_some()).count() * 8 + 2,
+            TcpOption::SackRange(s) => s.block_len() + 2,
             TcpOption::TimeStamp { tsval: _, tsecr: _ } => 10,
-            TcpOption::Unknown { data, .. } => 2 + data.len(),
+            TcpOption::Unknown { data, .. } => 2 + crate::flux_util::byte_len(data),
         }
     }
 
+    #[flux_rs::sig(fn(&Self[@o], buffer: &mut [u8][@n]) -> &mut [u8][n - o.blen]
+                   requires o.blen <= n)]
     pub fn emit<'b>(&self, buffer: &'b mut [u8]) -> &'b mut [u8] {
         let length;
         match *self {
@@ -1093,7 +1313,12 @@ impl<'a> TcpOption<'a> {
                 length = 1;
                 buffer[0] = field::OPT_NOP;
             }
-            _ => {
+            TcpOption::MaxSegmentSize(_)
+            | TcpOption::WindowScale(_)
+            | TcpOption::SackPermitted
+            | TcpOption::SackRange(_)
+            | TcpOption::TimeStamp { .. }
+            | TcpOption::Unknown { .. } => {
                 length = self.buffer_len();
                 buffer[1] = length as u8;
                 match self {
@@ -1109,18 +1334,28 @@ impl<'a> TcpOption<'a> {
                     &TcpOption::SackPermitted => {
                         buffer[0] = field::OPT_SACKPERM;
                     }
-                    &TcpOption::SackRange(slice) => {
+                    &TcpOption::SackRange(ranges) => {
                         buffer[0] = field::OPT_SACKRNG;
-                        slice
-                            .iter()
-                            .filter(|s| s.is_some())
-                            .enumerate()
-                            .for_each(|(i, s)| {
-                                let (first, second) = *s.as_ref().unwrap();
-                                let pos = i * 8 + 2;
-                                NetworkEndian::write_u32(&mut buffer[pos..], first);
-                                NetworkEndian::write_u32(&mut buffer[pos + 4..], second);
-                            });
+                        // Three explicit writes with a running offset rather than
+                        // `filter().enumerate()`: `enumerate` hands out an unbounded `usize`,
+                        // so `i * 8 + 2` is unbounded and neither write under it is in bounds.
+                        // `pos` advances only on an occupied slot, which is the compaction
+                        // `filter` performed.
+                        let mut pos = 2;
+                        if let SackBlock::Present(left, right) = ranges.first {
+                            write_u32_at(buffer, pos, left);
+                            write_u32_at(buffer, pos + 4, right);
+                            pos += 8;
+                        }
+                        if let SackBlock::Present(left, right) = ranges.second {
+                            write_u32_at(buffer, pos, left);
+                            write_u32_at(buffer, pos + 4, right);
+                            pos += 8;
+                        }
+                        if let SackBlock::Present(left, right) = ranges.third {
+                            write_u32_at(buffer, pos, left);
+                            write_u32_at(buffer, pos + 4, right);
+                        }
                     }
                     &TcpOption::TimeStamp { tsval, tsecr } => {
                         buffer[0] = field::OPT_TSTAMP;
@@ -1172,7 +1407,14 @@ impl Control {
 }
 
 /// A high-level representation of a Transmission Control Protocol packet.
+//
+// Indexed by the payload's length, and nothing else. That is enough to give `buffer_len` a
+// ceiling as well as its floor, which is what `IpRepr::new` and `set_payload_len` need against
+// `Ipv4Repr`/`Ipv6Repr`'s `plen <= 65535`. There is no invariant, so the index is derived at
+// every construction site rather than owed -- the 492 struct literals across the crate are
+// untouched.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[flux_rs::refined_by(plen: int, mss: bool, ws: bool, sp: bool, ts: bool, a: bool, b: bool, c: bool)]
 pub struct Repr<'a> {
     pub src_port: u16,
     pub dst_port: u16,
@@ -1180,11 +1422,17 @@ pub struct Repr<'a> {
     pub seq_number: SeqNumber,
     pub ack_number: Option<SeqNumber>,
     pub window_len: u16,
-    pub window_scale: Option<u8>,
-    pub max_seg_size: Option<u16>,
+    #[flux_rs::field(Maybe<u8>[ws])]
+    pub window_scale: Maybe<u8>,
+    #[flux_rs::field(Maybe<u16>[mss])]
+    pub max_seg_size: Maybe<u16>,
+    #[flux_rs::field(bool[sp])]
     pub sack_permitted: bool,
-    pub sack_ranges: [Option<(u32, u32)>; 3],
-    pub timestamp: Option<TcpTimestampRepr>,
+    #[flux_rs::field(SackRanges[a, b, c])]
+    pub sack_ranges: SackRanges,
+    #[flux_rs::field(Maybe<TcpTimestampRepr>[ts])]
+    pub timestamp: Maybe<TcpTimestampRepr>,
+    #[flux_rs::field(&[u8][plen])]
     pub payload: &'a [u8],
 }
 
@@ -1211,6 +1459,55 @@ impl TcpTimestampRepr {
     ) -> Option<Self> {
         Some(Self::new(generator?(), tsval))
     }
+}
+
+/// The header length implied by a set of options, in octets.
+///
+/// The floor is what matters and it is stated over the *arguments*, not over a `Repr`: a caller
+/// that has read the option fields into locals gets back a length it can compare against what it
+/// is about to write. [`Repr::emit`] is that caller, and it is why this is not a method -- read
+/// twice, the fields would give two unrelated values.
+///
+/// `(v / 4) * 4` rather than `v` because that is what `Packet::set_header_len` stores: the field
+/// is a four-bit count of 32-bit words. The round up below makes the two coincide, and stating
+/// it this way means nothing downstream has to know that.
+#[flux_rs::trusted(no, reason = "relates the header length to the options it accounts for")]
+#[flux_rs::sig(
+    fn(mss: &Maybe<u16>[@m], ws: &Maybe<u8>[@w], sp: bool[@s], ts: &Maybe<TcpTimestampRepr>[@t],
+       ranges: &SackRanges[@r])
+        -> usize{v: v == hdr_len(m, w, s, t, r.a, r.b, r.c) && 20 <= v && v <= 68}
+)]
+#[flux_rs::no_panic]
+fn header_len_of(
+    mss: &Maybe<u16>,
+    ws: &Maybe<u8>,
+    sack_permitted: bool,
+    ts: &Maybe<TcpTimestampRepr>,
+    ranges: &SackRanges,
+) -> usize {
+    let mut length = 20; // field::URGENT.end
+    if mss.is_present() {
+        length += 4
+    }
+    if ws.is_present() {
+        length += 3
+    }
+    if sack_permitted {
+        length += 2;
+    }
+    if ts.is_present() {
+        length += 10;
+    }
+    let sack_range_len: usize = ranges.block_len();
+    if sack_range_len > 0 {
+        length += sack_range_len + 2;
+    }
+    // `length % 4 != 0` rather than `!length.is_multiple_of(4)`: that method carries no
+    // flux spec, so `no_panic` reports it as a possible panic. Same test.
+    if length % 4 != 0 {
+        length += 4 - length % 4;
+    }
+    length
 }
 
 impl<'a> Repr<'a> {
@@ -1280,18 +1577,18 @@ impl<'a> Repr<'a> {
         // however, most deployed systems (e.g. Linux) are *not* standards-compliant, and would
         // cut the byte at the urgent pointer from the stream.
 
-        let mut max_seg_size = None;
-        let mut window_scale = None;
+        let mut max_seg_size = Maybe::Nothing;
+        let mut window_scale = Maybe::Nothing;
         let mut options = packet.options();
         let mut sack_permitted = false;
-        let mut sack_ranges = [None, None, None];
-        let mut timestamp = None;
+        let mut sack_ranges = SackRanges::none();
+        let mut timestamp = Maybe::Nothing;
         while !options.is_empty() {
             let (next_options, option) = TcpOption::parse(options)?;
             match option {
                 TcpOption::EndOfList => break,
                 TcpOption::NoOperation => (),
-                TcpOption::MaxSegmentSize(value) => max_seg_size = Some(value),
+                TcpOption::MaxSegmentSize(value) => max_seg_size = Maybe::Just(value),
                 TcpOption::WindowScale(value) => {
                     // RFC 1323: Thus, the shift count must be limited to 14 (which allows windows
                     // of 2**30 = 1 Gigabyte). If a Window Scale option is received with a shift.cnt
@@ -1305,15 +1602,15 @@ impl<'a> Repr<'a> {
                             dst_addr,
                             packet.dst_port()
                         );
-                        Some(14)
+                        Maybe::Just(14)
                     } else {
-                        Some(value)
+                        Maybe::Just(value)
                     };
                 }
                 TcpOption::SackPermitted => sack_permitted = true,
                 TcpOption::SackRange(slice) => sack_ranges = slice,
                 TcpOption::TimeStamp { tsval, tsecr } => {
-                    timestamp = Some(TcpTimestampRepr::new(tsval, tsecr));
+                    timestamp = Maybe::Just(TcpTimestampRepr::new(tsval, tsecr));
                 }
                 _ => (),
             }
@@ -1341,9 +1638,10 @@ impl<'a> Repr<'a> {
     /// This should be used for buffer space calculations.
     /// The TCP header length is a multiple of 4.
     ///
-    /// A range, not the exact value: the option bytes turn on `Option::is_some` and on how many
-    /// of the three sACK slots are filled, and neither is reachable in the refinement -- an
-    /// `Option` index and an array element index are both out of reach here.
+    /// A range, not the exact value: whether an option is present is a fact about the `Option`
+    /// fields, which are not in this type's refinement. [`header_len_of`] states the exact
+    /// relation for a caller that has already taken those fields apart, which is what
+    /// [`emit`](Self::emit) does.
     ///
     /// 20 is `field::URGENT.end`, restated as a literal because flux cannot see through the
     /// `Range` const it comes from; it is what the fixed part of the header costs. 68 is the
@@ -1351,38 +1649,16 @@ impl<'a> Repr<'a> {
     /// multiple of four. The ceiling is what keeps the sum in `buffer_len` from reading as a
     /// wrapping one, and what bounds the `as u8` cast in `emit`.
     #[flux_rs::trusted(no, reason = "bounds the emitted header length")]
-    #[flux_rs::sig(fn(&Self) -> usize{v: 20 <= v && v <= 68})]
+    #[flux_rs::sig(fn(&Self[@r]) -> usize{v: v == hdr_len(r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c) && 20 <= v && v <= 68})]
     #[flux_rs::no_panic]
     pub fn header_len(&self) -> usize {
-        let mut length = 20; // field::URGENT.end
-        if self.max_seg_size.is_some() {
-            length += 4
-        }
-        if self.window_scale.is_some() {
-            length += 3
-        }
-        if self.sack_permitted {
-            length += 2;
-        }
-        if self.timestamp.is_some() {
-            length += 10;
-        }
-        // Destructured rather than `iter().map().sum()`: `Iterator::sum` carries no bound, so
-        // the sum is an unconstrained `usize` and every bound below it is lost. Three slots,
-        // eight octets each, same value.
-        let [a, b, c] = self.sack_ranges;
-        let sack_range_len: usize = (if a.is_some() { 8 } else { 0 })
-            + (if b.is_some() { 8 } else { 0 })
-            + (if c.is_some() { 8 } else { 0 });
-        if sack_range_len > 0 {
-            length += sack_range_len + 2;
-        }
-        // `length % 4 != 0` rather than `!length.is_multiple_of(4)`: that method carries no
-        // flux spec, so `no_panic` reports it as a possible panic. Same test.
-        if length % 4 != 0 {
-            length += 4 - length % 4;
-        }
-        length
+        header_len_of(
+            &self.max_seg_size,
+            &self.window_scale,
+            self.sack_permitted,
+            &self.timestamp,
+            &self.sack_ranges,
+        )
     }
 
     /// Return the length of a packet that will be emitted from this high-level representation.
@@ -1393,8 +1669,8 @@ impl<'a> Repr<'a> {
     ///
     /// `byte_len` rather than `.len()` so the sum carries the `isize::MAX` ceiling; without it
     /// `check_overflow = "lazy"` models the addition as wrapping and the floor is lost.
-    #[flux_rs::trusted(no, reason = "floor on the emitted packet length")]
-    #[flux_rs::sig(fn(&Self) -> usize{v: 20 <= v})]
+    #[flux_rs::trusted(no, reason = "the emitted packet length, exactly")]
+    #[flux_rs::sig(fn(&Self[@r]) -> usize{v: v == hdr_len(r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c) + r.plen && 20 <= v})]
     pub fn buffer_len(&self) -> usize {
         self.header_len() + crate::flux_util::byte_len(self.payload)
     }
@@ -1422,8 +1698,9 @@ impl<'a> Repr<'a> {
     // is still `&mut Packet<T>`. Same move as `ipv4::Repr::emit`.
     #[flux_rs::trusted(no, reason = "panic site: the header setters and the payload copy")]
     #[flux_rs::sig(
-        fn(&Self, packet: &strg Packet<T>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities)
-        requires 20 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        fn(&Self[@r], packet: &strg Packet<T>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities)
+        requires hdr_len(r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c) + r.plen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+              && hdr_len(r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c) + r.plen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
               && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
         ensures packet: Packet<T>{q: q.buffer == p.buffer}
     )]
@@ -1441,7 +1718,18 @@ impl<'a> Repr<'a> {
         packet.set_seq_number(self.seq_number);
         packet.set_ack_number(self.ack_number.unwrap_or(SeqNumber(0)));
         packet.set_window_len(self.window_len);
-        packet.set_header_len(self.header_len() as u8);
+        // Each option-bearing field is read once, here, into a value flux can name. Reading
+        // `self.max_seg_size` again below would give a second, unrelated value: the length
+        // computed from the first would then say nothing about the branch taken by the second,
+        // and every option write would be unbounded. `header_len_of` and the block below share
+        // these five locals for exactly that reason.
+        let mss = self.max_seg_size;
+        let ws = self.window_scale;
+        let ts = self.timestamp;
+        let sack_permitted = self.sack_permitted;
+        let sack_ranges = self.sack_ranges;
+        let header_len = header_len_of(&mss, &ws, sack_permitted, &ts, &sack_ranges);
+        packet.set_header_len(header_len as u8);
         packet.clear_flags();
         match self.control {
             Control::None => (),
@@ -1452,23 +1740,24 @@ impl<'a> Repr<'a> {
         }
         packet.set_ack(self.ack_number.is_some());
         {
-            let mut options = packet.options_mut();
-            if let Some(value) = self.max_seg_size {
+            let mut window = packet.options_buf();
+            let mut options: &mut [u8] = window.as_mut();
+            if let Maybe::Just(value) = mss {
                 let tmp = options;
                 options = TcpOption::MaxSegmentSize(value).emit(tmp);
             }
-            if let Some(value) = self.window_scale {
+            if let Maybe::Just(value) = ws {
                 let tmp = options;
                 options = TcpOption::WindowScale(value).emit(tmp);
             }
-            if self.sack_permitted {
+            if sack_permitted {
                 let tmp = options;
                 options = TcpOption::SackPermitted.emit(tmp);
-            } else if self.ack_number.is_some() && self.sack_ranges.iter().any(|s| s.is_some()) {
+            } else if self.ack_number.is_some() && sack_ranges.any() {
                 let tmp = options;
-                options = TcpOption::SackRange(self.sack_ranges).emit(tmp);
+                options = TcpOption::SackRange(sack_ranges).emit(tmp);
             }
-            if let Some(timestamp) = self.timestamp {
+            if let Maybe::Just(timestamp) = ts {
                 let tmp = options;
                 options = TcpOption::TimeStamp {
                     tsval: timestamp.tsval,
@@ -1482,7 +1771,8 @@ impl<'a> Repr<'a> {
             }
         }
         packet.set_urgent_at(0);
-        packet.payload_mut()[..self.payload.len()].copy_from_slice(self.payload);
+        let mut window = packet.payload_buf();
+        window.as_mut()[..self.payload.len()].copy_from_slice(self.payload);
 
         if checksum_caps.tcp.tx() {
             packet.fill_checksum(src_addr, dst_addr)
@@ -1523,9 +1813,12 @@ impl<'a> Repr<'a> {
 /// Same device as `dhcpv4::SizedRepr`.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 // 20 is `Repr::buffer_len`'s floor, the fixed part of the TCP header.
-#[flux_rs::refined_by(blen: int)]
+#[flux_rs::refined_by(blen: int, plen: int, mss: bool, ws: bool, sp: bool, ts: bool,
+                      a: bool, b: bool, c: bool)]
 #[flux_rs::invariant(20 <= blen)]
+#[flux_rs::invariant(blen == hdr_len(mss, ws, sp, ts, a, b, c) + plen)]
 pub(crate) struct SizedRepr<'a> {
+    #[flux_rs::field(Repr[plen, mss, ws, sp, ts, a, b, c])]
     repr: Repr<'a>,
     #[flux_rs::field(usize[blen])]
     blen: usize,
@@ -1533,6 +1826,14 @@ pub(crate) struct SizedRepr<'a> {
 
 impl<'a> SizedRepr<'a> {
     /// Measure `repr` and keep the two together.
+    ///
+    /// The result's `blen` is carried out against the repr's payload length, which is what lets
+    /// a caller holding a short payload -- `Socket::reply` builds one with `payload: &[]` --
+    /// discharge `IpRepr::new`'s and `set_payload_len`'s `plen <= 65535`.
+    #[flux_rs::sig(
+        fn(Repr[@r]) -> SizedRepr[hdr_len(r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c) + r.plen,
+                                  r.plen, r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c]
+    )]
     pub(crate) fn new(repr: Repr<'a>) -> Self {
         let blen = repr.buffer_len();
         Self { repr, blen }
@@ -1546,7 +1847,7 @@ impl<'a> SizedRepr<'a> {
     }
 
     /// The header length, as [`Repr::header_len`] reports it.
-    #[flux_rs::sig(fn(&Self) -> usize{v: 20 <= v && v <= 68})]
+    #[flux_rs::sig(fn(&Self[@r]) -> usize{v: v == hdr_len(r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c) && 20 <= v && v <= 68})]
     pub(crate) fn header_len(&self) -> usize {
         self.repr.header_len()
     }
@@ -1562,21 +1863,21 @@ impl<'a> SizedRepr<'a> {
     /// `&strg` so the caller keeps `blen`, as for the three setters below. None of these four
     /// fields is part of what [`Repr::buffer_len`] counts, and each postcondition is proved
     /// rather than stated -- the body writes `repr` and leaves the measured length alone.
-    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], u16) ensures self: SizedRepr[r.blen])]
+    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], u16) ensures self: SizedRepr[r.blen, r.plen, r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c])]
     #[flux_rs::no_panic]
     pub(crate) fn set_window_len(&mut self, value: u16) {
         self.repr.window_len = value;
     }
 
     /// Set the control flag.
-    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], Control) ensures self: SizedRepr[r.blen])]
+    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], Control) ensures self: SizedRepr[r.blen, r.plen, r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c])]
     #[flux_rs::no_panic]
     pub(crate) fn set_control(&mut self, value: Control) {
         self.repr.control = value;
     }
 
     /// Set the sequence number.
-    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], SeqNumber) ensures self: SizedRepr[r.blen])]
+    #[flux_rs::sig(fn(self: &strg SizedRepr[@r], SeqNumber) ensures self: SizedRepr[r.blen, r.plen, r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c])]
     #[flux_rs::no_panic]
     pub(crate) fn set_seq_number(&mut self, value: SeqNumber) {
         self.repr.seq_number = value;
@@ -1587,7 +1888,7 @@ impl<'a> SizedRepr<'a> {
     /// The sACK option is the one whose presence turns on `ack_number`, and
     /// [`Repr::header_len`] counts it either way, so this does not move the length.
     #[flux_rs::sig(
-        fn(self: &strg SizedRepr[@r], Option<SeqNumber>) ensures self: SizedRepr[r.blen]
+        fn(self: &strg SizedRepr[@r], Option<SeqNumber>) ensures self: SizedRepr[r.blen, r.plen, r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c]
     )]
     #[flux_rs::no_panic]
     pub(crate) fn set_ack_number(&mut self, value: Option<SeqNumber>) {
@@ -1595,15 +1896,21 @@ impl<'a> SizedRepr<'a> {
     }
 
     /// The representation that was measured.
+    ///
+    /// The payload length comes back out with it: `ack_reply` unwraps, sets the sACK slots and
+    /// re-measures, and without this the re-measured `buffer_len` would have no ceiling again.
+    #[flux_rs::sig(fn(SizedRepr[@s]) -> Repr[s.plen, s.mss, s.ws, s.sp, s.ts, s.a, s.b, s.c])]
     pub(crate) fn into_repr(self) -> Repr<'a> {
         self.repr
     }
 
     /// Emit the representation into `packet`, exactly as [`Repr::emit`] would.
     #[flux_rs::sig(
-        fn(&Self, packet: &mut Packet<T>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities)
-        requires 20 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        fn(&Self[@s], packet: &strg Packet<T>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities)
+        requires s.blen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+              && s.blen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
               && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
+        ensures packet: Packet<T>{q: q.buffer == p.buffer}
     )]
     pub(crate) fn emit<T>(
         &self,
@@ -1706,7 +2013,7 @@ impl<'a> fmt::Display for Repr<'a> {
         }
         write!(f, " win={}", self.window_len)?;
         write!(f, " len={}", self.payload.len())?;
-        if let Some(max_seg_size) = self.max_seg_size {
+        if let Maybe::Just(max_seg_size) = self.max_seg_size {
             write!(f, " mss={max_seg_size}")?;
         }
         Ok(())
@@ -1730,7 +2037,7 @@ impl<'a> defmt::Format for Repr<'a> {
         }
         defmt::write!(fmt, " win={}", self.window_len);
         defmt::write!(fmt, " len={}", self.payload.len());
-        if let Some(max_seg_size) = self.max_seg_size {
+        if let Maybe::Just(max_seg_size) = self.max_seg_size {
             defmt::write!(fmt, " mss={}", max_seg_size);
         }
     }
@@ -1898,12 +2205,12 @@ mod test {
             seq_number: SeqNumber(0x01234567),
             ack_number: None,
             window_len: 0x0123,
-            window_scale: None,
+            window_scale: Maybe::Nothing,
             control: Control::Syn,
-            max_seg_size: None,
+            max_seg_size: Maybe::Nothing,
             sack_permitted: false,
-            sack_ranges: [None, None, None],
-            timestamp: None,
+            sack_ranges: SackRanges::none(),
+            timestamp: Maybe::Nothing,
             payload: &PAYLOAD_BYTES,
         }
     }
@@ -1941,7 +2248,7 @@ mod test {
     #[cfg(feature = "proto-ipv4")]
     fn test_header_len_multiple_of_4() {
         let mut repr = packet_repr();
-        repr.window_scale = Some(0); // This TCP Option needs 3 bytes.
+        repr.window_scale = Maybe::Just(0); // This TCP Option needs 3 bytes.
         assert_eq!(repr.header_len() % 4, 0); // Should e.g. be 28 instead of 27.
     }
 
@@ -1962,22 +2269,30 @@ mod test {
         assert_option_parses!(TcpOption::WindowScale(12), &[0x03, 0x03, 0x0c]);
         assert_option_parses!(TcpOption::SackPermitted, &[0x4, 0x02]);
         assert_option_parses!(
-            TcpOption::SackRange([Some((500, 1500)), None, None]),
+            TcpOption::SackRange(SackRanges {
+                first: SackBlock::Present(500, 1500),
+                second: SackBlock::Absent,
+                third: SackBlock::Absent,
+            }),
             &[0x05, 0x0a, 0x00, 0x00, 0x01, 0xf4, 0x00, 0x00, 0x05, 0xdc]
         );
         assert_option_parses!(
-            TcpOption::SackRange([Some((875, 1225)), Some((1500, 2500)), None]),
+            TcpOption::SackRange(SackRanges {
+                first: SackBlock::Present(875, 1225),
+                second: SackBlock::Present(1500, 2500),
+                third: SackBlock::Absent,
+            }),
             &[
                 0x05, 0x12, 0x00, 0x00, 0x03, 0x6b, 0x00, 0x00, 0x04, 0xc9, 0x00, 0x00, 0x05, 0xdc,
                 0x00, 0x00, 0x09, 0xc4
             ]
         );
         assert_option_parses!(
-            TcpOption::SackRange([
-                Some((875000, 1225000)),
-                Some((1500000, 2500000)),
-                Some((876543210, 876654320))
-            ]),
+            TcpOption::SackRange(SackRanges {
+                first: SackBlock::Present(875000, 1225000),
+                second: SackBlock::Present(1500000, 2500000),
+                third: SackBlock::Present(876543210, 876654320),
+            }),
             &[
                 0x05, 0x1a, 0x00, 0x0d, 0x59, 0xf8, 0x00, 0x12, 0xb1, 0x28, 0x00, 0x16, 0xe3, 0x60,
                 0x00, 0x26, 0x25, 0xa0, 0x34, 0x3e, 0xfc, 0xea, 0x34, 0x40, 0xae, 0xf0

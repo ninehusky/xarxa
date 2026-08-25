@@ -346,22 +346,6 @@ impl<T: AsRef<[u8]>> Frame<T> {
     }
 }
 
-impl<'a, T: AsRef<[u8]> + ?Sized> Frame<&'a T> {
-    /// Return a pointer to the payload, without checking for 802.1Q.
-    //
-    // Left bounds-checked. The buffer here is `&'a T`, so the length index has to come from
-    // core's blanket `impl<T, U> AsRef<U> for &T`, which carries no associated refinement
-    // (`as_ref_reft` is missing). The bound `14 <= len` is therefore unstatable at this self
-    // type, and routing through the unchecked `suffix` without stating it would trade a panic
-    // for UB. The provable twin is on `Frame<Ref<'a>>` below; this one is still here because
-    // `InterfaceInner::process_arp` takes a `Frame<&[u8]>`.
-    #[inline]
-    pub fn payload(&self) -> &'a [u8] {
-        let data = self.buffer.as_ref();
-        &data[field::PAYLOAD]
-    }
-}
-
 impl<'a> Frame<Ref<'a>> {
     /// [`new_checked`](Self::new_checked) over a [`Ref`], carrying its proof out.
     ///
@@ -512,41 +496,55 @@ impl<T: AsRef<[u8]>> fmt::Display for Frame<T> {
     }
 }
 
-use crate::wire::pretty_print::{PrettyIndent, PrettyPrint};
+use crate::wire::pretty_print::{buffer_ref, PrettyIndent, PrettyPrint};
 
 impl<T: AsRef<[u8]>> PrettyPrint for Frame<T> {
-    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     fn pretty_print(
         buffer: &dyn AsRef<[u8]>,
         f: &mut fmt::Formatter,
         indent: &mut PrettyIndent,
     ) -> fmt::Result {
-        // `Ref::new` off the `dyn`'s own `as_ref`: the trait signature is fixed, so the buffer
-        // arrives with no length index, and `Ref` is where it acquires one.
-        let frame = match Frame::new_checked_ref(Ref::new(buffer.as_ref())) {
+        // `buffer_ref` off the `dyn`: the trait signature is fixed, so the buffer arrives with
+        // no length index, and `Ref` is where it acquires one.
+        let frame = match Frame::new_checked_ref(buffer_ref(buffer)) {
             Err(err) => return write!(f, "{indent}({err})"),
             Ok(frame) => frame,
         };
-        write!(f, "{indent}{frame}")?;
+        // `new_checked_ref` carries `14 <= b.len` out, which is what both accessors require.
+        let ethertype = frame.ethertype();
+        let payload = frame.payload();
+        pretty_print_payload(&frame, ethertype, payload, f, indent)
+    }
+}
 
-        match frame.ethertype() {
-            #[cfg(feature = "proto-ipv4")]
-            EtherType::Arp => {
-                indent.increase(f)?;
-                super::ArpPacket::<&[u8]>::pretty_print(&frame.payload(), f, indent)
-            }
-            #[cfg(feature = "proto-ipv4")]
-            EtherType::Ipv4 => {
-                indent.increase(f)?;
-                super::Ipv4Packet::<&[u8]>::pretty_print(&frame.payload(), f, indent)
-            }
-            #[cfg(feature = "proto-ipv6")]
-            EtherType::Ipv6 => {
-                indent.increase(f)?;
-                super::Ipv6Packet::<&[u8]>::pretty_print(&frame.payload(), f, indent)
-            }
-            _ => Ok(()),
+/// Write `frame`'s header line, then hand `payload` to the printer for `ethertype`.
+#[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
+fn pretty_print_payload(
+    frame: &Frame<Ref<'_>>,
+    ethertype: EtherType,
+    payload: &[u8],
+    f: &mut fmt::Formatter,
+    indent: &mut PrettyIndent,
+) -> fmt::Result {
+    write!(f, "{indent}{frame}")?;
+
+    match ethertype {
+        #[cfg(feature = "proto-ipv4")]
+        EtherType::Arp => {
+            indent.increase(f)?;
+            super::ArpPacket::<&[u8]>::pretty_print(&payload, f, indent)
         }
+        #[cfg(feature = "proto-ipv4")]
+        EtherType::Ipv4 => {
+            indent.increase(f)?;
+            super::Ipv4Packet::<&[u8]>::pretty_print(&payload, f, indent)
+        }
+        #[cfg(feature = "proto-ipv6")]
+        EtherType::Ipv6 => {
+            indent.increase(f)?;
+            super::Ipv6Packet::<&[u8]>::pretty_print(&payload, f, indent)
+        }
+        _ => Ok(()),
     }
 }
 
@@ -638,7 +636,7 @@ mod test_ipv4 {
 
     #[test]
     fn test_deconstruct() {
-        let frame = Frame::new_unchecked(&FRAME_BYTES[..]);
+        let frame = Frame::new_unchecked(Ref::new(&FRAME_BYTES[..]));
         assert_eq!(
             frame.dst_addr(),
             Address::from_octets([0x01, 0x02, 0x03, 0x04, 0x05, 0x06])
@@ -684,7 +682,7 @@ mod test_ipv6 {
 
     #[test]
     fn test_deconstruct() {
-        let frame = Frame::new_unchecked(&FRAME_BYTES[..]);
+        let frame = Frame::new_unchecked(Ref::new(&FRAME_BYTES[..]));
         assert_eq!(
             frame.dst_addr(),
             Address::from_octets([0x01, 0x02, 0x03, 0x04, 0x05, 0x06])

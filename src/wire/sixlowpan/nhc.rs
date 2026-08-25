@@ -6,6 +6,7 @@ use crate::{
     phy::ChecksumCapabilities,
     wire::{IpProtocol, ip::checksum, ipv6, udp::Repr as UdpRepr},
 };
+use crate::wire::Ref;
 use byteorder::{ByteOrder, NetworkEndian};
 use ipv6::Address;
 
@@ -398,8 +399,9 @@ mod tests {
         assert_eq!(header.next_header(), NextHeader::Compressed);
         assert_eq!(header.extension_header_id(), ExtHeaderId::RoutingHeader);
 
-        let routing_hdr = Ipv6RoutingHeader::new_checked(header.payload()).unwrap();
-        let repr = Ipv6RoutingRepr::parse(&routing_hdr).unwrap();
+        let routing_hdr =
+            Ipv6RoutingHeader::new_checked(Ref::new(header.payload())).unwrap();
+        let repr = Ipv6RoutingRepr::parse_ref(&routing_hdr).unwrap();
         assert_eq!(
             repr,
             Ipv6RoutingRepr::Rpl {

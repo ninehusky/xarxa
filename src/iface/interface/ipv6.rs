@@ -5,16 +5,25 @@ use crate::iface::Route;
 /// Enum used for the process_hopbyhop function. In some cases, when discarding a packet, an ICMP
 /// parameter problem message needs to be transmitted to the source of the address. In other cases,
 /// the processing of the IP packet can continue.
+// Indexed by the length of the payload `Continue` carries. That payload is a suffix of the one
+// handed in, and `process_nxt_hdr` needs it bounded by the sixteen-bit IPv6 length field.
 #[allow(clippy::large_enum_variant)]
+#[flux_rs::refined_by(rest: int)]
 enum HopByHopResponse<'frame> {
     /// Continue processing the IPv6 packet.
-    Continue((IpProtocol, &'frame [u8])),
+    #[flux_rs::variant({IpProtocol, &[u8][@m]} -> HopByHopResponse[m])]
+    Continue(IpProtocol, &'frame [u8]),
     /// Discard the packet and maybe send back an ICMPv6 packet.
+    #[flux_rs::variant((Option<Packet>) -> HopByHopResponse[0])]
     Discard(Option<Packet<'frame>>),
 }
 
 // We implement `Default` such that we can use the check! macro.
 impl Default for HopByHopResponse<'_> {
+    // Indexed `[0]`: the `check!` macro returns this on the error path, and
+    // `process_hopbyhop`'s postcondition is stated over the payload length `Continue` carries.
+    // Without the index that path returns an unconstrained one.
+    #[flux_rs::sig(fn() -> HopByHopResponse[0])]
     fn default() -> Self {
         Self::Discard(None)
     }
@@ -186,14 +195,25 @@ impl InterfaceInner {
         })
     }
 
+    /// `40 + p.plen <= p.buffer.len` is what `Packet<Ref>::payload` needs: its window ends at
+    /// a header field rather than the buffer's extent. Every caller builds the packet with
+    /// `new_checked_ref`, whose `Ok` arm is exactly this.
+    #[flux_rs::sig(
+        fn(&mut Self, &mut SocketSet, PacketMeta, HardwareAddress, &Ipv6Packet<Ref>[@p])
+            -> Option<Packet>
+        requires 40 + p.plen <= p.buffer.len
+    )]
     pub(super) fn process_ipv6<'frame>(
         &mut self,
         sockets: &mut SocketSet,
         meta: PacketMeta,
         source_hardware_addr: HardwareAddress,
-        ipv6_packet: &Ipv6Packet<&'frame [u8]>,
+        ipv6_packet: &Ipv6Packet<Ref<'frame>>,
     ) -> Option<Packet<'frame>> {
-        let ipv6_repr = check!(Ipv6Repr::parse(ipv6_packet));
+        // `Packet<Ref>` rather than `Packet<&[u8]>`: the payload window handed to
+        // `process_nxt_hdr` below is bounded by the packet's own extent, which is unstatable at
+        // a reference self type.
+        let ipv6_repr = check!(Ipv6Repr::parse_ref(ipv6_packet));
 
         if !ipv6_repr.src_addr.x_is_unicast() {
             // Discard packets with non-unicast source addresses.
@@ -204,7 +224,7 @@ impl InterfaceInner {
         let (next_header, ip_payload) = if ipv6_repr.next_header == IpProtocol::HopByHop {
             match self.process_hopbyhop(ipv6_repr, ipv6_packet.payload()) {
                 HopByHopResponse::Discard(e) => return e,
-                HopByHopResponse::Continue(next) => next,
+                HopByHopResponse::Continue(nxt_hdr, payload) => (nxt_hdr, payload),
             }
         } else {
             (ipv6_repr.next_header, ipv6_packet.payload())
@@ -260,6 +280,12 @@ impl InterfaceInner {
         )
     }
 
+    /// The payload `Continue` carries is a suffix of the one handed in, so it is no longer;
+    /// `process_nxt_hdr` needs that to stay under the sixteen-bit IPv6 length field.
+    #[flux_rs::sig(
+        fn(&mut Self, Ipv6Repr, &[u8][@n]) -> HopByHopResponse{r: r <= n}
+        requires n <= 65535
+    )]
     fn process_hopbyhop<'frame>(
         &mut self,
         ipv6_repr: Ipv6Repr,
@@ -279,8 +305,11 @@ impl InterfaceInner {
             )
         };
 
-        let ext_hdr = check!(Ipv6ExtHeader::new_checked(ip_payload));
-        let ext_repr = check!(Ipv6ExtHeaderRepr::parse(&ext_hdr));
+        // Through `Ref` and `parse_ref`: the generic `parse` takes a `&T` self type, whose unit
+        // sort means nothing about the buffer's extent survives, and the window opened at
+        // `header_len() + data.len()` below is a bound against exactly that extent.
+        let ext_hdr = check!(Ipv6ExtHeader::new_checked_ref(Ref::new(ip_payload)));
+        let ext_repr = check!(Ipv6ExtHeaderRepr::parse_ref(&ext_hdr));
         let hbh_hdr = check!(Ipv6HopByHopHeader::new_checked(ext_repr.data));
         let hbh_repr = check!(Ipv6HopByHopRepr::parse(&hbh_hdr));
 
@@ -312,14 +341,27 @@ impl InterfaceInner {
             }
         }
 
-        HopByHopResponse::Continue((
+        // The checked index, not `flux_util::suffix`. `suffix` is `get_unchecked(at..)`, so
+        // routing through it trades this panic for UB on a buffer that came off the wire. The
+        // bound *is* discharged -- a negative control at this site fires -- but a proved
+        // obligation is what licenses the trade, not what compels it, and the panic is cheaper
+        // than the failure mode it would be swapped for. The cost is that a `RangeFrom` index
+        // returns an unindexed slice, so this function's `r <= n` postcondition is lost.
+        HopByHopResponse::Continue(
             ext_repr.next_header,
             &ip_payload[ext_repr.header_len() + ext_repr.data.len()..],
-        ))
+        )
     }
 
     /// Given the next header value forward the payload onto the correct process
     /// function.
+    /// `n <= 65535` is passed straight through to `process_icmpv6`; the payload came from an
+    /// IPv6 packet, whose extent is the sixteen-bit length field.
+    #[flux_rs::sig(
+        fn(&mut Self, &mut SocketSet, PacketMeta, Ipv6Repr, IpProtocol, bool, &[u8][@n])
+            -> Option<Packet>
+        requires n <= 65535
+    )]
     fn process_nxt_hdr<'frame>(
         &mut self,
         sockets: &mut SocketSet,
@@ -365,14 +407,23 @@ impl InterfaceInner {
         }
     }
 
+    /// `ip_payload.len() <= 65535`: the payload is an IPv6 packet's, whose extent is the
+    /// sixteen-bit length field, and `Icmpv6Repr::parse_ref` needs it so the echo payload it
+    /// may carry stays representable in the reply's own header.
+    #[flux_rs::sig(
+        fn(&mut Self, &mut SocketSet, Ipv6Repr, &[u8][@n]) -> Option<Packet>
+        requires n <= 65535
+    )]
     pub(super) fn process_icmpv6<'frame>(
         &mut self,
         _sockets: &mut SocketSet,
         ip_repr: Ipv6Repr,
         ip_payload: &'frame [u8],
     ) -> Option<Packet<'frame>> {
-        let icmp_packet = check!(Icmpv6Packet::new_checked(ip_payload));
-        let icmp_repr = check!(Icmpv6Repr::parse(
+        // Through `Ref` and `parse_ref`: the generic `parse` is over a `&T` self type,
+        // whose unit sort means it cannot state `parse_ref`'s `p.buffer.len <= 65535`.
+        let icmp_packet = check!(Icmpv6Packet::new_checked_ref(Ref::new(ip_payload)));
+        let icmp_repr = check!(Icmpv6Repr::parse_ref(
             &ip_repr.src_addr,
             &ip_repr.dst_addr,
             &icmp_packet,
@@ -460,7 +511,7 @@ impl InterfaceInner {
                 flags,
             } => {
                 let ip_addr = ip_repr.src_addr.into();
-                if let Some(lladdr) = lladdr {
+                if let MaybeAddr::Present(lladdr) = lladdr {
                     let lladdr = check!(lladdr.parse(self.medium));
                     if !lladdr.is_unicast() || !target_addr.x_is_unicast() {
                         return None;
@@ -478,7 +529,7 @@ impl InterfaceInner {
                 lladdr,
                 ..
             } => {
-                if let Some(lladdr) = lladdr {
+                if let MaybeAddr::Present(lladdr) = lladdr {
                     let lladdr = check!(lladdr.parse(self.medium));
                     if !lladdr.is_unicast() || !target_addr.x_is_unicast() {
                         return None;
@@ -492,7 +543,7 @@ impl InterfaceInner {
                         flags: NdiscNeighborFlags::SOLICITED,
                         target_addr,
                         #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
-                        lladdr: Some(self.hardware_addr.into()),
+                        lladdr: MaybeAddr::Present(self.hardware_addr.into()),
                     });
                     let ip_repr = Ipv6Repr {
                         src_addr: target_addr,
@@ -525,7 +576,7 @@ impl InterfaceInner {
                     self.slaac.process_advertisement(
                         &ip_repr.src_addr,
                         router_lifetime,
-                        prefix_info,
+                        prefix_info.as_option(),
                         self.now,
                     )
                 }
@@ -725,7 +776,7 @@ impl Interface {
             return;
         }
         let rs_repr = Icmpv6Repr::Ndisc(NdiscRepr::RouterSolicit {
-            lladdr: Some(self.hardware_addr().into()),
+            lladdr: MaybeAddr::Present(self.hardware_addr().into()),
         });
         let ipv6_repr = Ipv6Repr {
             src_addr: self.inner.link_local_ipv6_address().unwrap(),

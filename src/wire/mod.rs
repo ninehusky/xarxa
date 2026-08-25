@@ -79,7 +79,7 @@ pub mod pretty_print;
 
 mod buf;
 pub(crate) use buf::{
-    Buf, Ref, copy_window_at, prefix, read_i32_at, read_u16_at, read_u32_at, sub, tail, write_i32_at,
+    Buf, Ref, copy_suffix_at, copy_window_at, prefix, read_i32_at, read_u16_at, read_u32_at, sub, tail, write_i32_at,
     write_octets4_at, write_octets16_at, write_u16_at, write_u24_at, write_u32_at,
 };
 
@@ -280,7 +280,7 @@ pub use self::udp::{HEADER_LEN as UDP_HEADER_LEN, Packet as UdpPacket, Repr as U
 
 pub use self::tcp::{
     Control as TcpControl, HEADER_LEN as TCP_HEADER_LEN, Packet as TcpPacket, Repr as TcpRepr,
-    SeqNumber as TcpSeqNumber, TcpOption, TcpTimestampGenerator, TcpTimestampRepr,
+    SackBlock, SackRanges, SeqNumber as TcpSeqNumber, TcpOption, TcpTimestampGenerator, TcpTimestampRepr,
 };
 
 pub(crate) use self::tcp::SizedRepr as SizedTcpRepr;
@@ -535,6 +535,98 @@ pub const MAX_HARDWARE_ADDRESS_LEN: usize = 8;
 
 /// Unparsed hardware address.
 ///
+/// `Option<T>`, with whether it is set in the refinement.
+///
+/// Exists for the same reason as [`SackBlock`]: a refinement cannot be attached to
+/// `core::Option` from outside without crashing fixpoint's sort elaboration. See that type.
+///
+/// This one is never stored -- the public fields of [`Repr`] keep their `Option` types. It is
+/// built as a *local* inside [`Repr::header_len`] and [`Repr::emit`] so that the presence of
+/// each option is read out of the struct once, into a value flux can name. Reading the field
+/// twice would give two unrelated values, and the length computed by one would say nothing
+/// about the branch taken by the other.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(present: bool)]
+pub enum Maybe<T> {
+    #[flux_rs::variant(Maybe<T>[false])]
+    Nothing,
+    #[flux_rs::variant((T) -> Maybe<T>[true])]
+    Just(T),
+}
+
+impl<T> Maybe<T> {
+    /// Whether the value is set.
+    #[flux_rs::sig(fn(&Maybe<T>[@m]) -> bool[m])]
+    pub const fn is_present(&self) -> bool {
+        matches!(self, Maybe::Just(_))
+    }
+
+    /// As an `Option`. The refinement is lost on the way out.
+    pub const fn as_option(self) -> Option<T>
+    where
+        T: Copy,
+    {
+        match self {
+            Maybe::Just(inner) => Some(inner),
+            Maybe::Nothing => None,
+        }
+    }
+
+    /// Take an `Option` apart once, into something flux can name.
+    ///
+    /// The result's `present` is unknown here -- `Option` is unrefined, which is the whole
+    /// point -- but it is *fixed*, so a later `match` on this value learns the branch it took.
+    pub fn from_option(value: Option<T>) -> Maybe<T> {
+        match value {
+            Some(inner) => Maybe::Just(inner),
+            None => Maybe::Nothing,
+        }
+    }
+}
+
+/// An optional hardware address that keeps the address's length.
+///
+/// [`Maybe`] carries only whether a value is present -- the payload's own index is not
+/// reachable through it -- and an NDISC link-layer option's length is a function of the
+/// address's length, so that is not enough. Same reason `Maybe` exists at all: see
+/// [`crate::wire::tcp::SackBlock`].
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(present: bool, len: int)]
+#[flux_rs::invariant(0 <= len && len <= MAX_HARDWARE_ADDRESS_LEN)]
+pub enum MaybeAddr {
+    #[flux_rs::variant(MaybeAddr[false, 0])]
+    Absent,
+    #[flux_rs::variant((RawHardwareAddress[@a]) -> MaybeAddr[true, a.len])]
+    Present(RawHardwareAddress),
+}
+
+#[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
+impl MaybeAddr {
+    /// Whether an address is present.
+    #[flux_rs::sig(fn(&MaybeAddr[@m]) -> bool[m.present])]
+    pub const fn is_present(&self) -> bool {
+        matches!(self, MaybeAddr::Present(_))
+    }
+
+    /// The address as an `Option`. The refinement is lost on the way out.
+    pub const fn as_option(&self) -> Option<RawHardwareAddress> {
+        match *self {
+            MaybeAddr::Present(addr) => Some(addr),
+            MaybeAddr::Absent => None,
+        }
+    }
+
+    /// The address from an `Option`. The result's index is unknown but fixed.
+    pub const fn from_option(value: Option<RawHardwareAddress>) -> MaybeAddr {
+        match value {
+            Some(addr) => MaybeAddr::Present(addr),
+            None => MaybeAddr::Absent,
+        }
+    }
+}
+
 /// Used to make NDISC parsing agnostic of the hardware medium in use.
 #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]

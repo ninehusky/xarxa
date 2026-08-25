@@ -639,19 +639,6 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
         Ref::new(self.buffer.as_ref())
     }
 
-    /// Return a pointer to the payload.
-    //
-    // Left bounds-checked. The buffer here is `&'a T`, so the length index would have to come
-    // from core's blanket `impl<T, U> AsRef<U> for &T`, which carries no associated refinement
-    // (`as_ref_reft` is missing). Neither end of the window -- `header_len()` nor `total_len()`
-    // -- is therefore statable at this self type. The provable form is
-    // `Packet<Ref>::payload`; reach it through `as_window`.
-    #[inline]
-    pub fn payload(&self) -> &'a [u8] {
-        let range = self.header_len() as usize..self.total_len() as usize;
-        let data = self.buffer.as_ref();
-        &data[range]
-    }
 }
 
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
@@ -1182,44 +1169,68 @@ impl fmt::Display for Repr {
     }
 }
 
-use crate::wire::pretty_print::{PrettyIndent, PrettyPrint};
+use crate::wire::pretty_print::{buffer_ref, PrettyIndent, PrettyPrint};
 
 impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
-    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     fn pretty_print(
         buffer: &dyn AsRef<[u8]>,
         f: &mut fmt::Formatter,
         indent: &mut PrettyIndent,
     ) -> fmt::Result {
-        use crate::wire::ip::checksum::format_checksum;
-
         let checksum_caps = ChecksumCapabilities::ignored();
 
-        let (ip_repr, payload) = match Packet::new_checked(buffer) {
+        // Over `Ref`: the accessors below are provable only at that self type, and the
+        // `&'a T` twin of `payload` no longer exists.
+        let ip_packet = match Packet::new_checked_ref(buffer_ref(buffer)) {
             Err(err) => return write!(f, "{indent}({err})"),
-            Ok(ip_packet) => match Repr::parse(&ip_packet, &checksum_caps) {
-                Err(_) => return Ok(()),
-                Ok(ip_repr) => {
-                    if ip_packet.more_frags() || ip_packet.frag_offset() != 0 {
-                        write!(
-                            f,
-                            "{}IPv4 Fragment more_frags={} offset={}",
-                            indent,
-                            ip_packet.more_frags(),
-                            ip_packet.frag_offset()
-                        )?;
-                        return Ok(());
-                    } else {
-                        write!(f, "{indent}{ip_repr}")?;
-                        format_checksum(f, ip_packet.verify_checksum(), false)?;
-                        (ip_repr, ip_packet.payload())
-                    }
-                }
-            },
+            Ok(ip_packet) => ip_packet,
         };
+        let ip_repr = match Repr::parse_ref(&ip_packet, &checksum_caps) {
+            Err(_) => return Ok(()),
+            Ok(ip_repr) => ip_repr,
+        };
+        // `new_checked_ref` carries the header and total-length window out, which is what
+        // every accessor below requires.
+        let more_frags = ip_packet.more_frags();
+        let frag_offset = ip_packet.frag_offset();
+        let checksum_valid = ip_packet.verify_checksum();
+        let payload = ip_packet.payload();
 
-        pretty_print_ip_payload(f, indent, ip_repr, payload)
+        pretty_print_fragment_or_payload(
+            f,
+            indent,
+            ip_repr,
+            more_frags,
+            frag_offset,
+            checksum_valid,
+            payload,
+        )
     }
+}
+
+/// Write a fragment's one-line summary, or the header line followed by the payload listing.
+#[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
+fn pretty_print_fragment_or_payload(
+    f: &mut fmt::Formatter,
+    indent: &mut PrettyIndent,
+    ip_repr: Repr,
+    more_frags: bool,
+    frag_offset: u16,
+    checksum_valid: bool,
+    payload: &[u8],
+) -> fmt::Result {
+    use crate::wire::ip::checksum::format_checksum;
+
+    if more_frags || frag_offset != 0 {
+        return write!(
+            f,
+            "{indent}IPv4 Fragment more_frags={more_frags} offset={frag_offset}"
+        );
+    }
+
+    write!(f, "{indent}{ip_repr}")?;
+    format_checksum(f, checksum_valid, false)?;
+    pretty_print_ip_payload(f, indent, ip_repr, payload)
 }
 
 #[cfg(test)]
@@ -1246,7 +1257,7 @@ pub(crate) mod test {
 
     #[test]
     fn test_deconstruct() {
-        let packet = Packet::new_unchecked(&PACKET_BYTES[..]);
+        let packet = Packet::new_unchecked(Ref::new(&PACKET_BYTES[..]));
         assert_eq!(packet.version(), 4);
         assert_eq!(packet.header_len(), 20);
         assert_eq!(packet.dscp(), 0);
@@ -1295,7 +1306,7 @@ pub(crate) mod test {
         bytes.push(0);
 
         assert_eq!(
-            Packet::new_unchecked(&bytes).payload().len(),
+            Packet::new_unchecked(Ref::new(&bytes)).payload().len(),
             PAYLOAD_BYTES.len()
         );
         assert_eq!(

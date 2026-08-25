@@ -27,6 +27,9 @@ impl Version {
     ///
     /// This function never returns `Ok(IpVersion::Unspecified)`; instead,
     /// unknown versions result in `Err(Error)`.
+    // `1 <= n`: the version is the top nibble of the first octet, so an empty buffer has no
+    // version to report. The three call sites all hold a received frame's payload.
+    #[flux_rs::sig(fn(&[u8][@n]) -> Result<Version> requires 1 <= n)]
     pub const fn of_packet(data: &[u8]) -> Result<Version> {
         match data[0] >> 4 {
             #[cfg(feature = "proto-ipv4")]
@@ -498,7 +501,7 @@ impl ListenEndpoint {
 
     /// Query whether the endpoint has a specified address and port.
     pub const fn is_specified(&self) -> bool {
-        self.addr.is_some() && self.port != 0
+        self.has_addr() && self.port() != 0
     }
 
     /// Whether an address was given. `-1` is the index reserved for "none".
@@ -522,6 +525,21 @@ impl ListenEndpoint {
         self.addr
     }
 
+    /// The endpoint listening on `addr`, indexed by that address's version.
+    ///
+    /// The `From` impls below build a `ListenEndpoint` from a definite address, which needs the
+    /// hidden fields; going through here keeps them checked and leaves the trusted surface on
+    /// this type, where the rest of it already is. `-1` is reserved for "no address", so an
+    /// endpoint built from an `Address` never carries it.
+    #[flux_rs::trusted(reason = "opaque: constructs an endpoint with a definite address")]
+    #[flux_rs::sig(fn(addr: Address[@t], port: u16) -> ListenEndpoint[t])]
+    pub const fn with_addr(addr: Address, port: u16) -> ListenEndpoint {
+        ListenEndpoint {
+            addr: Some(addr),
+            port,
+        }
+    }
+
     /// The listening port. Carries no version information.
     #[flux_rs::trusted(reason = "opaque: projects the hidden port field")]
     #[flux_rs::sig(fn(&ListenEndpoint) -> u16)]
@@ -533,39 +551,30 @@ impl ListenEndpoint {
 #[cfg(all(feature = "proto-ipv4", feature = "proto-ipv6"))]
 impl From<::core::net::SocketAddr> for ListenEndpoint {
     fn from(x: ::core::net::SocketAddr) -> ListenEndpoint {
-        ListenEndpoint {
-            addr: Some(x.ip().into()),
-            port: x.port(),
-        }
+        ListenEndpoint::with_addr(x.ip().into(), x.port())
     }
 }
 
 #[cfg(feature = "proto-ipv4")]
 impl From<::core::net::SocketAddrV4> for ListenEndpoint {
     fn from(x: ::core::net::SocketAddrV4) -> ListenEndpoint {
-        ListenEndpoint {
-            addr: Some((*x.ip()).into()),
-            port: x.port(),
-        }
+        ListenEndpoint::with_addr((*x.ip()).into(), x.port())
     }
 }
 
 #[cfg(feature = "proto-ipv6")]
 impl From<::core::net::SocketAddrV6> for ListenEndpoint {
     fn from(x: ::core::net::SocketAddrV6) -> ListenEndpoint {
-        ListenEndpoint {
-            addr: Some((*x.ip()).into()),
-            port: x.port(),
-        }
+        ListenEndpoint::with_addr((*x.ip()).into(), x.port())
     }
 }
 
 impl fmt::Display for ListenEndpoint {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if let Some(addr) = self.addr {
-            write!(f, "{}:{}", addr, self.port)
+        if let Some(addr) = self.addr() {
+            write!(f, "{}:{}", addr, self.port())
         } else {
-            write!(f, "*:{}", self.port)
+            write!(f, "*:{}", self.port())
         }
     }
 }
@@ -601,10 +610,7 @@ impl From<Endpoint> for ListenEndpoint {
 
 impl<T: Into<Address>> From<(T, u16)> for ListenEndpoint {
     fn from((addr, port): (T, u16)) -> ListenEndpoint {
-        ListenEndpoint {
-            addr: Some(addr.into()),
-            port,
-        }
+        ListenEndpoint::with_addr(addr.into(), port)
     }
 }
 
@@ -650,7 +656,9 @@ impl From<Ipv6Repr> for Repr {
 /// A read/write wrapper around a generic Internet Protocol packet buffer.
 #[derive(Debug, PartialEq, Eq, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(buffer: T)]
 pub struct Packet<T: AsRef<[u8]>> {
+    #[flux_rs::field(T[buffer])]
     buffer: T,
 }
 
@@ -677,6 +685,18 @@ impl<T: AsRef<[u8]>> Packet<T> {
         Ok(packet)
     }
 
+    /// [`check_len`](Self::check_len), carrying its proof out through the `Ok` arm.
+    #[flux_rs::trusted(no, reason = "carries the buffer length through the Result")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p])
+            -> Result<usize{v: v == <T as AsRef<[u8]>>::as_ref_reft(p.buffer) && 1 <= v}>
+    )]
+    #[flux_rs::no_panic]
+    fn checked_len(&self) -> Result<usize> {
+        let len = self.buffer.as_ref().len();
+        if len < 1 { Err(Error) } else { Ok(len) }
+    }
+
     /// Ensure that reading the version field of the buffer will not panic if called.
     /// Returns `Err(Error)` if the buffer is too short.
     pub fn check_len(&self) -> Result<()> {
@@ -695,9 +715,18 @@ impl<T: AsRef<[u8]>> Packet<T> {
     }
 
     /// Returns the version field.
+    ///
+    /// 0 is `field::VER.start`, restated as a literal because flux cannot see through a `Range`
+    /// const. The bound is `check_len`'s own test.
+    #[flux_rs::trusted(no, reason = "panic site: reads the first octet")]
+    #[flux_rs::sig(
+        fn(&Packet<T>[@p]) -> u8
+        requires 1 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+    )]
+    #[flux_rs::no_panic]
     pub fn version(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[field::VER.start] >> 4
+        data[0] >> 4
     }
 }
 
@@ -711,7 +740,10 @@ impl Repr {
     // unchecked form is a-okay here.
     #[allow(unsafe_code)]
     #[flux_rs::trusted(no, reason = "discharges the assert(false) licensing unreachable_unchecked")]
-    #[flux_rs::sig(fn(Address[@v], Address[v], Protocol, usize[@p], u8) -> Repr[v, p])]
+    // `p <= 65535` is `Ipv4Repr`/`Ipv6Repr`'s own invariant: the enclosing header's length
+    // field is sixteen bits, so a longer payload cannot be represented on the wire. Stating it
+    // here rather than at the two struct literals below puts it where callers can see it.
+    #[flux_rs::sig(fn(Address[@v], Address[v], Protocol, plen: usize{plen <= 65535}, u8) -> Repr[v, plen])]
     pub fn new(
         src_addr: Address,
         dst_addr: Address,
@@ -765,22 +797,25 @@ impl Repr {
     /// Internet Protocol version 4 parsing.
     /// Returns `Err(Error)` if the packet does not include a valid IPv4 or IPv6 packet, or if the
     /// specific Internet Protocol version feature is not enabled for the supplied packet
-    pub fn parse<T: AsRef<[u8]> + ?Sized>(
-        packet: &Packet<&T>,
+    ///
+    /// There is no generic `parse` over `&T`: a reference in type-parameter position has the
+    /// unit sort, so `version`'s bound is unstatable there. Callers build a [`Ref`] instead.
+    pub fn parse_ref(
+        packet: &Packet<Ref<'_>>,
         checksum_caps: &ChecksumCapabilities,
     ) -> Result<Repr> {
-        packet.check_len()?;
+        packet.checked_len()?;
         match packet.version() {
             #[cfg(feature = "proto-ipv4")]
             4 => {
-                let packet = Ipv4Packet::new_checked(packet.buffer)?;
-                let ipv4_repr = Ipv4Repr::parse(&packet, checksum_caps)?;
+                let packet = Ipv4Packet::new_checked_ref(packet.buffer)?;
+                let ipv4_repr = Ipv4Repr::parse_ref(&packet, checksum_caps)?;
                 Ok(Repr::Ipv4(ipv4_repr))
             }
             #[cfg(feature = "proto-ipv6")]
             6 => {
-                let packet = Ipv6Packet::new_checked(packet.buffer)?;
-                let ipv6_repr = Ipv6Repr::parse(&packet)?;
+                let packet = Ipv6Packet::new_checked_ref(packet.buffer)?;
+                let ipv6_repr = Ipv6Repr::parse_ref(&packet)?;
                 Ok(Repr::Ipv6(ipv6_repr))
             }
             _ => Err(Error),
@@ -1123,10 +1158,12 @@ pub fn pretty_print_ip_payload<T: Into<Repr>>(
         }
         Protocol::Tcp => {
             indent.increase(f)?;
-            match TcpPacket::<&[u8]>::new_checked(payload) {
+            // Over `Ref`: `verify_checksum` below is provable only where the buffer's length
+            // is in the refinement.
+            match TcpPacket::new_checked_ref(Ref::new(payload)) {
                 Err(err) => write!(f, "{indent}({err})"),
                 Ok(tcp_packet) => {
-                    match TcpRepr::parse(
+                    match TcpRepr::parse_ref(
                         &tcp_packet,
                         &repr.src_addr(),
                         &repr.dst_addr(),
@@ -1254,14 +1291,14 @@ pub(crate) mod test {
             hop_limit: 64,
         };
 
-        let packet = Packet::new_unchecked(&ipv4_packet_bytes[..]);
-        let ip_repr = IpRepr::parse(&packet, &ChecksumCapabilities::default()).unwrap();
+        let packet = Packet::new_unchecked(Ref::new(&ipv4_packet_bytes[..]));
+        let ip_repr = IpRepr::parse_ref(&packet, &ChecksumCapabilities::default()).unwrap();
         assert_eq!(ip_repr.version(), Version::Ipv4);
         let IpRepr::Ipv4(ipv4_repr) = ip_repr else {
             panic!("expected Ipv4Repr");
         };
         assert_eq!(ipv4_repr, expected);
-        assert_eq!(packet.into_inner(), ipv4_packet_bytes);
+        assert_eq!(packet.into_inner().as_ref(), &ipv4_packet_bytes[..]);
     }
 
     #[test]
@@ -1273,8 +1310,8 @@ pub(crate) mod test {
             0x00,
         ];
 
-        let packet = Packet::new_unchecked(&ipv4_packet_bytes[..]);
-        let ip_repr_result = IpRepr::parse(&packet, &ChecksumCapabilities::default());
+        let packet = Packet::new_unchecked(Ref::new(&ipv4_packet_bytes[..]));
+        let ip_repr_result = IpRepr::parse_ref(&packet, &ChecksumCapabilities::default());
         assert!(ip_repr_result.is_err());
     }
 
@@ -1296,14 +1333,14 @@ pub(crate) mod test {
             hop_limit: 64,
         };
 
-        let packet = Packet::new_unchecked(&ipv6_packet_bytes[..]);
-        let ip_repr = IpRepr::parse(&packet, &ChecksumCapabilities::default()).unwrap();
+        let packet = Packet::new_unchecked(Ref::new(&ipv6_packet_bytes[..]));
+        let ip_repr = IpRepr::parse_ref(&packet, &ChecksumCapabilities::default()).unwrap();
         assert_eq!(ip_repr.version(), Version::Ipv6);
         let IpRepr::Ipv6(ipv6_repr) = ip_repr else {
             panic!("expected Ipv6Repr");
         };
         assert_eq!(ipv6_repr, expected);
-        assert_eq!(packet.into_inner(), ipv6_packet_bytes);
+        assert_eq!(packet.into_inner().as_ref(), &ipv6_packet_bytes[..]);
     }
 
     #[test]
@@ -1316,8 +1353,8 @@ pub(crate) mod test {
             0x00, 0x02, 0x00, 0x0c, 0x02, 0x4e, 0xff, 0xff, 0xff,
         ];
 
-        let packet = Packet::new_unchecked(&ipv6_packet_bytes[..]);
-        let ip_repr_result = IpRepr::parse(&packet, &ChecksumCapabilities::default());
+        let packet = Packet::new_unchecked(Ref::new(&ipv6_packet_bytes[..]));
+        let ip_repr_result = IpRepr::parse_ref(&packet, &ChecksumCapabilities::default());
         assert!(ip_repr_result.is_err());
     }
 
@@ -1334,8 +1371,8 @@ pub(crate) mod test {
     #[cfg(all(feature = "proto-ipv4", feature = "proto-ipv6"))]
     fn parse_packet_invalid_version() {
         let packet_bytes: [u8; 1] = [0xFF];
-        let packet = Packet::new_unchecked(&packet_bytes[..]);
-        let ip_repr_result = IpRepr::parse(&packet, &ChecksumCapabilities::default());
+        let packet = Packet::new_unchecked(Ref::new(&packet_bytes[..]));
+        let ip_repr_result = IpRepr::parse_ref(&packet, &ChecksumCapabilities::default());
         assert!(ip_repr_result.is_err());
     }
 }

@@ -42,6 +42,11 @@ impl State {
         xorshift32(&mut self.rng_seed) % 100 < pct as u32
     }
 
+    // No signature: `% buffer.len()` divides by zero on an empty frame, and neither caller can
+    // discharge a `requires n > 0`. `receive` takes the length from the inner device's frame,
+    // which has no lower bound; the `TxToken::consume` caller sits in a closure body flux does
+    // not check at all, so a precondition stated here would be erased there rather than proved.
+    // The panic is reachable on a zero-length frame.
     fn corrupt<T: AsMut<[u8]>>(&mut self, mut buffer: T) {
         let buffer = buffer.as_mut();
         // We introduce a single bitflip, as the most likely, and the hardest to detect, error.

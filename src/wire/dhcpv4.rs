@@ -8,7 +8,7 @@ use heapless::Vec;
 use super::{Error, Result};
 use crate::wire::arp::Hardware;
 use crate::wire::{
-    Buf, EthernetAddress, Ipv4Address, copy_window_at, read_u16_at, read_u32_at, sub, tail,
+    Buf, EthernetAddress, Ipv4Address, Ref, copy_window_at, read_u16_at, read_u32_at, sub, tail,
     write_u16_at, write_u32_at,
 };
 
@@ -220,7 +220,11 @@ fn client_id_octets(addr: &EthernetAddress) -> [u8; 7] {
 /// derives the offset from a counter is provable, with or without a length-versus-capacity spec
 /// for `heapless::Vec`. Literal offsets are. The `const` assert below is what keeps this honest
 /// if the count is ever reconfigured: it becomes a compile error rather than a dropped server.
+// The returned length is at most the array's: it is incremented by `IP_SIZE` once per server,
+// and there are at most `MAX_DNS_SERVER_COUNT` of them. That is what the caller's
+// `&servers[..data_len]` needs.
 #[flux_rs::trusted(no, reason = "panic site: writes a window per element")]
+#[flux_rs::sig(fn(&Vec<Ipv4Address, _>) -> ([u8; 12], usize{v: v <= 12}))]
 fn dns_server_octets(servers: &Vec<Ipv4Address, MAX_DNS_SERVER_COUNT>) -> ([u8; 12], usize) {
     const IP_SIZE: usize = core::mem::size_of::<u32>();
     const _: () = assert!(MAX_DNS_SERVER_COUNT == 3);
@@ -361,6 +365,11 @@ pub(crate) mod field {
 
 impl<T: AsRef<[u8]>> Packet<T> {
     /// Imbue a raw octet buffer with DHCP packet structure.
+    ///
+    /// The signature is what carries the buffer's index across the constructor; without it the
+    /// result's index is fresh and every bound a caller had on the buffer is lost here.
+    #[flux_rs::sig(fn(T[@b]) -> Packet<T>[b])]
+    #[flux_rs::no_panic]
     pub const fn new_unchecked(buffer: T) -> Packet<T> {
         Packet { buffer }
     }
@@ -626,8 +635,8 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[flux_rs::sig(fn(&Packet<T>[@p]) -> Result<&str> requires 108 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
     pub fn get_sname(&self) -> Result<&str> {
         let data = sub(self.buffer.as_ref(), 34, 74); // field::SNAME
-        let len = data.iter().position(|&x| x == 0).ok_or(Error)?;
-        if len == 0 {
+        let len = crate::flux_util::first_nul(data);
+        if len == 74 || len == 0 {
             return Err(Error);
         }
 
@@ -641,8 +650,8 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[flux_rs::sig(fn(&Packet<T>[@p]) -> Result<&str> requires 236 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
     pub fn get_boot_file(&self) -> Result<&str> {
         let data = sub(self.buffer.as_ref(), 108, 128); // field::FILE
-        let len = data.iter().position(|&x| x == 0).ok_or(Error)?;
-        if len == 0 {
+        let len = crate::flux_util::first_nul(data);
+        if len == 128 || len == 0 {
             return Err(Error);
         }
         let data = core::str::from_utf8(&data[..len]).map_err(|_| Error)?;
@@ -1001,11 +1010,15 @@ impl<'a> Repr<'a> {
     }
 
     /// Parse a DHCP packet and return a high-level representation.
-    pub fn parse<T>(packet: &'a Packet<&'a T>) -> Result<Self>
-    where
-        T: AsRef<[u8]> + ?Sized,
-    {
-        packet.check_len()?;
+    ///
+    /// There is no generic `parse` over `&T`: a reference in type-parameter position has the
+    /// unit sort, so nothing about the buffer's extent is statable there and none of the reads
+    /// below would be provable. Callers build a [`Ref`] instead.
+    ///
+    /// `checked_len` rather than `check_len`: the same test, but its `Ok` arm names the
+    /// buffer's length, which is what every accessor here needs.
+    pub fn parse_ref(packet: &'a Packet<Ref<'a>>) -> Result<Self> {
+        packet.checked_len()?;
         let transaction_id = packet.transaction_id();
         let client_hardware_address = packet.client_hardware_address();
         let client_ip = packet.client_ip();
@@ -1261,10 +1274,18 @@ impl<'a> Repr<'a> {
 /// by it directly. Measuring once and keeping the number alongside the representation makes
 /// the total statable with nothing trusted: `blen` is the value [`Repr::buffer_len`] returned
 /// for this `repr`, and `repr` is private and never lent out mutably, so it cannot drift.
-#[derive(Debug, PartialEq, Eq, Clone)]
+// `Clone` is not derived: the derived body reconstructs the struct, and flux cannot carry the
+// invariant across that -- it reports `a precondition cannot be proved` on the derive itself.
+// Nothing clones a `SizedRepr`.
+#[derive(Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[flux_rs::refined_by(blen: int)]
-#[flux_rs::invariant(0 <= blen)]
+// The ceiling is what `socket::dhcpv4`'s three dispatch sites need: they set
+// `ipr.plen = 8 + d.blen` against `Ipv4Repr`'s own `plen <= 65535`. It is not derivable from
+// `Repr::buffer_len`, whose last term sums `2 + opt.data.len()` over `additional_options` --
+// a slice whose elements' lengths are unreachable through the container -- so the obligation
+// lands undischarged on `new` below. One honest site instead of six.
+#[flux_rs::invariant(0 <= blen && blen <= 65527)]
 pub(crate) struct SizedRepr<'a> {
     repr: Repr<'a>,
     #[flux_rs::field(usize[blen])]
@@ -1388,7 +1409,7 @@ mod test {
 
     #[test]
     fn test_deconstruct_discover() {
-        let packet = Packet::new_unchecked(DISCOVER_BYTES);
+        let packet = Packet::new_unchecked(Ref::new(DISCOVER_BYTES));
         assert_eq!(packet.magic_number(), MAGIC_COOKIE);
         assert_eq!(packet.opcode(), OpCode::Request);
         assert_eq!(packet.hardware_type(), Hardware::Ethernet);
@@ -1556,8 +1577,8 @@ mod test {
 
     #[test]
     fn test_parse_discover() {
-        let packet = Packet::new_unchecked(DISCOVER_BYTES);
-        let repr = Repr::parse(&packet).unwrap();
+        let packet = Packet::new_unchecked(Ref::new(DISCOVER_BYTES));
+        let repr = Repr::parse_ref(&packet).unwrap();
         assert_eq!(repr, discover_repr());
     }
 
@@ -1601,8 +1622,8 @@ mod test {
         let mut packet = Packet::new_unchecked(&mut bytes);
         repr.emit(&mut packet).unwrap();
 
-        let packet = Packet::new_unchecked(&bytes);
-        let repr_parsed = Repr::parse(&packet).unwrap();
+        let packet = Packet::new_unchecked(Ref::new(&bytes));
+        let repr_parsed = Repr::parse_ref(&packet).unwrap();
 
         assert_eq!(
             repr_parsed.dns_servers,
@@ -1638,8 +1659,8 @@ mod test {
 
     #[test]
     fn test_parse_ack_dns_servers() {
-        let packet = Packet::new_unchecked(ACK_DNS_SERVER_BYTES);
-        let repr = Repr::parse(&packet).unwrap();
+        let packet = Packet::new_unchecked(Ref::new(ACK_DNS_SERVER_BYTES));
+        let repr = Repr::parse_ref(&packet).unwrap();
 
         // The packet described by ACK_BYTES advertises 4 DNS servers
         // Here we ensure that we correctly parse the first 3 into our fixed
@@ -1659,8 +1680,8 @@ mod test {
 
     #[test]
     fn test_parse_ack_lease_duration() {
-        let packet = Packet::new_unchecked(ACK_LEASE_TIME_BYTES);
-        let repr = Repr::parse(&packet).unwrap();
+        let packet = Packet::new_unchecked(Ref::new(ACK_LEASE_TIME_BYTES));
+        let repr = Repr::parse_ref(&packet).unwrap();
 
         // Verify that the lease time in the ACK is properly parsed. The packet contains a lease
         // duration of 598s.

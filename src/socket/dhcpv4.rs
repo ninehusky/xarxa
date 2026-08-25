@@ -7,7 +7,7 @@ use crate::wire::dhcpv4::field as dhcpv4_field;
 use crate::wire::{
     DHCP_CLIENT_PORT, DHCP_MAX_DNS_SERVER_COUNT, DHCP_SERVER_PORT, DhcpMessageType, DhcpPacket,
     DhcpRepr, IpAddress, IpProtocol, Ipv4Address, Ipv4AddressExt, Ipv4Cidr, Ipv4Repr,
-    SizedDhcpRepr, UDP_HEADER_LEN, UdpRepr,
+    Ref, SizedDhcpRepr, UDP_HEADER_LEN, UdpRepr,
 };
 use crate::wire::{DhcpOption, HardwareAddress};
 use heapless::Vec;
@@ -314,14 +314,14 @@ impl<'a> Socket<'a> {
         // This is enforced in interface.rs.
         assert!(repr.src_port == self.server_port && repr.dst_port == self.client_port);
 
-        let dhcp_packet = match DhcpPacket::new_checked(payload) {
+        let dhcp_packet = match DhcpPacket::new_checked(Ref::new(payload)) {
             Ok(dhcp_packet) => dhcp_packet,
             Err(e) => {
                 net_debug!("DHCP invalid pkt from {}: {:?}", src_ip, e);
                 return;
             }
         };
-        let dhcp_repr = match DhcpRepr::parse(&dhcp_packet) {
+        let dhcp_repr = match DhcpRepr::parse_ref(&dhcp_packet) {
             Ok(dhcp_repr) => dhcp_repr,
             Err(e) => {
                 net_debug!("DHCP error parsing pkt from {}: {:?}", src_ip, e);
@@ -358,10 +358,14 @@ impl<'a> Socket<'a> {
         );
 
         // Copy over the payload into the receive packet buffer.
+        // The length test is spelled out rather than taken from `get_mut(..n)`: that returns
+        // an `Option` whose payload carries no refinement here, so the window's length was
+        // unknown and `copy_from_slice`'s equal-length precondition unprovable. Same test
+        // (`get_mut` is `None` exactly when the range runs past the slice), same bytes.
         if let Some(buffer) = self.receive_packet_buffer.as_mut()
-            && let Some(buffer) = buffer.get_mut(..payload.len())
+            && payload.len() <= buffer.len()
         {
-            buffer.copy_from_slice(payload);
+            crate::wire::copy_window_at(buffer, 0, payload.len(), payload);
         }
 
         match (&mut self.state, dhcp_repr.message_type) {

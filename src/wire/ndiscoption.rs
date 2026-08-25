@@ -1,6 +1,16 @@
 use bitflags::bitflags;
 use core::fmt;
 
+flux_rs::defs! {
+    // An NDISC option's length is a whole number of eight-octet units, so every arm of
+    // `Repr::buffer_len` rounds its octet count up to a multiple of eight. Kept in lockstep
+    // with the arms, which spell the rounding out rather than calling `div_ceil` -- that
+    // method carries no spec, so the equality could not be proved through it.
+    fn round8(n: int) -> int {
+        if n % 8 == 0 { n } else { n + 8 - n % 8 }
+    }
+}
+
 use super::{Error, Result};
 use crate::time::Duration;
 use crate::wire::{Ipv6Address, Ipv6AddressExt, Ipv6Packet, Ipv6Repr, MAX_HARDWARE_ADDRESS_LEN};
@@ -539,13 +549,15 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
     /// Set the Source/Target Link-layer Address.
     //
-    // The bound is `10` rather than `2 + addr.len()`: `RawHardwareAddress`'s invariant is
-    // `len <= MAX_HARDWARE_ADDRESS_LEN`, which is 6 without `medium-ieee802154` and 8 with
-    // it, so `2 + addr.len() <= 10` under either cfg and callers get the simpler contract.
+    // `2 + addr.len()` rather than the simpler `10`: 10 is the maximum over both cfgs
+    // (`MAX_HARDWARE_ADDRESS_LEN` is 6 without `medium-ieee802154` and 8 with it), but an
+    // option carrying a six-octet address is only eight octets long, so a caller holding
+    // exactly `buffer_len()` octets could not discharge 10. The exact bound is what
+    // `emit_link_layer_addr` can supply from the option's own index.
     #[flux_rs::trusted(no, reason = "panic site: the link-layer address copy")]
     #[flux_rs::sig(
-        fn(&mut NdiscOption<T>[@p], RawHardwareAddress)
-        requires 10 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        fn(&mut NdiscOption<T>[@p], RawHardwareAddress[@a])
+        requires 2 + a.len <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
     )]
     #[flux_rs::no_panic]
     #[inline]
@@ -748,20 +760,41 @@ impl PrefixInformation {
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(dlen: int)]
+// The upper bound is what keeps `ndisc::Repr`'s own `blen <= 65535` true through the Redirect
+// arm: 40 fixed + at most 16 of link-layer option + `round8(48 + dlen)`.
+#[flux_rs::invariant(0 <= dlen && dlen <= 65424)]
 pub struct RedirectedHeader<'a> {
     pub header: Ipv6Repr,
+    #[flux_rs::field(&[u8][dlen])]
     pub data: &'a [u8],
 }
 
 /// A high-level representation of an NDISC Option.
+//
+// Indexed by the octets `emit` writes, which is what `buffer_len` returns. The two link-layer
+// arms and the redirected-header arm are content-dependent, which is why this is not a set of
+// constants: `RawHardwareAddress` carries its length and `RedirectedHeader` now carries its
+// data's, so both are statable. 48 is `8 + Ipv6Repr::buffer_len()`, the latter a constant 40.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(blen: int)]
+// Not `8 <= blen`, which every arm but one satisfies: `Unknown` carries a declared length of
+// zero. Non-negativity is what `ndisc::emit_option_at` needs to get from its own
+// `header_len + offset + blen <= buffer` down to the two bounds its body uses.
+#[flux_rs::invariant(0 <= blen)]
 pub enum Repr<'a> {
+    #[flux_rs::variant((RawHardwareAddress[@a]) -> Repr[round8(2 + a.len)])]
     SourceLinkLayerAddr(RawHardwareAddress),
+    #[flux_rs::variant((RawHardwareAddress[@a]) -> Repr[round8(2 + a.len)])]
     TargetLinkLayerAddr(RawHardwareAddress),
+    #[flux_rs::variant((PrefixInformation) -> Repr[32])]
     PrefixInformation(PrefixInformation),
+    #[flux_rs::variant((RedirectedHeader[@h]) -> Repr[round8(48 + h.dlen)])]
     RedirectedHeader(RedirectedHeader<'a>),
+    #[flux_rs::variant((u32) -> Repr[8])]
     Mtu(u32),
+    #[flux_rs::variant({u8, u8[@l], &[u8]} -> Repr[8 * l])]
     Unknown {
         type_: u8,
         length: u8,
@@ -867,19 +900,29 @@ impl<'a> Repr<'a> {
     }
 
     /// Return the length of a header that will be emitted from this high-level representation.
+    //
+    // The round up is spelled out rather than `div_ceil(8) * 8`: that method carries no flux
+    // spec, so `round8` could not be proved equal to it. Same value either way.
+    #[flux_rs::trusted(no, reason = "ties the `blen` index to the emitted length")]
+    #[flux_rs::sig(fn(self: &Self[@r]) -> usize[r.blen])]
+    #[flux_rs::no_panic]
     pub const fn buffer_len(&self) -> usize {
         match self {
             &Repr::SourceLinkLayerAddr(addr) | &Repr::TargetLinkLayerAddr(addr) => {
                 let len = 2 + addr.len();
-                // Round up to next multiple of 8
-                len.div_ceil(8) * 8
+                if len % 8 == 0 { len } else { len + 8 - len % 8 }
             }
-            &Repr::PrefixInformation(_) => field::PREFIX.end,
-            &Repr::RedirectedHeader(RedirectedHeader { header, data }) => {
-                (8 + header.buffer_len() + data.len()).div_ceil(8) * 8
+            // 32, 8 and `length * 8` restate `field::PREFIX.end`, `field::MTU.end` and
+            // `field::DATA(length).end`: flux cannot see through a `Range` const.
+            &Repr::PrefixInformation(_) => 32,
+            &Repr::RedirectedHeader(RedirectedHeader { data, .. }) => {
+                // 40 is `Ipv6Repr::buffer_len()`, a constant; restated because that method
+                // returns an unindexed `usize`.
+                let len = 8 + 40 + crate::flux_util::byte_len(data);
+                if len % 8 == 0 { len } else { len + 8 - len % 8 }
             }
-            &Repr::Mtu(_) => field::MTU.end,
-            &Repr::Unknown { length, .. } => field::DATA(length).end,
+            &Repr::Mtu(_) => 8,
+            &Repr::Unknown { length, .. } => length as usize * 8,
         }
     }
 
@@ -890,10 +933,15 @@ impl<'a> Repr<'a> {
     /// Header at least 48). It is a lower bound, not the full contract -- the variable-length
     /// arms additionally need `buffer_len()`, which is content-dependent. See the notes on
     /// `emit_redirected_header`, `emit_unknown` and `data_mut` for what is still owed.
+    ///
+    /// The blanket 48 is kept as well as the per-arm `r.blen`: the arms' setters reach past
+    /// their own option's length -- a Redirected Header writes an `Ipv6Repr` at a fixed offset --
+    /// so `r.blen` alone does not discharge them. What `r.blen` adds is the bound the *caller*
+    /// can now supply, `ndisc::Repr` being indexed by its full `buffer_len()`.
     #[flux_rs::trusted(no, reason = "carries the option buffer bound to the setters")]
     #[flux_rs::sig(
-        fn(&Repr, opt: &strg NdiscOption<T>[@p])
-        requires 48 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        fn(&Repr[@r], opt: &strg NdiscOption<T>[@p])
+        requires r.blen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
         ensures opt: NdiscOption<T>{v: v.buffer == p.buffer}
     )]
     pub fn emit<T>(&self, opt: &mut NdiscOption<T>)
@@ -949,11 +997,12 @@ impl<'a> Repr<'a> {
 /// invariant supplies: it is what puts `opt_len = addr.len() + 2` in range and so rules out
 /// the `self + rhs - 1` overflow inside `opt_len.div_ceil(8)`.
 #[flux_rs::trusted(no, reason = "panic site: the link-layer address option body")]
-// The bound is `emit`'s 48 rather than the 10 this body needs: `&mut` is invariant in Flux,
-// so a weaker bound here would leave `emit` unable to re-establish its own on return.
+// The bound is stated over the address the option carries, which is what its `blen` is a
+// function of and what `emit` now supplies. It used to be `emit`'s blanket 48; that was over-
+// strong -- a six-octet address needs 8 -- and unsatisfiable for a small NDISC packet.
 #[flux_rs::sig(
-    fn(opt: &strg NdiscOption<T>[@p], Type, RawHardwareAddress)
-    requires 48 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    fn(opt: &strg NdiscOption<T>[@p], Type, RawHardwareAddress[@a])
+    requires round8(2 + a.len) <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
     ensures opt: NdiscOption<T>{v: v.buffer == p.buffer}
 )]
 fn emit_link_layer_addr<T>(opt: &mut NdiscOption<T>, ty: Type, addr: RawHardwareAddress)
@@ -993,10 +1042,10 @@ where
 #[flux_rs::trusted(yes, reason = "copy_from_slice's length equality is unstatable: data_mut \
 returns a bare &mut [u8], whose index is lost (flux-rs/flux#1714). The mismatch is moreover \
 reachable -- see the doc comment")]
-// Stated at `emit`'s 48 for the invariance reason noted on `emit_link_layer_addr`.
+// Stated over the option's own declared extent, as on `emit_link_layer_addr`.
 #[flux_rs::sig(
     fn(opt: &strg NdiscOption<T>[@p], u8, length: u8, &[u8])
-    requires 48 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+    requires 8 * length <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
     ensures opt: NdiscOption<T>[p.buffer, length]
 )]
 fn emit_unknown<T>(opt: &mut NdiscOption<T>, id: u8, length: u8, data: &[u8])

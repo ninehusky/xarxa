@@ -8,7 +8,7 @@ use crate::socket::PollAt;
 use crate::socket::WakerRegistration;
 
 use crate::storage::Empty;
-use crate::wire::{Buf, IpProtocol, IpRepr, IpVersion};
+use crate::wire::{Buf, IpProtocol, IpRepr, IpVersion, Ref};
 #[cfg(feature = "proto-ipv4")]
 use crate::wire::{Ipv4Packet, Ipv4Repr};
 #[cfg(feature = "proto-ipv6")]
@@ -416,8 +416,8 @@ impl<'a> Socket<'a> {
                         packet.set_checksum(0);
                     }
 
-                    let packet = Ipv4Packet::new_unchecked(&*packet.into_inner());
-                    let ipv4_repr = match Ipv4Repr::parse(&packet, _checksum_caps) {
+                    let packet = Ipv4Packet::new_unchecked(Ref::new(&*packet.into_inner()));
+                    let ipv4_repr = match Ipv4Repr::parse_ref(&packet, _checksum_caps) {
                         Ok(x) => x,
                         Err(_) => {
                             net_trace!("raw: malformed ipv4 packet in queue, dropping.");
@@ -440,8 +440,8 @@ impl<'a> Socket<'a> {
                         net_trace!("raw: sent ipv6 packet with wrong ip protocol, dropping.");
                         return Ok(());
                     }
-                    let packet = Ipv6Packet::new_unchecked(&*packet.into_inner());
-                    let ipv6_repr = match Ipv6Repr::parse(&packet) {
+                    let packet = Ipv6Packet::new_unchecked(Ref::new(&*packet.into_inner()));
+                    let ipv6_repr = match Ipv6Repr::parse_ref(&packet) {
                         Ok(x) => x,
                         Err(_) => {
                             net_trace!("raw: malformed ipv6 packet in queue, dropping.");

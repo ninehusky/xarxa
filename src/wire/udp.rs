@@ -532,7 +532,7 @@ impl Repr {
         ensures packet: Packet<T>[p.buffer, 8 + payload_len]
     )]
     #[flux_rs::no_panic]
-    fn emit_ports_and_len<T>(&self, packet: &mut Packet<T>, payload_len: usize)
+    pub(crate) fn emit_ports_and_len<T>(&self, packet: &mut Packet<T>, payload_len: usize)
     where
         T: AsRef<[u8]> + AsMut<[u8]>,
     {
@@ -549,7 +549,7 @@ impl Repr {
               && 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
               && p.len <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
     )]
-    fn emit_checksum<T>(
+    pub(crate) fn emit_checksum<T>(
         &self,
         packet: &mut Packet<T>,
         src_addr: &IpAddress,
@@ -666,6 +666,7 @@ impl Repr {
         packet.payload_buf().as_mut().copy_from_slice(payload);
         self.emit_checksum(packet, src_addr, dst_addr, checksum_caps);
     }
+
 }
 
 

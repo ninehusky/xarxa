@@ -85,7 +85,7 @@ fn test_no_icmp_no_unicast(#[case] medium: Medium) {
 
     let mut bytes = vec![0u8; 54];
     repr.emit(&mut bytes, &ChecksumCapabilities::default());
-    let frame = Ipv4Packet::new_unchecked(&bytes[..]);
+    let frame = Ipv4Packet::new_unchecked(Ref::new(&bytes[..]));
 
     // Ensure that the unknown protocol frame does not trigger an
     // ICMP error response when the destination address is a
@@ -123,7 +123,7 @@ fn test_icmp_error_no_payload(#[case] medium: Medium) {
 
     let mut bytes = vec![0u8; 34];
     repr.emit(&mut bytes, &ChecksumCapabilities::default());
-    let frame = Ipv4Packet::new_unchecked(&bytes[..]);
+    let frame = Ipv4Packet::new_unchecked(Ref::new(&bytes[..]));
 
     // The expected Destination Unreachable response due to the
     // unknown protocol
@@ -420,7 +420,7 @@ fn test_handle_ipv4_broadcast(#[case] medium: Medium) {
             &mut Icmpv4Packet::new_unchecked(&mut bytes[ipv4_repr.buffer_len()..]),
             &ChecksumCapabilities::default(),
         );
-        Ipv4Packet::new_unchecked(&bytes[..])
+        Ipv4Packet::new_unchecked(Ref::new(&bytes[..]))
     };
 
     // Expected ICMPv4 echo reply
@@ -727,18 +727,18 @@ fn test_handle_igmp(#[case] medium: Medium) {
                 let ipv4_packet = match device.medium() {
                     #[cfg(feature = "medium-ethernet")]
                     Medium::Ethernet => {
-                        let eth_frame = EthernetFrame::new_checked(frame).ok()?;
-                        Ipv4Packet::new_checked(eth_frame.payload()).ok()?
+                        let eth_frame = EthernetFrame::new_checked_ref(Ref::new(frame)).ok()?;
+                        Ipv4Packet::new_checked_ref(Ref::new(eth_frame.payload())).ok()?
                     }
                     #[cfg(feature = "medium-ip")]
-                    Medium::Ip => Ipv4Packet::new_checked(&frame[..]).ok()?,
+                    Medium::Ip => Ipv4Packet::new_checked_ref(Ref::new(&frame[..])).ok()?,
                     #[cfg(feature = "medium-ieee802154")]
                     Medium::Ieee802154 => todo!(),
                 };
-                let ipv4_repr = Ipv4Repr::parse(&ipv4_packet, checksum_caps).ok()?;
+                let ipv4_repr = Ipv4Repr::parse_ref(&ipv4_packet, checksum_caps).ok()?;
                 let ip_payload = ipv4_packet.payload();
-                let igmp_packet = IgmpPacket::new_checked(ip_payload).ok()?;
-                let igmp_repr = IgmpRepr::parse(&igmp_packet).ok()?;
+                let igmp_packet = IgmpPacket::new_unchecked(Ref::new(ip_payload));
+                let igmp_repr = IgmpRepr::parse_ref(&igmp_packet).ok()?;
                 Some((ipv4_repr, igmp_repr))
             })
             .collect::<Vec<_>>()
@@ -881,7 +881,7 @@ fn test_packet_len(#[case] medium: Medium) {
 
 /// Check no reply is emitted when using a raw socket
 #[cfg(feature = "socket-raw")]
-fn check_no_reply_raw_socket(medium: Medium, frame: &crate::wire::ipv4::Packet<&[u8]>) {
+fn check_no_reply_raw_socket(medium: Medium, frame: &crate::wire::ipv4::Packet<Ref<'_>>) {
     let (mut iface, mut sockets, _) = setup(medium);
 
     let packets = 1;
@@ -947,7 +947,7 @@ fn test_raw_socket_no_reply_udp(#[case] medium: Medium) {
             |buf| fill_slice(buf, 0x2a),
             &ChecksumCapabilities::default(),
         );
-        Ipv4Packet::new_unchecked(&bytes[..])
+        Ipv4Packet::new_unchecked(Ref::new(&bytes[..]))
     };
 
     check_no_reply_raw_socket(medium, &frame);
@@ -975,11 +975,11 @@ fn test_raw_socket_no_reply_tcp(#[case] medium: Medium) {
         seq_number: TcpSeqNumber(1),
         ack_number: None,
         window_len: 10,
-        window_scale: None,
-        max_seg_size: None,
+        window_scale: Maybe::Nothing,
+        max_seg_size: Maybe::Nothing,
         sack_permitted: false,
-        sack_ranges: [None, None, None],
-        timestamp: None,
+        sack_ranges: SackRanges::none(),
+        timestamp: Maybe::Nothing,
         payload: &PAYLOAD,
     };
     let ipv4_repr = Ipv4Repr {
@@ -1003,7 +1003,7 @@ fn test_raw_socket_no_reply_tcp(#[case] medium: Medium) {
             &dst_addr.into(),
             &ChecksumCapabilities::default(),
         );
-        Ipv4Packet::new_unchecked(&bytes[..])
+        Ipv4Packet::new_unchecked(Ref::new(&bytes[..]))
     };
 
     check_no_reply_raw_socket(medium, &frame);
@@ -1092,7 +1092,7 @@ fn test_raw_socket_with_udp_socket(#[case] medium: Medium) {
             |buf| buf.copy_from_slice(&UDP_PAYLOAD),
             &ChecksumCapabilities::default(),
         );
-        Ipv4Packet::new_unchecked(&bytes[..])
+        Ipv4Packet::new_unchecked(Ref::new(&bytes[..]))
     };
 
     assert_eq!(
@@ -1333,8 +1333,8 @@ fn test_raw_socket_rx_fragmentation(#[case] medium: Medium) {
     let frag1_bytes = build_fragment(first_payload_len, true, 0, 0xAA);
     let frag2_bytes = build_fragment(last_payload_len, false, first_payload_len as u16, 0xBB);
 
-    let frag1 = Ipv4Packet::new_unchecked(&frag1_bytes[..]);
-    let frag2 = Ipv4Packet::new_unchecked(&frag2_bytes[..]);
+    let frag1 = Ipv4Packet::new_unchecked(Ref::new(&frag1_bytes[..]));
+    let frag2 = Ipv4Packet::new_unchecked(Ref::new(&frag2_bytes[..]));
 
     // First fragment alone should not be delivered to the raw socket.
     assert_eq!(
@@ -1368,8 +1368,8 @@ fn test_raw_socket_rx_fragmentation(#[case] medium: Medium) {
     let socket = sockets.get_mut::<raw::Socket>(handle);
     assert!(socket.can_recv());
     let data = socket.recv().expect("raw socket should have a packet");
-    let packet = Ipv4Packet::new_unchecked(data);
-    let repr = Ipv4Repr::parse(&packet, &ChecksumCapabilities::default()).unwrap();
+    let packet = Ipv4Packet::new_unchecked(Ref::new(data));
+    let repr = Ipv4Repr::parse_ref(&packet, &ChecksumCapabilities::default()).unwrap();
     assert_eq!(repr.src_addr, src_addr);
     assert_eq!(repr.dst_addr, dst_addr);
     assert_eq!(repr.next_header, proto);

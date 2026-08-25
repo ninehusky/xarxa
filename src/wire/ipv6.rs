@@ -657,23 +657,6 @@ impl<T: AsRef<[u8]>> Packet<T> {
 }
 
 impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
-    /// Return a pointer to the payload.
-    //
-    // Left bounds-checked. The buffer here is `&'a T`, so the length index has to come from
-    // core's blanket `impl<T, U> AsRef<U> for &T`, which carries no associated refinement
-    // (`as_ref_reft` is missing), and the window's end is a property of the buffer's contents
-    // besides. The provable twin is on `Packet<Ref<'a>>` below; this one is still here because
-    // `socket::raw` and `iface::interface::ipv6` hold their packets at `Packet<&[u8]>`.
-    //
-    // The window is read out here rather than through `total_len`: that accessor's `requires`
-    // is stated over `as_ref_reft`, which is what this self type cannot phrase, so calling it
-    // would replace an unproven bound with an unstatable one.
-    #[inline]
-    pub fn payload(&self) -> &'a [u8] {
-        let data = self.buffer.as_ref();
-        let total = 40 + read_u16_at(data, 4) as usize; // field::DST_ADDR.end, field::LENGTH
-        &data[40..total]
-    }
 }
 
 impl<'a> Packet<Ref<'a>> {
@@ -904,11 +887,20 @@ pub struct Repr {
 
 impl Repr {
     /// Parse an Internet Protocol version 6 packet and return a high-level representation.
+    ///
+    /// A thin wrapper over [`parse_ref`](Self::parse_ref): a reference in type-parameter
+    /// position has the unit sort, so the buffer's extent is unstatable at this self type, and
+    /// a caller that needs it out again -- the payload window is bounded by it -- has to hold a
+    /// [`Ref`] to begin with.
     pub fn parse<T: AsRef<[u8]> + ?Sized>(packet: &Packet<&T>) -> Result<Repr> {
-        // Re-wrapped as a `Ref` rather than read through `&T`: at a reference self type the
-        // buffer's length is unstatable, so nothing the accessors require can be discharged.
-        // `Ref::new` gives the same bytes an index and `new_checked_ref` runs the same test
-        // `check_len` ran, so its `Ok` arm proves every accessor's bound below.
+        Repr::parse_ref(&Packet::new_unchecked(Ref::new(packet.buffer.as_ref())))
+    }
+
+    /// [`parse`](Self::parse) over a buffer whose length is in the refinement.
+    ///
+    /// `new_checked_ref` runs the same test `check_len` ran, so its `Ok` arm proves every
+    /// accessor's bound below.
+    pub fn parse_ref(packet: &Packet<Ref<'_>>) -> Result<Repr> {
         let packet = &Packet::new_checked_ref(Ref::new(packet.buffer.as_ref()))?;
         if packet.version() != 6 {
             return Err(Error);
@@ -980,30 +972,43 @@ impl defmt::Format for Repr {
     }
 }
 
-use crate::wire::pretty_print::{PrettyIndent, PrettyPrint};
+use crate::wire::pretty_print::{buffer_ref, PrettyIndent, PrettyPrint};
 
 // TODO: This is very similar to the implementation for IPv4. Make
 // a way to have less copy and pasted code here.
 impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
-    #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
     fn pretty_print(
         buffer: &dyn AsRef<[u8]>,
         f: &mut fmt::Formatter,
         indent: &mut PrettyIndent,
     ) -> fmt::Result {
-        let (ip_repr, payload) = match Packet::new_checked(buffer) {
+        // Over `Ref`: the accessors below are provable only at that self type, and the
+        // `&'a T` twin of `payload` no longer exists.
+        let ip_packet = match Packet::new_checked_ref(buffer_ref(buffer)) {
             Err(err) => return write!(f, "{indent}({err})"),
-            Ok(ip_packet) => match Repr::parse(&ip_packet) {
-                Err(_) => return Ok(()),
-                Ok(ip_repr) => {
-                    write!(f, "{indent}{ip_repr}")?;
-                    (ip_repr, ip_packet.payload())
-                }
-            },
+            Ok(ip_packet) => ip_packet,
         };
+        let ip_repr = match Repr::parse_ref(&ip_packet) {
+            Err(_) => return Ok(()),
+            Ok(ip_repr) => ip_repr,
+        };
+        // `new_checked_ref` carries the payload window out, which is what `payload` requires.
+        let payload = ip_packet.payload();
 
-        pretty_print_ip_payload(f, indent, ip_repr, payload)
+        pretty_print_header_and_payload(f, indent, ip_repr, payload)
     }
+}
+
+/// Write the header line, then the payload listing one level deeper.
+#[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
+fn pretty_print_header_and_payload(
+    f: &mut fmt::Formatter,
+    indent: &mut PrettyIndent,
+    ip_repr: Repr,
+    payload: &[u8],
+) -> fmt::Result {
+    write!(f, "{indent}{ip_repr}")?;
+    pretty_print_ip_payload(f, indent, ip_repr, payload)
 }
 
 #[cfg(test)]
@@ -1381,7 +1386,7 @@ pub(crate) mod test {
 
     #[test]
     fn test_packet_deconstruction() {
-        let packet = Packet::new_unchecked(&REPR_PACKET_BYTES[..]);
+        let packet = Packet::new_unchecked(Ref::new(&REPR_PACKET_BYTES[..]));
         assert_eq!(packet.check_len(), Ok(()));
         assert_eq!(packet.version(), 6);
         assert_eq!(packet.traffic_class(), 0);
@@ -1437,7 +1442,7 @@ pub(crate) mod test {
         bytes.push(0);
 
         assert_eq!(
-            Packet::new_unchecked(&bytes).payload().len(),
+            Packet::new_unchecked(Ref::new(&bytes)).payload().len(),
             REPR_PAYLOAD_BYTES.len()
         );
         assert_eq!(
@@ -1457,8 +1462,8 @@ pub(crate) mod test {
 
     #[test]
     fn test_repr_parse_valid() {
-        let packet = Packet::new_unchecked(&REPR_PACKET_BYTES[..]);
-        let repr = Repr::parse(&packet).unwrap();
+        let packet = Packet::new_unchecked(Ref::new(&REPR_PACKET_BYTES[..]));
+        let repr = Repr::parse_ref(&packet).unwrap();
         assert_eq!(repr, packet_repr());
     }
 

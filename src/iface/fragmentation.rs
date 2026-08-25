@@ -43,6 +43,64 @@ impl fmt::Display for AssemblerFullError {
 
 impl core::error::Error for AssemblerFullError {}
 
+/// The reassembled packet's total size, once known.
+///
+/// `Option<usize>` in all but name. It exists because `Option`'s payload carries no refinement
+/// here -- see `wire::tcp::SackBlock` -- and the whole point of the field is that
+/// `set_total_size` has already checked the size against the buffer. `Set`'s bound is that
+/// check, carried to `assemble`'s window.
+///
+/// Two definitions for the same reason `Buffer` has two: with `alloc` the buffer is a `Vec`
+/// that `set_total_size` grows to fit, so there is no fixed ceiling to carry.
+#[cfg(not(feature = "alloc"))]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[flux_rs::refined_by(set: bool, size: int)]
+#[flux_rs::invariant(0 <= size && size <= REASSEMBLY_BUFFER_SIZE)]
+enum MaybeSize {
+    #[flux_rs::variant(MaybeSize[false, 0])]
+    Unset,
+    #[flux_rs::variant(({usize[@n] | n <= REASSEMBLY_BUFFER_SIZE}) -> MaybeSize[true, n])]
+    Set(usize),
+}
+
+/// See the `not(alloc)` twin above.
+#[cfg(feature = "alloc")]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[flux_rs::refined_by(set: bool, size: int)]
+#[flux_rs::invariant(0 <= size)]
+enum MaybeSize {
+    #[flux_rs::variant(MaybeSize[false, 0])]
+    Unset,
+    #[flux_rs::variant((usize[@n]) -> MaybeSize[true, n])]
+    Set(usize),
+}
+
+impl MaybeSize {
+    /// Whether the size is set and equal to `n`.
+    ///
+    /// A method rather than `self.total_size == MaybeSize::Set(n)`: constructing a `Set` to
+    /// compare against would re-impose the variant's bound on `n`, which a comparison has no
+    /// business owing.
+    #[flux_rs::sig(fn(&MaybeSize[@m], usize[@n]) -> bool[m.set && m.size == n])]
+    #[flux_rs::no_panic]
+    const fn is(&self, n: usize) -> bool {
+        match *self {
+            MaybeSize::Set(size) => size == n,
+            MaybeSize::Unset => false,
+        }
+    }
+
+    /// The size, or zero when unset. `assemble` only calls this after `is_complete`.
+    #[flux_rs::sig(fn(&MaybeSize[@m]) -> usize[m.size])]
+    #[flux_rs::no_panic]
+    const fn get(&self) -> usize {
+        match *self {
+            MaybeSize::Set(size) => size,
+            MaybeSize::Unset => 0,
+        }
+    }
+}
+
 /// Holds different fragments of one packet, used for assembling fragmented packets.
 ///
 /// The buffer used for the `PacketAssembler` should either be dynamically sized (ex: Vec<u8>)
@@ -54,7 +112,7 @@ pub struct PacketAssembler<K> {
     buffer: Buffer,
 
     assembler: Assembler,
-    total_size: Option<usize>,
+    total_size: MaybeSize,
     expires_at: Instant,
 }
 
@@ -70,7 +128,7 @@ impl<K> PacketAssembler<K> {
             buffer: [0u8; REASSEMBLY_BUFFER_SIZE],
 
             assembler: Assembler::new(),
-            total_size: None,
+            total_size: MaybeSize::Unset,
             expires_at: Instant::ZERO,
         }
     }
@@ -78,20 +136,23 @@ impl<K> PacketAssembler<K> {
     pub(crate) fn reset(&mut self) {
         self.key = None;
         self.assembler.clear();
-        self.total_size = None;
+        self.total_size = MaybeSize::Unset;
         self.expires_at = Instant::ZERO;
     }
 
     /// Set the total size of the packet assembler.
     pub(crate) fn set_total_size(&mut self, size: usize) -> Result<(), AssemblerError> {
-        if let Some(old_size) = self.total_size
+        if let MaybeSize::Set(old_size) = self.total_size
             && old_size != size
         {
             return Err(AssemblerError);
         }
 
+        // `REASSEMBLY_BUFFER_SIZE` rather than `self.buffer.len()`: `Buffer` is a fixed array
+        // here, and an array-to-slice coercion gets a fresh, unconstrained length, so the
+        // guard said nothing about the array `assemble` later slices.
         #[cfg(not(feature = "alloc"))]
-        if self.buffer.len() < size {
+        if REASSEMBLY_BUFFER_SIZE < size {
             return Err(AssemblerError);
         }
 
@@ -100,7 +161,7 @@ impl<K> PacketAssembler<K> {
             self.buffer.resize(size, 0);
         }
 
-        self.total_size = Some(size);
+        self.total_size = MaybeSize::Set(size);
         Ok(())
     }
 
@@ -184,14 +245,14 @@ impl<K> PacketAssembler<K> {
         }
 
         // NOTE: we can unwrap because `is_complete` already checks this.
-        let total_size = self.total_size.unwrap();
+        let total_size = self.total_size.get();
         self.reset();
         Some(&self.buffer[..total_size])
     }
 
     /// Returns `true` when all fragments have been received, otherwise `false`.
     pub(crate) fn is_complete(&self) -> bool {
-        self.total_size == Some(self.assembler.peek_front())
+        self.total_size.is(self.assembler.peek_front())
     }
 
     /// Returns `true` when the packet assembler is free to use.

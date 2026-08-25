@@ -154,7 +154,7 @@ impl Assembler {
     }
 
     fn back(&self) -> Contig {
-        self.contigs[self.contigs.len() - 1]
+        self.contigs[ASSEMBLER_MAX_SEGMENT_COUNT - 1]
     }
 
     /// Return whether the assembler contains no data.
@@ -163,27 +163,46 @@ impl Assembler {
     }
 
     /// Remove a contig at the given index.
+    //
+    // `ASSEMBLER_MAX_SEGMENT_COUNT` rather than `self.contigs.len()` throughout this file: an
+    // array-to-slice coercion gets a fresh, unconstrained length every time it happens, so the
+    // `len()` a guard measured said nothing about the array the access goes through. The const
+    // is the array's own `N`, which is what its `Index` impl is stated against.
+    #[flux_rs::sig(fn(&mut Self, at: usize{at < ASSEMBLER_MAX_SEGMENT_COUNT}))]
     fn remove_contig_at(&mut self, at: usize) {
         debug_assert!(self.contigs[at].has_data());
 
-        for i in at..self.contigs.len() - 1 {
+        // `while` rather than `for i in at..N - 1`: flux does not bound a `for` loop's
+        // induction variable, so `contigs[i]` and `contigs[i + 1]` were unproved. The condition
+        // of a `while` it does track. Same range, same iterations.
+        let mut i = at;
+        while i < ASSEMBLER_MAX_SEGMENT_COUNT - 1 {
             if !self.contigs[i].has_data() {
                 return;
             }
             self.contigs[i] = self.contigs[i + 1];
+            i += 1;
         }
 
         // Removing the last one.
-        self.contigs[self.contigs.len() - 1] = Contig::empty();
+        self.contigs[ASSEMBLER_MAX_SEGMENT_COUNT - 1] = Contig::empty();
     }
 
     /// Add a contig at the given index, and return a pointer to it.
+    #[flux_rs::sig(
+        fn(&mut Self, at: usize{at < ASSEMBLER_MAX_SEGMENT_COUNT})
+            -> Result<&mut Contig, TooManyHolesError>
+    )]
     fn add_contig_at(&mut self, at: usize) -> Result<&mut Contig, TooManyHolesError> {
         if self.back().has_data() {
             return Err(TooManyHolesError);
         }
 
-        for i in (at + 1..self.contigs.len()).rev() {
+        // Counts down rather than `(at + 1..N).rev()`, for the reason on `remove_contig_at`.
+        // Same indices in the same order.
+        let mut i = ASSEMBLER_MAX_SEGMENT_COUNT;
+        while i > at + 1 {
+            i -= 1;
             self.contigs[i] = self.contigs[i - 1];
         }
 
@@ -202,7 +221,7 @@ impl Assembler {
 
         // Find index of the contig containing the start of the range.
         loop {
-            if i == self.contigs.len() {
+            if i == ASSEMBLER_MAX_SEGMENT_COUNT {
                 // The new range is after all the previous ranges, but there/s no space to add it.
                 return Err(TooManyHolesError);
             }
@@ -219,29 +238,40 @@ impl Assembler {
             i += 1;
         }
 
-        let contig = &mut self.contigs[i];
-        if offset < contig.hole_size {
+        // Read the hole size once into a local: `contigs` is an array of unrefined `Contig`,
+        // so two reads of the field are two unrelated values and a guard on one says nothing
+        // about the other.
+        let hole_size = self.contigs[i].hole_size;
+        if offset < hole_size {
             // Range starts within the hole.
 
-            if offset + size < contig.hole_size {
+            if offset + size < hole_size {
                 // Range also ends within the hole.
+                //
+                // Shrink the hole before splitting rather than after. `add_contig_at` moves
+                // this contig to `i + 1`, and `i + 1 < ASSEMBLER_MAX_SEGMENT_COUNT` does not
+                // follow from anything stated here, whereas `i` is bounded by the search loop
+                // above. Hoisting `add_contig_at`'s own failure test keeps the assembler from
+                // being left half-updated when there is no room to split.
+                if self.back().has_data() {
+                    return Err(TooManyHolesError);
+                }
+                self.contigs[i].shrink_hole_by(offset + size);
+
                 let new_contig = self.add_contig_at(i)?;
                 new_contig.hole_size = offset;
                 new_contig.data_size = size;
-
-                // Previous contigs[index] got moved to contigs[index+1]
-                self.contigs[i + 1].shrink_hole_by(offset + size);
                 return Ok(());
             }
 
             // The range being added covers both a part of the hole and a part of the data
             // in this contig, shrink the hole in this contig.
-            contig.shrink_hole_to(offset);
+            self.contigs[i].shrink_hole_to(offset);
         }
 
         // coalesce contigs to the right.
         let mut j = i + 1;
-        while j < self.contigs.len()
+        while j < ASSEMBLER_MAX_SEGMENT_COUNT
             && self.contigs[j].has_data()
             && offset + size >= self.contigs[i].total_size() + self.contigs[j].hole_size
         {
@@ -250,7 +280,9 @@ impl Assembler {
         }
         let shift = j - i - 1;
         if shift != 0 {
-            for x in i + 1..self.contigs.len() {
+            // `while` rather than `for`, for the reason on `remove_contig_at`.
+            let mut x = i + 1;
+            while x < ASSEMBLER_MAX_SEGMENT_COUNT {
                 if !self.contigs[x].has_data() {
                     break;
                 }
@@ -260,6 +292,7 @@ impl Assembler {
                     .get(x + shift)
                     .copied()
                     .unwrap_or_else(Contig::empty);
+                x += 1;
             }
         }
 
@@ -269,7 +302,7 @@ impl Assembler {
             self.contigs[i].data_size += left;
 
             // Decrease hole size of the next, if any.
-            if i + 1 < self.contigs.len() && self.contigs[i + 1].has_data() {
+            if i + 1 < ASSEMBLER_MAX_SEGMENT_COUNT && self.contigs[i + 1].has_data() {
                 self.contigs[i + 1].hole_size -= left;
             }
         }
@@ -323,18 +356,39 @@ impl Assembler {
     ///
     /// Would return the ranges: ``(0, 100), (300, 400)``
     pub fn iter_data(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
-        let mut offset = 0;
-        self.contigs.iter().filter_map(move |contig| {
-            offset += contig.hole_size;
-            let left = offset;
-            offset += contig.data_size;
-            let right = offset;
+        IterData {
+            contigs: self.contigs.iter(),
+            offset: 0,
+        }
+    }
+}
+
+/// The iterator behind [`Assembler::iter_data`].
+///
+/// The running offset is a field rather than a closure capture: flux pins a `move`-captured
+/// local to the index of its initializer, so an accumulator started at `0` has type `usize[0]`
+/// and no assignment can re-establish it. A struct field carries no such index. `scan` moves
+/// the accumulator into a parameter too, but flux has no spec for it or for `flatten`, and the
+/// pair fails parameter inference.
+struct IterData<'a> {
+    contigs: core::slice::Iter<'a, Contig>,
+    offset: usize,
+}
+
+impl Iterator for IterData<'_> {
+    type Item = (usize, usize);
+
+    fn next(&mut self) -> Option<(usize, usize)> {
+        loop {
+            let contig = self.contigs.next()?;
+            self.offset += contig.hole_size;
+            let left = self.offset;
+            self.offset += contig.data_size;
+            let right = self.offset;
             if left < right {
-                Some((left, right))
-            } else {
-                None
+                return Some((left, right));
             }
-        })
+        }
     }
 }
 

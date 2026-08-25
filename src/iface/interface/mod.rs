@@ -1025,12 +1025,12 @@ impl InterfaceInner {
         match IpVersion::of_packet(ip_payload) {
             #[cfg(feature = "proto-ipv4")]
             Ok(IpVersion::Ipv4) => {
-                let ipv4_packet = check!(Ipv4Packet::new_checked(ip_payload));
+                let ipv4_packet = check!(Ipv4Packet::new_checked_ref(Ref::new(ip_payload)));
                 self.process_ipv4(sockets, meta, HardwareAddress::Ip, &ipv4_packet, frag)
             }
             #[cfg(feature = "proto-ipv6")]
             Ok(IpVersion::Ipv6) => {
-                let ipv6_packet = check!(Ipv6Packet::new_checked(ip_payload));
+                let ipv6_packet = check!(Ipv6Packet::new_checked_ref(Ref::new(ip_payload)));
                 self.process_ipv6(sockets, meta, HardwareAddress::Ip, &ipv6_packet)
             }
             // Drop all other traffic.
@@ -1252,7 +1252,7 @@ impl InterfaceInner {
 
                 let solicit = Icmpv6Repr::Ndisc(NdiscRepr::NeighborSolicit {
                     target_addr: dst_addr,
-                    lladdr: Some(self.hardware_addr.into()),
+                    lladdr: MaybeAddr::Present(self.hardware_addr.into()),
                 });
 
                 let packet = Packet::new_ipv6(

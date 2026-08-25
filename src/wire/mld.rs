@@ -100,15 +100,18 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
     /// Return the Querier's Robustness Variable.
     #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
+    // `u8{v: v < 8}` because the field is the low three bits, which the mask below makes true.
+    // It is what `Repr::Query`'s variant claims, and through it what `Repr::emit` hands back to
+    // `set_qrv`, whose `value < 8` is otherwise unprovable from an unindexed field read.
     #[flux_rs::sig(
-        fn(&Packet<T>[@p]) -> u8
+        fn(&Packet<T>[@p]) -> u8{v: v < 8}
         requires 25 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
     )]
     #[flux_rs::no_panic]
     #[inline]
     pub fn qrv(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[field::SQRV] & 0x7
+        data[field::SQRV] % 8
     }
 
     /// Return the Querier's Query Interval Code.
@@ -520,13 +523,20 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> AddressRecord<T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> AddressRecord<T> {
     /// Return a pointer to the address records.
     //
-    // No signature: the return is a `&mut [u8]` whose length the caller cannot recover
-    // (flux-rs/flux#1714), so a bound stated here buys nothing downstream. `Repr::emit`
-    // reaches the same bytes through `wire::Buf` instead.
+    // The `requires` proves the window; the *return* still carries no length, because a
+    // returned `&mut` loses its index (flux-rs/flux#1714), so it buys nothing downstream.
+    // `Repr::emit` reaches the same bytes through `wire::Buf` instead.
+    #[flux_rs::trusted(no, reason = "panic site: the record payload window")]
+    #[flux_rs::sig(
+        fn(&mut AddressRecord<T>[@r]) -> &mut [u8]
+        requires 20 <= <T as AsMut<[u8]>>::as_mut_reft(r.buffer)
+    )]
     #[inline]
     pub fn payload_mut(&mut self) -> &mut [u8] {
         let data = self.buffer.as_mut();
-        &mut data[field::RECORD_MCAST_ADDR.end..]
+        // 20 rather than `field::RECORD_MCAST_ADDR.end`: flux cannot see through a `Range`
+        // const, and the `requires` above is stated at the literal.
+        &mut data[20..]
     }
 }
 
@@ -553,28 +563,16 @@ impl<'a> AddressRecordRepr<'a> {
         }
     }
 
-    /// Parse an MLDv2 address record and return a high-level representation.
-    ///
-    /// A reference in type-parameter position has the unit sort, so no bound on `T`'s buffer is
-    /// statable here and none of the five reads below would be provable. The body therefore
-    /// lives on [`parse_ref`](Self::parse_ref), over a buffer whose length is nameable; this
-    /// re-wraps the same bytes and forwards, which repeats no work the old body did not do.
-    pub fn parse<T>(record: &AddressRecord<&'a T>) -> Result<Self>
-    where
-        T: AsRef<[u8]> + ?Sized,
-    {
-        Self::parse_ref(&AddressRecord::new_unchecked(Ref::new(
-            record.buffer.as_ref(),
-        )))
-    }
-
-    /// [`parse`](Self::parse) over a [`Ref`], where the buffer's length is in the refinement.
+    /// Parse an MLDv2 address record, over a [`Ref`] whose length is in the refinement.
     ///
     /// The `requires` is the whole precondition of this record type: every field sits below
     /// offset 20 and the payload starts there. It is what
     /// [`AddressRecord::checked_len`](AddressRecord::checked_len) tests and what
-    /// [`new_checked_ref`](AddressRecord::new_checked_ref) carries out; `parse` above cannot
-    /// state it, so the obligation surfaces there.
+    /// [`new_checked_ref`](AddressRecord::new_checked_ref) carries out.
+    ///
+    /// There is no generic `parse` over `&T`: a reference in type-parameter position has the
+    /// unit sort, so such a wrapper could not state this `requires` and the obligation
+    /// surfaced there undischargeable. Callers build a `Ref` instead.
     #[flux_rs::sig(fn(&AddressRecord<Ref>[@r]) -> Result<Self> requires 20 <= r.buffer.len)]
     pub fn parse_ref(record: &AddressRecord<Ref<'a>>) -> Result<Self> {
         Ok(Self {
@@ -638,9 +636,13 @@ pub(crate) fn records_len(records: &[AddressRecordRepr]) -> usize {
 // Smallest variant is Report/ReportRecordReprs at `field::NR_MCAST_RCRDS.end` == 8. Flux checks
 // this against the `variant` indices below; `Icmpv6Repr`'s `4 <= blen` invariant rests on it.
 #[flux_rs::invariant(8 <= blen)]
+// See `icmpv4::Repr`: an MLD message is emitted inside an ICMPv6 packet, inside an IPv6 packet
+// whose length field is sixteen bits. This is what lets `Icmpv6Repr`'s own `blen <= 65535`
+// hold through its `Mld` variant.
+#[flux_rs::invariant(blen <= 65535)]
 #[flux_rs::refined_by(blen: int)]
 pub enum Repr<'a> {
-    #[flux_rs::variant({u16, Ipv6Address, bool, u8, u8, u16, &[u8][@m]} -> Repr[28 + m])]
+    #[flux_rs::variant({u16, Ipv6Address, bool, u8{v: v < 8}, u8, u16, {&[u8][@m] | m <= 65507}} -> Repr[28 + m])]
     Query {
         max_resp_code: u16,
         mcast_addr: Ipv6Address,
@@ -650,17 +652,23 @@ pub enum Repr<'a> {
         num_srcs: u16,
         data: &'a [u8],
     },
-    #[flux_rs::variant({u16, &[u8][@m]} -> Repr[8 + m])]
+    #[flux_rs::variant({u16, {&[u8][@m] | m <= 65527}} -> Repr[8 + m])]
     Report {
         nr_mcast_addr_rcrds: u16,
         data: &'a [u8],
     },
-    #[flux_rs::variant((&[AddressRecordRepr][@k]) -> Repr[8 + 20 * k])]
+    #[flux_rs::variant(({&[AddressRecordRepr][@k] | k <= 3276}) -> Repr[8 + 20 * k])]
     ReportRecordReprs(&'a [AddressRecordRepr<'a>]),
 }
 
 impl<'a> Repr<'a> {
     /// Parse an MLDv2 packet and return a high-level representation.
+    ///
+    /// `p.buffer.len <= 65535`: the payload each variant keeps is a window into `packet`, and
+    /// they carry the bound that keeps `Repr`'s own `blen <= 65535` true. The packet is an
+    /// ICMPv6 payload, so it holds wherever this is called in-crate; from outside it is the
+    /// caller's to discharge.
+    #[flux_rs::sig(fn(&Packet<Ref>[@p]) -> Result<Repr> requires p.buffer.len <= 65535)]
     pub fn parse(packet: &Packet<Ref<'a>>) -> Result<Repr<'a>> {
         // `checked_len` rather than `check_len`: the same test, but its `Ok` arm names the
         // buffer's length, which is what `payload` opens its window against.
@@ -724,7 +732,10 @@ impl<'a> Repr<'a> {
     #[flux_rs::trusted(no, reason = "calls the header setters, clear_reserved and the record loop")]
     #[flux_rs::sig(
         fn(&Self[@r], packet: &strg Packet<T>[@p])
-        requires r.blen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        // Equality, not `<=`: the two `copy_from_slice` calls in the body panic unless the
+        // payload window is exactly the data's length, which is a real precondition of this
+        // function. Callers size the buffer from `buffer_len()`, so they meet it.
+        requires r.blen == <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
         ensures packet: Packet<T>{v: v.buffer == p.buffer}
     )]
     pub fn emit<T>(&self, packet: &mut Packet<T>)
@@ -754,7 +765,12 @@ impl<'a> Repr<'a> {
                 packet.set_qrv(*qrv);
                 packet.set_qqic(*qqic);
                 packet.set_num_srcs(*num_srcs);
-                packet.payload_mut().copy_from_slice(&data[..]);
+                // Through `payload_buf` rather than `payload_mut`: a returned `&mut [u8]` loses
+                // its length (flux-rs/flux#1714), and `copy_from_slice` panics unless the two
+                // lengths are equal. `Buf` carries the window's length, and `emit`'s
+                // `r.blen == as_mut_reft` makes it exactly `data`'s.
+                let mut window = packet.payload_buf();
+                window.as_mut().copy_from_slice(&data[..]);
             }
             Repr::Report {
                 nr_mcast_addr_rcrds,
@@ -764,7 +780,12 @@ impl<'a> Repr<'a> {
                 packet.set_msg_code(0);
                 packet.clear_reserved();
                 packet.set_nr_mcast_addr_rcrds(*nr_mcast_addr_rcrds);
-                packet.payload_mut().copy_from_slice(&data[..]);
+                // Through `payload_buf` rather than `payload_mut`: a returned `&mut [u8]` loses
+                // its length (flux-rs/flux#1714), and `copy_from_slice` panics unless the two
+                // lengths are equal. `Buf` carries the window's length, and `emit`'s
+                // `r.blen == as_mut_reft` makes it exactly `data`'s.
+                let mut window = packet.payload_buf();
+                window.as_mut().copy_from_slice(&data[..]);
             }
             Repr::ReportRecordReprs(records) => {
                 packet.set_msg_type(Message::MldReport);
@@ -936,8 +957,8 @@ mod test {
 
     #[test]
     fn test_query_repr_parse() {
-        let packet = Packet::new_unchecked(&QUERY_PACKET_BYTES[..]);
-        let repr = Icmpv6Repr::parse(
+        let packet = Packet::new_unchecked(Ref::new(&QUERY_PACKET_BYTES[..]));
+        let repr = Icmpv6Repr::parse_ref(
             &IPV6_LINK_LOCAL_ALL_NODES,
             &IPV6_LINK_LOCAL_ALL_ROUTERS,
             &packet,
@@ -948,8 +969,8 @@ mod test {
 
     #[test]
     fn test_report_repr_parse() {
-        let packet = Packet::new_unchecked(&REPORT_PACKET_BYTES[..]);
-        let repr = Icmpv6Repr::parse(
+        let packet = Packet::new_unchecked(Ref::new(&REPORT_PACKET_BYTES[..]));
+        let repr = Icmpv6Repr::parse_ref(
             &IPV6_LINK_LOCAL_ALL_NODES,
             &IPV6_LINK_LOCAL_ALL_ROUTERS,
             &packet,
