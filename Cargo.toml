@@ -64,7 +64,24 @@ default_trusted = false
 # The end state is `no_panic = true` with the formatting/derive cones quarantined
 # via `include_trusted`. Flipping this line is the only change needed to see
 # where that stands; it costs ~20 s.
-no_panic = false
+no_panic = true
+
+# no_panic quarantine: cones deliberately out of scope. Shrink this list.
+include_trusted = [
+  # Formatting. Reached only through PrettyPrint/net_debug!, never on a TX/RX
+  # path. `arp::pretty_print` also ICEs fixpoint (ADT-sort crash).
+  "def:core::fmt::Display>::fmt",
+  "def:core::fmt::Debug>::fmt",
+  "def:pretty_print",
+  # Derived impls. `discriminant_value` is an intrinsic with no MIR, so these
+  # can never be discharged, only assumed. No derived impl is on a panic path.
+  "def:core::cmp::PartialEq>::eq",
+  "def:core::cmp::PartialEq>::ne",
+  "def:core::cmp::PartialOrd>::partial_cmp",
+  "def:core::cmp::Ord>::cmp",
+  "def:core::hash::Hash>::hash",
+  "def:core::clone::Clone>::clone",
+]
 
 [dev-dependencies]
 env_logger = "0.10"
