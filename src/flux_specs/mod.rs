@@ -18,6 +18,7 @@
 //! | [`managed`] | `Vec`, `ManagedSlice` and its `Deref`/`DerefMut` impls | check the claim |
 //! | [`net`] | `Ipv6Addr::is_multicast` | check the claim |
 //! | [`num`] | `usize::saturating_sub` | check the claim |
+//! | [`option`] | `Option::map`, forwarding to the closure | check the claim |
 //! | [`range`] | `RangeInclusive::new` | check the claim |
 
 mod array;
@@ -31,5 +32,6 @@ mod iter;
 mod managed;
 mod net;
 mod num;
+mod option;
 mod range;
 mod slice;
