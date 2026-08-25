@@ -122,6 +122,7 @@ pub struct TxToken<Tx: phy::TxToken> {
 
 impl<Tx: phy::TxToken> phy::TxToken for TxToken<Tx> {
     #[flux_rs::trusted(no, reason = "checks TxToken::consume's buffer-length contract, #23")]
+    #[flux_rs::no_panic_if(F::no_panic())]
     #[flux_rs::sig(
         fn(self: Self, len: usize[@n], f: F) -> R
         where

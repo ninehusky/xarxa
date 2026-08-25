@@ -2538,6 +2538,7 @@ impl<'a> Socket<'a> {
     // [`trace_flags`]. Put those twelve lines back inline and fixpoint runs past 9 GB RSS here
     // without terminating.
     #[flux_rs::trusted(no, reason = "checked; see trace_flags for why it terminates")]
+    #[flux_rs::no_panic_if(F::no_panic())]
     #[flux_rs::sig(
         fn(self: &mut Socket, &mut Context, F) -> Result<(), E>
         where F: FnOnce(&mut Context, (IpRepr[@ipr], SizedTcpRepr{t: ipr.plen == t.blen}))

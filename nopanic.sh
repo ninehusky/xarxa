@@ -10,7 +10,7 @@ OUT="_np"; mkdir -p "$OUT"
 L="$OUT/$TAG.log"
 
 FEATURES=medium-ethernet,socket-udp,socket-tcp,socket-dhcpv4,proto-ipv4,proto-ipv6
-FLUX_SYSROOT="${FLUX_SYSROOT:-/Users/andrew/research/flux/sysroot}" \
+FLUX_SYSROOT="${FLUX_SYSROOT:-/Users/andrew/research/flux-npif/sysroot}" \
   FLUX_CACHE=false cargo flux check -p xarxa --no-default-features --features "$FEATURES" > "$L" 2>&1
 
 fail=0
