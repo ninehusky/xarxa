@@ -94,6 +94,8 @@ pub struct RxToken<Rx: phy::RxToken> {
 }
 
 impl<Rx: phy::RxToken> phy::RxToken for RxToken<Rx> {
+    #[flux_rs::no_panic_if(F::no_panic())]
+    #[flux_rs::sig(fn(self: Self, f: F) -> R where F: FnOnce(&[u8]) -> R)]
     fn consume<R, F>(self, f: F) -> R
     where
         F: FnOnce(&[u8]) -> R,

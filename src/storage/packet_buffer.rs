@@ -56,6 +56,8 @@ pub struct PacketBuffer<'a, H: 'a> {
 /// Kept out of [`PacketBuffer::dequeue_with`], whose two nested closures leave
 /// `self.payload_ring` blocked at the exit join and so cannot be checked. This is the half of
 /// that operation that carries obligations.
+#[flux_rs::no_panic_if(F::no_panic())]
+#[flux_rs::sig(fn(&mut PacketMetadata<H>, &mut [u8], F) -> (usize, Result<R, E>))]
 fn dequeue_one<'c, H, R, E, F>(
     metadata: &mut PacketMetadata<H>,
     payload_buf: &'c mut [u8],

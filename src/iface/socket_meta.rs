@@ -45,6 +45,8 @@ impl Meta {
     /// See also `iface::NeighborCache::SILENT_TIME`.
     pub(crate) const DISCOVERY_SILENT_TIME: Duration = Duration::from_millis(1_000);
 
+    #[flux_rs::no_panic_if(F::no_panic())]
+    #[flux_rs::sig(fn(&Self, PollAt, F, Instant) -> PollAt)]
     pub(crate) fn poll_at<F>(
         &self,
         socket_poll_at: PollAt,
@@ -64,6 +66,8 @@ impl Meta {
         }
     }
 
+    #[flux_rs::no_panic_if(F::no_panic())]
+    #[flux_rs::sig(fn(&mut Self, Instant, F) -> bool)]
     pub(crate) fn egress_permitted<F>(&mut self, timestamp: Instant, has_neighbor: F) -> bool
     where
         F: Fn(IpAddress) -> bool,
