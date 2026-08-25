@@ -31,15 +31,54 @@ flux_rs::defs! {
 ///
 /// This implementation is suitable for both simple uses such as a FIFO queue
 /// of UDP packets, and advanced ones such as a TCP reassembly buffer.
+/// `T` occupies at least one byte.
+///
+/// `flux_specs::managed` states `len <= isize::MAX` on a [`ManagedSlice`]'s length, which is
+/// what the `cap` ceiling below rests on. That is Rust's guarantee about the size of an
+/// allocation, and it is denominated in **bytes**: what it actually gives you about a count is
+/// `size_of::<T>() * len <= isize::MAX`. At `size_of::<T>() == 0` the product is zero whatever
+/// the count, so the bound says nothing -- and is false. `[(); usize::MAX]` is a legal array
+/// occupying zero bytes whose slice has length `usize::MAX`.
+///
+/// [`crate::flux_util::byte_len`] dodges this by restricting itself to `[u8]`, where the byte
+/// count and the element count are the same number. An extern spec cannot: it has to match the
+/// item's own generics, and flux has no way to say "`T` is not zero-sized". So it is said here,
+/// in Rust. `RingBuffer` is the crate's only generic `ManagedSlice` holder, so this bound is
+/// what makes the axiom true of every `RingBuffer` that can be constructed.
+///
+/// A `const` assertion will not do the job. `const _: () = assert!(size_of::<T>() > 0)` in a
+/// generic impl is a *post-monomorphization* error: it fires only when a reachable
+/// instantiation is codegen'd, so `cargo check` accepts a zero-sized one. Measured, not assumed.
+///
+/// ```compile_fail
+/// # use xarxa::storage::RingBuffer;
+/// // `()` is zero-sized, so this must not compile.
+/// let mut storage = [(); 4];
+/// let _ = RingBuffer::new(&mut storage[..]);
+/// ```
+///
+/// # Safety
+///
+/// `core::mem::size_of::<Self>()` must be greater than zero.
+#[allow(unsafe_code)]
+pub unsafe trait NonZst {}
+
+// SAFETY: exactly one byte.
+#[allow(unsafe_code)]
+unsafe impl NonZst for u8 {}
+
 #[derive(Debug)]
 #[flux_rs::refined_by(cap: int, read_at: int, length: int)]
 // `cap <= isize::MAX` is a language guarantee about the backing allocation, not an index: no
 // slice is longer. Without it `length + count` in `enqueue_unallocated` is modelled as
-// wrapping and its postcondition cannot be proved.
+// wrapping and its postcondition cannot be proved. Measured: dropping it costs nine
+// obligations, all in this file.
+//
+// The guarantee is about bytes, so it holds only because `T: NonZst` -- see that trait.
 #[flux_rs::invariant(0 <= read_at && 0 <= length && length <= cap)]
 #[flux_rs::invariant(cap <= 9223372036854775807)]
 #[flux_rs::invariant(read_at < cap || read_at == 0)]
-pub struct RingBuffer<'a, T: 'a> {
+pub struct RingBuffer<'a, T: 'a + NonZst> {
     #[flux_rs::field(ManagedSlice<T>[cap])]
     storage: ManagedSlice<'a, T>,
     #[flux_rs::field(usize[read_at])]
@@ -48,7 +87,7 @@ pub struct RingBuffer<'a, T: 'a> {
     length: usize,
 }
 
-impl<'a, T: 'a> RingBuffer<'a, T> {
+impl<'a, T: 'a + NonZst> RingBuffer<'a, T> {
     /// Create a ring buffer with the given storage.
     ///
     /// During creation, every element in `storage` is reset.
@@ -172,7 +211,7 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
 
 /// This is the "discrete" ring buffer interface: it operates with single elements,
 /// and boundary conditions (empty/full) are errors.
-impl<'a, T: 'a> RingBuffer<'a, T> {
+impl<'a, T: 'a + NonZst> RingBuffer<'a, T> {
     /// Call `f` with a single buffer element, and enqueue the element if `f`
     /// returns successfully, or return `Err(Full)` if the buffer is full.
     #[flux_rs::trusted(no, reason = "proves it maintains the RingBuffer invariant")]
@@ -259,7 +298,7 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
 
 /// This is the "continuous" ring buffer interface: it operates with element slices,
 /// and boundary conditions (empty/full) simply result in empty slices.
-impl<'a, T: 'a> RingBuffer<'a, T> {
+impl<'a, T: 'a + NonZst> RingBuffer<'a, T> {
     /// Call `f` with the largest contiguous slice of unallocated buffer elements,
     /// and enqueue the amount of elements returned by `f`.
     ///
@@ -385,7 +424,7 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
 
 /// This is the "random access" ring buffer interface: it operates with element slices,
 /// and allows to access elements of the buffer that are not adjacent to its head or tail.
-impl<'a, T: 'a> RingBuffer<'a, T> {
+impl<'a, T: 'a + NonZst> RingBuffer<'a, T> {
     /// Return the largest contiguous slice of unallocated buffer elements starting
     /// at the given offset past the last allocated element, and up to the given size.
     #[must_use]
@@ -507,7 +546,7 @@ impl<'a, T: 'a> RingBuffer<'a, T> {
     }
 }
 
-impl<'a, T: 'a> From<ManagedSlice<'a, T>> for RingBuffer<'a, T> {
+impl<'a, T: 'a + NonZst> From<ManagedSlice<'a, T>> for RingBuffer<'a, T> {
     fn from(slice: ManagedSlice<'a, T>) -> RingBuffer<'a, T> {
         RingBuffer::new(slice)
     }

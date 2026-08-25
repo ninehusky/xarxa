@@ -12,6 +12,12 @@ pub struct PacketMetadata<H> {
     header: Option<H>,
 }
 
+// SAFETY: `PacketMetadata<H>` holds a `usize` whatever `H` is, so it is never zero-sized.
+// This is what keeps `flux_specs::managed`'s `len <= isize::MAX` true of the metadata ring;
+// see `storage::NonZst`.
+#[allow(unsafe_code)]
+unsafe impl<H> crate::storage::NonZst for PacketMetadata<H> {}
+
 impl<H> PacketMetadata<H> {
     /// Empty packet description.
     pub const EMPTY: PacketMetadata<H> = PacketMetadata {
