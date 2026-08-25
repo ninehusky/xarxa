@@ -874,29 +874,35 @@ impl InterfaceInner {
     }
 
     #[allow(unused)] // unused depending on which sockets are enabled
-    // ASSUMED, NOT PROVEN, and the floor is the RFC's rather than a convenient one. This is
-    // the device capability boundary: `caps.max_transmission_unit` comes from the driver, is not
-    // refined, and on Ethernet this body subtracts 14 from it without a guard, so a device
+    // ASSUMED, NOT PROVEN, and the floor is the smallest one that discharges anything. This
+    // is the device capability boundary: `caps.max_transmission_unit` comes from the driver, is
+    // not refined, and on Ethernet this body subtracts 14 from it without a guard, so a device
     // reporting an MTU under 14 already underflows here.
     //
-    // 576 is RFC 791's IPv4 minimum reassembly buffer, and every IPv6 link is required to carry
-    // 1280 (RFC 8200 section 5), so any conforming device clears it. It has to be at least 40,
-    // because `socket::tcp`'s `dispatch` computes `ip_mtu() - ip_repr.header_len()` and an IPv6
-    // header is 40 octets -- with the old floor of 20 that subtraction could underflow, and
-    // flux was right to refuse it. Raising the floor is what makes the segment-length chain
-    // hold; it is a *stronger assumption about the driver*, not a proof, which is why it is
-    // spelled out here.
+    // 68 is the largest floor any consumer needs: `socket::dhcpv4`'s
+    // `MAX_IPV4_HEADER_LEN + UDP_HEADER_LEN` is 60 + 8, `socket::tcp`'s three
+    // `ip_mtu() - header_len - 20` subtractions want 60, and `max_ipv4_fragment_size`'s
+    // `h <= m` wants 60. It is also RFC 791's own minimum -- "every internet module must be
+    // able to forward a datagram of 68 octets" -- so it is the weakest assumption that buys
+    // anything, not a convenient one.
     //
-    // 65535 is the other end, and unlike the floor it is a property of IP rather than of the
-    // device: `Ipv4Repr` and `Ipv6Repr` both write the payload length into a 16-bit field, so a
-    // larger MTU cannot be described by a conforming packet at all.
+    // The previous floor was 576, RFC 791's *reassembly* minimum, and it is **false**:
+    // `Medium::Ieee802154` returns the device MTU unmodified and an 802.15.4 frame is 127
+    // octets, so no conforming 6LoWPAN driver could meet it. Every medium clears 68 -- 127 for
+    // 802.15.4, 1280 for any IPv6 link (RFC 8200 section 5), 576 for IPv4 reassembly. Measured:
+    // the change costs nothing, 15 errors before and after, same sites.
+    //
+    // 65535 is the other end. Also an assumption about the driver, but a mild one: it is the
+    // largest MTU a conforming packet can describe, since `Ipv4Repr` and `Ipv6Repr` both write
+    // the payload length into a sixteen-bit field, and the in-tree devices top out at
+    // `Loopback`'s 65535.
     //
     // Both bounds are in the signature rather than a body precisely so they read as
     // assumptions. The floor lets `max_ipv4_fragment_size` require `h <= m` instead of silently
     // assuming it; the pair is what carries a segment's payload length to
     // `IpRepr::set_payload_len` in `socket::tcp`.
-    #[flux_rs::trusted(yes, reason = "device MTU is unrefined; RFC 791 minimum is 576")]
-    #[flux_rs::sig(fn(&Self) -> usize{v: 576 <= v && v <= 65535})]
+    #[flux_rs::trusted(yes, reason = "device MTU is unrefined; 68 is the largest floor a consumer needs")]
+    #[flux_rs::sig(fn(&Self) -> usize{v: 68 <= v && v <= 65535})]
     #[flux_rs::no_panic]
     pub(crate) fn ip_mtu(&self) -> usize {
         match self.medium {
