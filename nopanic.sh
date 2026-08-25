@@ -19,6 +19,11 @@ chk() { # name expected actual
 E=$(grep -o 'E0999' "$L" | wc -l | tr -d ' ')
 N=$(sed -n 's/.*due to \([0-9]*\) previous error.*/\1/p' "$L" | tail -1)
 [ -z "$N" ] && N=0
+chk "xarxa was checked"   1 "$(grep -c 'Checking xarxa v' "$L")"
+# A dependency that fails to compile aborts before xarxa is checked. Every other check
+# passes on that log and the count reads as a huge improvement -- 306 -> 9, once.
+DEPFAIL=$(grep -c 'could not compile `xarxa-driver`' "$L")
+chk "no dep-crate abort"  0 "$DEPFAIL"
 chk "panicked (ICE)"      0 "$(grep -c panicked "$L")"
 chk "syntax error"        0 "$(grep -c 'syntax error' "$L")"
 chk "is missing"          0 "$(grep -c 'is missing' "$L")"
