@@ -669,6 +669,7 @@ impl<'a> Socket<'a> {
     }
 
     #[flux_rs::trusted(no, reason = "calls IpRepr::new")]
+    #[flux_rs::no_panic_if(F::no_panic())]
     #[flux_rs::sig(
         fn(self: &mut Socket[@t], &mut Context, F) -> Result<(), E>
         where F: FnOnce(&mut Context, PacketMeta, (IpRepr[@ipr], UdpRepr, &[u8]{v: ipr.plen == 8 + v})) -> Result<(), E>
@@ -778,6 +779,7 @@ impl<'a> Socket<'a> {
 /// to be checked at all. Call `emit` through this and the obligation is discharged; call it
 /// directly from the closure and `dispatch` asserts its own contract instead of proving it.
 #[flux_rs::trusted(no, reason = "checks Socket::dispatch's payload-length contract, #23")]
+#[flux_rs::no_panic_if(F::no_panic())]
 #[flux_rs::sig(
     fn(&mut Context, PacketMeta, IpRepr[@ipr], UdpRepr, &[u8][@m], F) -> R
     requires ipr.plen == 8 + m

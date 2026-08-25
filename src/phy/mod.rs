@@ -140,6 +140,7 @@ pub const IPV4_FRAGMENT_PAYLOAD_ALIGNMENT: usize = 8;
 /// this and the obligation is discharged; call it directly from a closure and the
 /// implementor verifies vacuously. See `xarxa-driver`'s `spec_is_live` tripwires.
 #[flux_rs::trusted(no, reason = "checks TxToken::consume's buffer-length contract, #23")]
+#[flux_rs::no_panic_if(F::no_panic())]
 #[flux_rs::sig(
     fn(&mut [u8][@m], F) -> R
     where

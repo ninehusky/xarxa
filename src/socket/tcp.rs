@@ -2997,6 +2997,7 @@ fn trace_flags(control: TcpControl, ack_number: Option<TcpSeqNumber>, payload_is
 /// `Repr` whose payload exceeds 65515 octets sets a length the IPv4 total-length field
 /// truncates. Same family as the UDP defect at `udp.rs:557`.
 #[flux_rs::trusted(no, reason = "makes and checks Socket::dispatch's payload-length contract")]
+#[flux_rs::no_panic_if(F::no_panic())]
 #[flux_rs::sig(
     fn(&mut Context, IpRepr, {SizedTcpRepr[@t] | t.blen <= 65535}, F) -> R
     where
