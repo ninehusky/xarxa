@@ -6,6 +6,10 @@
 #![cfg_attr(flux, feature(sized_hierarchy))]
 // Needed only so `flux_specs` can name `Vec`'s allocator parameter when refining it.
 #![cfg_attr(flux, feature(allocator_api))]
+// Needed only so `flux_specs` can name `discriminant_value`. `#[derive(PartialEq)]` calls the
+// intrinsic directly rather than going through `mem::discriminant`, so the extern spec that
+// discharges every derive's no-panic obligation has to name it too.
+#![cfg_attr(flux, feature(core_intrinsics, discriminant_kind))]
 
 //! The _xarxa_ library is built in a layered structure, with the layers corresponding
 //! to the levels of API abstraction. Only the highest layers would be used by a typical

@@ -11,10 +11,14 @@
 //! | [`convert`] | `AsRef`/`AsMut` associated refinements | check the claim |
 //! | [`slice`] | `copy_from_slice`, `SliceIndex for RangeFull` | check the claim |
 //! | [`cmp`] | `min` | check the claim |
+//! | [`heapless`] | `Vec::{new, push}`, `Deref` | check the claim |
+//! | [`intrinsics`] | `discriminant_value` | check the claim |
+//! | [`iter`] | `slice::Iter::next` | check the claim |
 //! | [`byteorder`] | `BigEndian::{read_u16, write_u16}` | check the claim |
 //! | [`managed`] | `Vec`, `ManagedSlice` and its `Deref`/`DerefMut` impls | check the claim |
 //! | [`net`] | `Ipv6Addr::is_multicast` | check the claim |
 //! | [`num`] | `usize::saturating_sub` | check the claim |
+//! | [`option`] | `Option::map`, forwarding to the closure | check the claim |
 //! | [`range`] | `RangeInclusive::new` | check the claim |
 
 mod array;
@@ -22,8 +26,12 @@ mod byteorder;
 mod cmp;
 mod convert;
 mod flux_core;
+mod heapless;
+mod intrinsics;
+mod iter;
 mod managed;
 mod net;
 mod num;
+mod option;
 mod range;
 mod slice;
