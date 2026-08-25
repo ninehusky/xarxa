@@ -568,6 +568,7 @@ impl<'a> Socket<'a> {
     /// header describes a payload of the UDP header plus what the DHCP representation emits.
     /// It is proved, not assumed -- the three calls below are made directly from this body, so
     /// flux checks each against the bound.
+    #[flux_rs::no_panic_if(F::no_panic())]
     #[flux_rs::sig(
         fn(self: &mut Socket, &mut Context, F) -> Result<(), E>
         where F: FnOnce(&mut Context,

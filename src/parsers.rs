@@ -47,6 +47,8 @@ impl<'a> Parser<'a> {
         }
     }
 
+    #[flux_rs::no_panic_if(F::no_panic())]
+    #[flux_rs::sig(fn(&mut Self, f: F) -> Option<T>)]
     fn try_do<F, T>(&mut self, f: F) -> Option<T>
     where
         F: FnOnce(&mut Parser<'a>) -> Result<T>,
@@ -69,6 +71,8 @@ impl<'a> Parser<'a> {
         }
     }
 
+    #[flux_rs::no_panic_if(F::no_panic())]
+    #[flux_rs::sig(fn(&mut Self, f: F) -> Result<T>)]
     fn until_eof<F, T>(&mut self, f: F) -> Result<T>
     where
         F: FnOnce(&mut Parser<'a>) -> Result<T>,
