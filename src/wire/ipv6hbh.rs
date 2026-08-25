@@ -4,12 +4,16 @@ use crate::wire::ipv6option::RouterAlert;
 use heapless::Vec;
 
 /// A read/write wrapper around an IPv6 Hop-by-Hop Header buffer.
+#[flux_rs::refined_by(buffer: T)]
 pub struct Header<T: AsRef<[u8]>> {
+    #[flux_rs::field(T[buffer])]
     buffer: T,
 }
 
 impl<T: AsRef<[u8]>> Header<T> {
     /// Create a raw octet buffer with an IPv6 Hop-by-Hop Header structure.
+    #[flux_rs::sig(fn(T[@b]) -> Header<T>{h: h.buffer == b})]
+    #[flux_rs::no_panic]
     pub const fn new_unchecked(buffer: T) -> Self {
         Header { buffer }
     }
@@ -66,6 +70,80 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     /// has already lost its length index (flux-rs/flux#1714), so they are out of reach from here.
     pub fn options_mut(&mut self) -> &mut [u8] {
         self.buffer.as_mut()
+    }
+
+    /// The option window, as a [`Buf`] so its length survives the return.
+    ///
+    /// Same window as [`options_mut`](Self::options_mut). A returned `&mut [u8]` loses its
+    /// length index (flux-rs/flux#1714), which is why the two slices in [`Repr::emit`] had
+    /// nothing to bound themselves against. `Buf` carries the length in its own refinement.
+    #[flux_rs::sig(fn(self: &mut Header<T>[@h]) -> Buf[<T as AsMut<[u8]>>::as_mut_reft(h.buffer)])]
+    #[flux_rs::no_panic]
+    pub fn options_buf(&mut self) -> Buf<'_> {
+        Buf::new(self.buffer.as_mut())
+    }
+}
+
+/// A cursor over a [`Repr`]'s options, carrying the octets its remaining options will emit.
+///
+/// [`Repr::emit`] writes each option into a window it reslices as it walks, so at every step it
+/// owes `opt.buffer_len() <= window.len()`. That is a claim about the sum of the option list's
+/// tail, and a sum over a `Vec` is not statable: the container carries no refinement to name, so
+/// there is no term to put on the right-hand side of `blen == sum(options)`. The cursor states
+/// the same claim one element at a time instead. `remaining` starts at the `Repr`'s `blen` and
+/// [`Self::advance`] subtracts exactly the option just handed back, so [`Self::peek`]'s bound is
+/// the [`Ghost`] argument unfolded rather than a second, larger assumption.
+///
+/// Private, and the only cursor in the module: `remaining` cannot be set by a caller, which is
+/// what keeps [`Self::peek`]'s claim scoped. A free function taking a `Repr` and an option could
+/// not say the option came *from* that `Repr` -- membership is the same missing refinement -- so
+/// it would be asserting the bound for any pair, which is false.
+#[flux_rs::refined_by(remaining: int)]
+#[flux_rs::invariant(0 <= remaining && remaining <= 1028)]
+struct OptionsCursor<'a, 'b> {
+    opts: &'b [Ipv6OptionRepr<'a>],
+    pos: usize,
+    #[flux_rs::field(usize[remaining])]
+    remaining: usize,
+}
+
+impl<'a, 'b> OptionsCursor<'a, 'b> {
+    /// A cursor over `repr`'s options, owing every octet `repr` emits.
+    #[flux_rs::sig(fn(&Repr[@r]) -> OptionsCursor[r.blen])]
+    #[flux_rs::no_panic]
+    fn new(repr: &'b Repr<'a>) -> Self {
+        OptionsCursor {
+            opts: repr.options(),
+            pos: 0,
+            remaining: repr.buffer_len(),
+        }
+    }
+
+    /// The option at the cursor, if any.
+    ///
+    /// Trusted, and this is the whole container claim: `remaining` is the octets the options
+    /// from `pos` onward emit, so the one at `pos` emits at most that many. Same statement
+    /// [`Ghost`] rests on, restricted to a single element.
+    #[flux_rs::trusted(yes, reason = "the container claim: `remaining` sums the untraversed tail")]
+    #[flux_rs::sig(fn(&OptionsCursor[@c]) -> Option<&Ipv6OptionRepr{o: o.blen <= c.remaining}>)]
+    #[flux_rs::no_panic]
+    fn peek(&self) -> Option<&'b Ipv6OptionRepr<'a>> {
+        self.opts.get(self.pos)
+    }
+
+    /// Step past `opt`, which [`Self::peek`] must have just returned.
+    ///
+    /// Not trusted: `remaining` is an ordinary `usize`, so the subtraction is checked, and the
+    /// `requires` is exactly what rules out its underflow.
+    #[flux_rs::sig(
+        fn(self: &strg OptionsCursor[@c], &Ipv6OptionRepr[@o])
+        requires o.blen <= c.remaining
+        ensures self: OptionsCursor[c.remaining - o.blen]
+    )]
+    #[flux_rs::no_panic]
+    fn advance(&mut self, opt: &Ipv6OptionRepr<'a>) {
+        self.pos += 1;
+        self.remaining -= opt.buffer_len();
     }
 }
 
@@ -189,17 +267,32 @@ impl<'a> Repr<'a> {
     }
 
     /// Emit a high-level representation into an IPv6 Hop-by-Hop Header.
-    pub fn emit<T: AsRef<[u8]> + AsMut<[u8]> + ?Sized>(&self, header: &mut Header<&mut T>) {
-        let mut buffer = header.options_mut();
+    ///
+    /// `Header<T>` with `T: Sized` rather than `Header<&mut T>` with `T: ?Sized`, for the reason
+    /// [`Header::options_mut`] gives: a reference self type has the unit sort, so `as_mut_reft`
+    /// is not nameable there and the window bound below could not be written. Strictly widening
+    /// -- `&mut T` is `Sized` and satisfies both bounds -- so existing callers still resolve, but
+    /// they must pass a `Buf` to get a window length that is worth anything.
+    #[flux_rs::sig(
+        fn(&Repr[@r], header: &mut Header<T>[@h])
+        requires r.blen <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
+    )]
+    pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, header: &mut Header<T>) {
+        let mut buffer = header.options_buf();
+        let mut cursor = OptionsCursor::new(self);
 
-        for opt in &self.options {
+        // `remaining <= buffer.len()` is the loop invariant, and both sides fall by exactly
+        // `n` each step. It holds on entry from this function's `requires`.
+        while let Some(opt) = cursor.peek() {
+            let n = opt.buffer_len();
             // Routed through `Buf` so the option window keeps its length: a bare `&mut [u8]`
             // instantiates core's blanket `AsMut for &mut T`, which carries no associated
             // refinement, and `Ipv6OptionRepr::emit`'s buffer bound would then abort this body.
             opt.emit(&mut Ipv6Option::new_unchecked(Buf::new(
-                &mut buffer[..opt.buffer_len()],
+                &mut buffer.as_mut()[..n],
             )));
-            buffer = &mut buffer[opt.buffer_len()..];
+            buffer.advance(n);
+            cursor.advance(opt);
         }
     }
 

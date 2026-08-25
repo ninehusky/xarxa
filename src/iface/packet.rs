@@ -185,9 +185,12 @@ impl<'p> Packet<'p> {
 
                 let hbh_start = ipv6_ext_hdr.header_len();
                 let hbh_end = hbh_start + hbh_repr.buffer_len();
-                hbh_repr.emit(&mut Ipv6HopByHopHeader::new_unchecked(
+                // `Buf` so the hop-by-hop window keeps its length: `Repr::emit` now states
+                // `blen <= as_mut_reft(window)`, and a bare `&mut [u8]` instantiates core's
+                // blanket `AsMut`, which carries no associated refinement to discharge it with.
+                hbh_repr.emit(&mut Ipv6HopByHopHeader::new_unchecked(Buf::new(
                     &mut payload[hbh_start..hbh_end],
-                ));
+                )));
 
                 // As above: `Buf::with_offset` carries the tail's length into the refinement,
                 // where `&mut payload[hbh_end..]` would lose it (flux-rs/flux#1714).

@@ -770,27 +770,56 @@ impl<'a> Repr<'a> {
     }
 }
 
-// A trait impl's signature is fixed, so it cannot carry the `requires` the header accessors
-// want. The check is taken inside the body instead: `checked_len`'s `Ok` arm proves the bound
-// `msg_type` and `msg_code` need, and the arm that fails it reads no header at all, which is
-// what makes a truncated message safe to print.
-impl fmt::Display for Packet<Ref<'_>> {
+/// A [`Packet`] over a [`Ref`] whose length has been checked, carrying that check as a type
+/// invariant.
+///
+/// `fmt::Display`'s signature is fixed, so it cannot carry the `requires` its header reads need.
+/// [`checked_len`](Packet::checked_len) already proves them, but its `Ok` arm is an *existential*
+/// refinement on the returned length and that does not survive a trait boundary. A type
+/// **invariant** does, because it travels with the type rather than with a value's index -- so
+/// the bound lives on a type only a checked construction can produce.
+///
+/// No runtime check is added and no panic is replaced. The check establishing this invariant is
+/// the one `pretty_print` already ran; a short buffer still takes the `Err` arm and still prints
+/// `({err})`. What changes is that the five header reads on the `Ok` path are now proved rather
+/// than undischarged.
+///
+/// `8 <= buffer.len` is the whole precondition of this file's accessors, so one invariant covers
+/// all of them. It does not cover [`Repr::parse_ref`], which wants an *upper* bound
+/// (`buffer.len <= 65535`) that no check in this file establishes -- that one is IPv4's
+/// `total_len`, and it stays open.
+#[flux_rs::refined_by(packet: Packet<Ref>)]
+#[flux_rs::invariant(8 <= packet.buffer.len)]
+pub struct CheckedPacket<'a>(#[flux_rs::field(Packet<Ref>[packet])] Packet<Ref<'a>>);
+
+impl<'a> CheckedPacket<'a> {
+    /// The packet underneath, for consumers that re-derive what they need.
+    ///
+    /// The invariant belongs to `CheckedPacket` and does not travel with the reference.
+    #[flux_rs::sig(fn(&Self[@c]) -> &Packet<Ref>[c.packet])]
+    #[flux_rs::no_panic]
+    pub fn as_packet(&self) -> &Packet<Ref<'a>> {
+        &self.0
+    }
+}
+
+impl fmt::Display for CheckedPacket<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match Repr::parse_ref(self, &ChecksumCapabilities::default()) {
+        match Repr::parse_ref(&self.0, &ChecksumCapabilities::default()) {
             Ok(repr) => write!(f, "{repr}"),
             Err(err) => {
                 write!(f, "ICMPv4 ({err})")?;
                 {
                     {
-                        write!(f, " type={:?}", self.msg_type())?;
-                        match self.msg_type() {
+                        write!(f, " type={:?}", self.0.msg_type())?;
+                        match self.0.msg_type() {
                             Message::DstUnreachable => {
-                                write!(f, " code={:?}", DstUnreachable::from(self.msg_code()))
+                                write!(f, " code={:?}", DstUnreachable::from(self.0.msg_code()))
                             }
                             Message::TimeExceeded => {
-                                write!(f, " code={:?}", TimeExceeded::from(self.msg_code()))
+                                write!(f, " code={:?}", TimeExceeded::from(self.0.msg_code()))
                             }
-                            _ => write!(f, " code={}", self.msg_code()),
+                            _ => write!(f, " code={}", self.0.msg_code()),
                         }
                     }
                 }
@@ -844,13 +873,13 @@ impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
     ) -> fmt::Result {
         // `buffer_ref` off the `dyn`: the trait signature is fixed, so the buffer arrives with
         // no length index, and `Ref` is where it acquires one.
-        let packet = match Packet::new_checked_ref(buffer_ref(buffer)) {
+        let packet = match Packet::new_checked_display(buffer_ref(buffer)) {
             Err(err) => return write!(f, "{indent}({err})"),
             Ok(packet) => packet,
         };
-        // `new_checked_ref` carries `8 <= b.len` out, which is what both accessors require.
-        let msg_type = packet.msg_type();
-        let data = packet.data();
+        // `CheckedPacket`'s invariant is `8 <= b.len`, which is what both accessors require.
+        let msg_type = packet.as_packet().msg_type();
+        let data = packet.as_packet().data();
         pretty_print_data(&packet, msg_type, data, f, indent)
     }
 }
@@ -858,7 +887,7 @@ impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
 /// Write `packet`'s header line, then hand `data` to the IPv4 printer if `msg_type` carries one.
 #[flux_rs::trusted(yes, reason = "ICE flux infer.rs:896: `incompatible types` on a place still blocked (`†`) by a mutable borrow at the join. See ICE-INBOX.md.")]
 fn pretty_print_data(
-    packet: &Packet<Ref<'_>>,
+    packet: &CheckedPacket<'_>,
     msg_type: Message,
     data: &[u8],
     f: &mut fmt::Formatter,
@@ -956,6 +985,17 @@ impl<'a> Packet<Ref<'a>> {
         let packet = Packet::new_unchecked(buffer);
         packet.checked_len()?;
         Ok(packet)
+    }
+
+    /// [`new_checked_ref`](Self::new_checked_ref), returning a [`CheckedPacket`].
+    ///
+    /// The only producer of the invariant `Display` reads. `checked_len`'s `Ok` arm proves
+    /// `8 <= as_ref_reft(p.buffer)`, and at `T = Ref` that associated refinement *is*
+    /// `buffer.len` -- so the invariant discharges here and nowhere else.
+    pub fn new_checked_display(buffer: Ref<'a>) -> Result<CheckedPacket<'a>> {
+        let packet = Packet::new_unchecked(buffer);
+        packet.checked_len()?;
+        Ok(CheckedPacket(packet))
     }
 
     /// Return a pointer to the type-specific data.

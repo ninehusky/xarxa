@@ -14,6 +14,7 @@
 //! | [`byteorder`] | `BigEndian::{read_u16, write_u16}` | check the claim |
 //! | [`managed`] | `Vec`, `ManagedSlice` and its `Deref`/`DerefMut` impls | check the claim |
 //! | [`net`] | `Ipv6Addr::is_multicast` | check the claim |
+//! | [`num`] | `usize::saturating_sub` | check the claim |
 //! | [`range`] | `RangeInclusive::new` | check the claim |
 
 mod array;
@@ -23,5 +24,6 @@ mod convert;
 mod flux_core;
 mod managed;
 mod net;
+mod num;
 mod range;
 mod slice;

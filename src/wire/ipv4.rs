@@ -2,7 +2,7 @@ use core::fmt;
 
 use super::{Error, Result};
 use crate::phy::ChecksumCapabilities;
-use crate::wire::ip::{checksum, pretty_print_ip_payload};
+use crate::wire::ip::{checksum, pretty_print_ip_payload, SizedPayload};
 use crate::wire::Ref;
 
 pub use super::IpProtocol as Protocol;
@@ -1194,7 +1194,9 @@ impl<T: AsRef<[u8]>> PrettyPrint for Packet<T> {
         let more_frags = ip_packet.more_frags();
         let frag_offset = ip_packet.frag_offset();
         let checksum_valid = ip_packet.verify_checksum();
-        let payload = ip_packet.payload();
+        // `tlen <= 65535` is `Packet`'s own invariant and `payload` is the `hlen..tlen`
+        // window, so the sixteen-bit bound `SizedPayload` carries discharges here.
+        let payload = SizedPayload::new(ip_packet.payload());
 
         pretty_print_fragment_or_payload(
             f,
@@ -1217,7 +1219,7 @@ fn pretty_print_fragment_or_payload(
     more_frags: bool,
     frag_offset: u16,
     checksum_valid: bool,
-    payload: &[u8],
+    payload: SizedPayload<'_>,
 ) -> fmt::Result {
     use crate::wire::ip::checksum::format_checksum;
 

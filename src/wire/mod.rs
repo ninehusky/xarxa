@@ -283,7 +283,7 @@ pub use self::tcp::{
     SackBlock, SackRanges, SeqNumber as TcpSeqNumber, TcpOption, TcpTimestampGenerator, TcpTimestampRepr,
 };
 
-pub(crate) use self::tcp::SizedRepr as SizedTcpRepr;
+pub(crate) use self::tcp::{SizedRepr as SizedTcpRepr, accepted_window as tcp_accepted_window};
 
 #[cfg(feature = "proto-dhcpv4")]
 pub use self::dhcpv4::{

@@ -32,6 +32,39 @@ flux_rs::defs! {
             + (if a || b || c { sack_len(a, b, c) + 2 } else { 0 })
     }
 
+    // A 32-bit two's-complement wrap, as `wrapping_add`/`wrapping_sub` compute it. Correct for
+    // any `x` that overshoots by at most one period -- which covers the difference of two
+    // `i32`s, and the sum of an `i32` with a `usize` the caller has already bounded by
+    // `i32::MAX`. Written as a conditional rather than with `%` so fixpoint sees linear
+    // arithmetic. Same device as flux-core's `wrap_once`.
+    // `wrap32` for the `Add<usize>` result. `a.v` is an `i32` and the guard in `add` gives
+    // `n <= i32::MAX`, so `a.v + n` lies in `[-2^31, 2^32-2]`: it can exceed `i32::MAX` but can
+    // never fall below `i32::MIN`, and `wrap32`'s lower branch is dead. Same value as `wrap32`
+    // on that domain; the point is that this is one conditional rather than two, and `process`
+    // applies it nine times against eighteen comparisons that each apply `wrap32` again.
+    #[hide]
+    fn wrap32_up(x: int) -> int {
+        if x > 2147483647 { x - 4294967296 } else { x }
+    }
+
+    // The mirror, for `Sub<usize>`: `a.v - n` lies in `[-2^32+1, 2^31-1]`, so it can fall below
+    // `i32::MIN` but never exceed `i32::MAX`, and `wrap32`'s upper branch is dead.
+    #[hide]
+    fn wrap32_down(x: int) -> int {
+        if x < -2147483648 { x + 4294967296 } else { x }
+    }
+
+    #[hide]
+    fn wrap32(x: int) -> int {
+        if x > 2147483647 {
+            x - 4294967296
+        } else if x < -2147483648 {
+            x + 4294967296
+        } else {
+            x
+        }
+    }
+
     // The header length the options imply: the fixed 20 octets plus the options, rounded up to
     // a multiple of four. Written out rather than as `20 + opt_len(..)` because a `defn` does
     // not unfold inside another `defn`; `header_len_of`'s signature is what keeps the two in
@@ -83,13 +116,24 @@ flux_rs::defs! {
 /// A sequence number is a monotonically advancing integer modulo 2<sup>32</sup>.
 /// Sequence numbers do not have a discontiguity when compared pairwise across a signed overflow.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
-pub struct SeqNumber(pub i32);
+#[flux_rs::refined_by(v: int)]
+pub struct SeqNumber(#[flux_rs::field(i32[v])] pub i32);
 
 impl SeqNumber {
+    #[flux_rs::sig(
+        fn(SeqNumber[@a], SeqNumber[@b])
+            -> SeqNumber[if wrap32(a.v - b.v) > 0 { a.v } else { b.v }]
+    )]
+    #[flux_rs::no_panic]
     pub fn max(self, rhs: Self) -> Self {
         if self > rhs { self } else { rhs }
     }
 
+    #[flux_rs::sig(
+        fn(SeqNumber[@a], SeqNumber[@b])
+            -> SeqNumber[if wrap32(a.v - b.v) < 0 { a.v } else { b.v }]
+    )]
+    #[flux_rs::no_panic]
     pub fn min(self, rhs: Self) -> Self {
         if self < rhs { self } else { rhs }
     }
@@ -111,22 +155,30 @@ impl defmt::Format for SeqNumber {
 impl ops::Add<usize> for SeqNumber {
     type Output = SeqNumber;
 
+    // The guard below is what discharges `usize_to_i32`'s bound; the panic stays and this
+    // retires none of it. `rhs as i32` became `usize_to_i32(rhs)`, which is the same cast --
+    // flux does not model the `as`, and that is all the helper supplies.
+    #[flux_rs::reveal(wrap32_up)]
+    #[flux_rs::sig(fn(SeqNumber[@a], usize[@n]) -> SeqNumber[wrap32_up(a.v + n)])]
     fn add(self, rhs: usize) -> SeqNumber {
         if rhs > i32::MAX as usize {
             panic!("attempt to add to sequence number with unsigned overflow")
         }
-        SeqNumber(self.0.wrapping_add(rhs as i32))
+        SeqNumber(self.0.wrapping_add(crate::flux_util::usize_to_i32(rhs)))
     }
 }
 
 impl ops::Sub<usize> for SeqNumber {
     type Output = SeqNumber;
 
+    // See `Add<usize>` above.
+    #[flux_rs::reveal(wrap32_down)]
+    #[flux_rs::sig(fn(SeqNumber[@a], usize[@n]) -> SeqNumber[wrap32_down(a.v - n)])]
     fn sub(self, rhs: usize) -> SeqNumber {
         if rhs > i32::MAX as usize {
             panic!("attempt to subtract to sequence number with unsigned overflow")
         }
-        SeqNumber(self.0.wrapping_sub(rhs as i32))
+        SeqNumber(self.0.wrapping_sub(crate::flux_util::usize_to_i32(rhs)))
     }
 }
 
@@ -139,6 +191,10 @@ impl ops::AddAssign<usize> for SeqNumber {
 impl ops::Sub for SeqNumber {
     type Output = usize;
 
+    // The underflow panic stays, and is the reason the result is nameable at all: past it, the
+    // wrapped difference is known non-negative, so it is the distance between the two numbers.
+    #[flux_rs::reveal(wrap32)]
+    #[flux_rs::sig(fn(SeqNumber[@a], SeqNumber[@b]) -> usize[wrap32(a.v - b.v)])]
     fn sub(self, rhs: SeqNumber) -> usize {
         let result = self.0.wrapping_sub(rhs.0);
         if result < 0 {
@@ -148,10 +204,97 @@ impl ops::Sub for SeqNumber {
     }
 }
 
+/// The order is **modular, and therefore not transitive**: with `a = 0`, `b = 2^30` and
+/// `c = 2^31` one has `a < b`, `b < c` and `c < a`. It is the standard TCP comparison and it is
+/// correct exactly while every pair under comparison is within 2^31 of the other, which is what
+/// a well-formed window guarantees.
+///
+/// The four provided methods are overridden rather than left to `partial_cmp` so each can carry
+/// a signature. `partial_cmp` itself cannot: it returns `Option<Ordering>`, and neither
+/// `core::Option` nor `Ordering` can be refined here. The bodies compute what `partial_cmp`
+/// computes, so nothing about the comparison changes -- this is where the fact becomes visible,
+/// not where it becomes true.
 impl cmp::PartialOrd for SeqNumber {
     fn partial_cmp(&self, other: &SeqNumber) -> Option<cmp::Ordering> {
         self.0.wrapping_sub(other.0).partial_cmp(&0)
     }
+
+    #[flux_rs::reveal(wrap32)]
+    #[flux_rs::sig(fn(&SeqNumber[@a], &SeqNumber[@b]) -> bool[wrap32(a.v - b.v) < 0])]
+    #[flux_rs::no_panic]
+    fn lt(&self, other: &SeqNumber) -> bool {
+        self.0.wrapping_sub(other.0) < 0
+    }
+
+    #[flux_rs::reveal(wrap32)]
+    #[flux_rs::sig(fn(&SeqNumber[@a], &SeqNumber[@b]) -> bool[wrap32(a.v - b.v) <= 0])]
+    #[flux_rs::no_panic]
+    fn le(&self, other: &SeqNumber) -> bool {
+        self.0.wrapping_sub(other.0) <= 0
+    }
+
+    #[flux_rs::reveal(wrap32)]
+    #[flux_rs::sig(fn(&SeqNumber[@a], &SeqNumber[@b]) -> bool[wrap32(a.v - b.v) > 0])]
+    #[flux_rs::no_panic]
+    fn gt(&self, other: &SeqNumber) -> bool {
+        self.0.wrapping_sub(other.0) > 0
+    }
+
+    #[flux_rs::reveal(wrap32)]
+    #[flux_rs::sig(fn(&SeqNumber[@a], &SeqNumber[@b]) -> bool[wrap32(a.v - b.v) >= 0])]
+    #[flux_rs::no_panic]
+    fn ge(&self, other: &SeqNumber) -> bool {
+        self.0.wrapping_sub(other.0) >= 0
+    }
+}
+
+/// The part of a segment that lies inside the receive window: the payload octets, and their
+/// offset from the window's start.
+///
+/// Here rather than in `socket::tcp`, which is the only caller. The two obligations on the
+/// slice below are statements about modular sequence arithmetic, and the `wrap32` defns that
+/// name it resolve only inside the module holding their `defs!` block -- a crate-root block
+/// exports nothing, so a signature written in `socket::tcp` cannot mention them. `#[reveal]`
+/// unfolds them for these six lines; `Socket::process` leaves them hidden, which is what keeps
+/// fixpoint terminating over its seven hundred.
+///
+/// The one premise is the shape of `segment_end`, which the caller already has: it is
+/// `seq_number + payload.len()`, and that is exactly `Add<usize>`'s postcondition. It buys the
+/// second obligation, `range.end <= payload.len()`.
+///
+/// The first, `range.start <= range.end`, is the overlap ordering, and it does **not** follow
+/// from the segment-acceptability test. Lifting that test in here too and having it return
+/// `bool{b: b => ...}` rather than a plain `bool` was tried: all three of its accepting arms
+/// fail, because modular comparison is not antisymmetric at exactly half a period. `ss < we` is
+/// `wrap32(ss - we) < 0`, and at `wrap32(ss - we) == -2^31` the mirror `wrap32(we - ss)` is
+/// `-2^31` as well, so both orders hold at once and no interval can be read off. The missing
+/// premise is that the receive window is shorter than 2^31 octets -- true, since
+/// `window_end - window_start` is a `u16` shifted left by at most 14, but the shift is a field
+/// of the unrefined `Socket`, so it is the same wall as the two ring-buffer obligations in
+/// `process`.
+#[flux_rs::reveal(wrap32, wrap32_up)]
+#[flux_rs::sig(
+    fn(&[u8][@plen], SeqNumber[@ss], SeqNumber[@se], SeqNumber[@ws], SeqNumber[@we])
+        -> (&[u8], usize)
+    requires se.v == wrap32_up(ss.v + plen)
+)]
+pub(crate) fn accepted_window<'p>(
+    payload: &'p [u8],
+    segment_start: SeqNumber,
+    segment_end: SeqNumber,
+    window_start: SeqNumber,
+    window_end: SeqNumber,
+) -> (&'p [u8], usize) {
+    let overlap_start = window_start.max(segment_start);
+    let overlap_end = window_end.min(segment_end);
+
+    // the checks done above imply this.
+    debug_assert!(overlap_start <= overlap_end);
+
+    (
+        &payload[overlap_start - segment_start..overlap_end - segment_start],
+        overlap_start - window_start,
+    )
 }
 
 /// A ghost field: carries an integer in the refinement and nothing at runtime.
@@ -1511,35 +1654,23 @@ fn header_len_of(
 }
 
 impl<'a> Repr<'a> {
-    /// Parse a Transmission Control Protocol packet and return a high-level representation.
+    /// [`parse_ref`](Self::parse_ref) has no generic twin.
     ///
-    /// A reference in type-parameter position has the unit sort, so no bound on `T`'s buffer is
-    /// statable here and neither window below would be provable. The body therefore lives on
-    /// [`parse_ref`](Self::parse_ref), over a buffer whose length is nameable; this re-wraps the
-    /// same bytes and forwards, which repeats no work the old body did not do.
-    pub fn parse<T>(
-        packet: &Packet<&'a T>,
-        src_addr: &IpAddress,
-        dst_addr: &IpAddress,
-        checksum_caps: &ChecksumCapabilities,
-    ) -> Result<Repr<'a>>
-    where
-        T: AsRef<[u8]> + ?Sized,
-    {
-        Repr::parse_ref(
-            &Packet::new_unchecked(Ref::new(packet.buffer.as_ref())),
-            src_addr,
-            dst_addr,
-            checksum_caps,
-        )
-    }
-
+    /// There used to be a `parse` over `&Packet<&'a T>` that re-wrapped the bytes and forwarded.
+    /// It cannot survive `parse_ref`'s `p.buffer.len <= 65535`: a reference in type-parameter
+    /// position has the unit sort, so core's blanket `AsRef for &T` carries no associated
+    /// refinement and the bound is not statable at that self type -- by the caller either. The
+    /// three call sites build a [`Ref`] instead, which is where the length lives.
     /// [`parse`](Self::parse) over a [`Ref`], where the buffer's length is in the refinement.
     ///
     /// `checked_len` rather than `check_len`: the same test, but its `Ok` arm names the three
     /// facts the accessors below need -- the buffer's length, that the header-length field is
     /// not a lie about it, and that the options window does not run backwards -- and over `Ref`
     /// they are statable.
+    #[flux_rs::sig(
+        fn(&Packet<Ref>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities) -> Result<Repr>
+        requires p.buffer.len <= 65535
+    )]
     pub fn parse_ref(
         packet: &Packet<Ref<'a>>,
         src_addr: &IpAddress,
@@ -2218,8 +2349,8 @@ mod test {
     #[test]
     #[cfg(feature = "proto-ipv4")]
     fn test_parse() {
-        let packet = Packet::new_unchecked(&SYN_PACKET_BYTES[..]);
-        let repr = Repr::parse(
+        let packet = Packet::new_unchecked(Ref::new(&SYN_PACKET_BYTES[..]));
+        let repr = Repr::parse_ref(
             &packet,
             &SRC_ADDR.into(),
             &DST_ADDR.into(),

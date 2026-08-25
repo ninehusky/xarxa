@@ -5,7 +5,7 @@
 use core::fmt::Display;
 #[cfg(feature = "async")]
 use core::task::Waker;
-use core::{fmt, mem};
+use core::{cmp, fmt, mem};
 
 #[cfg(feature = "async")]
 use crate::socket::WakerRegistration;
@@ -476,6 +476,19 @@ pub enum CongestionControl {
 /// accept several connections, as many sockets must be allocated, or any new connection
 /// attempts will be reset.
 #[derive(Debug)]
+// FIXME(flux): three of the crate's remaining obligations want a relation between two of the
+// fields below -- `process`'s `dequeue_allocated` wants `ack_len <= tx_buffer.len()`, its
+// `enqueue_unallocated` wants `contig_len <= rx_buffer.window()`, and
+// `wire::tcp::accepted_window` wants the receive window to be shorter than half a sequence
+// period. None is statable while this struct has no `refined_by`.
+//
+// Refining it is not a three-site job. Measured 2026-08-24: adding `refined_by(win_shift: int)`
+// and one `#[field(u8[win_shift])]` on `remote_win_shift`, with **no invariant at all**, takes
+// the crate from 15 errors to 41. All 26 are in this file: two `assignment might be unsafe` on
+// `self.remote_win_shift = 0` (a mutating method needs `&strg self` to say how it moves the
+// index), one `error jumping to join point` in `ack_reply`, which does not touch the field, and
+// the rest spread across `process`. That is the entry price for one field before any invariant
+// is written.
 pub struct Socket<'a> {
     state: State,
     timer: Timer,
@@ -1632,12 +1645,6 @@ impl<'a> Socket<'a> {
         }
     }
 
-    // Three obligations in this body are owed rather than met, and they are real: the slice
-    // range at the reassembly copy below, and the two ring-buffer preconditions at
-    // `dequeue_allocated` and `enqueue_unallocated`. They are reported because the body is
-    // checked. Trusting it to silence them would erase all three along with the other ~700
-    // lines, which is what this annotation is here to say is not happening.
-    #[flux_rs::trusted(no, reason = "checked; three obligations below are owed, not erased")]
     pub(crate) fn process(
         &mut self,
         cx: &mut Context,
@@ -1658,6 +1665,13 @@ impl<'a> Socket<'a> {
         };
         let control_len = (sent_syn as usize) + (sent_fin as usize);
 
+        // The ACK number a SYN of ours must draw. Read once rather than in each of the four
+        // arms below that compare against it: `local_seq_no` is not written inside the match, and
+        // `+ 1` neither panics nor has an effect, so this is the same value at each use. It is
+        // hoisted for the proof -- every `SeqNumber` addition is a `wrap32` term, and `wrap32` is
+        // a three-way conditional, so four copies cost fixpoint four independent case splits.
+        let syn_ack_number = self.local_seq_no + 1;
+
         // Reject unacceptable acknowledgements.
         match (self.state, repr.control, repr.ack_number) {
             // An RST received in response to initial SYN is acceptable if it acknowledges
@@ -1667,7 +1681,7 @@ impl<'a> Socket<'a> {
                 return None;
             }
             (State::SynSent, TcpControl::Rst, Some(ack_number)) => {
-                if ack_number != self.local_seq_no + 1 {
+                if ack_number != syn_ack_number {
                     net_debug!("unacceptable RST|ACK in response to initial SYN");
                     return None;
                 }
@@ -1680,7 +1694,7 @@ impl<'a> Socket<'a> {
             (State::Listen, _, Some(_)) => unreachable!(),
             // SYN|ACK in the SYN-SENT state must have the exact ACK number.
             (State::SynSent, TcpControl::Syn, Some(ack_number)) => {
-                if ack_number != self.local_seq_no + 1 {
+                if ack_number != syn_ack_number {
                     net_debug!("unacceptable SYN|ACK in response to initial SYN");
                     return Some(Self::rst_reply(ip_repr, repr));
                 }
@@ -1695,7 +1709,7 @@ impl<'a> Socket<'a> {
                 // I'm not sure why, I think it may be a workaround for broken TCP
                 // servers, or a defense against reordering. Either way, if Linux
                 // does it, we do too.
-                if ack_number == self.local_seq_no + 1 {
+                if ack_number == syn_ack_number {
                     net_debug!(
                         "expecting a SYN|ACK, received an ACK with the right ack_number, ignoring."
                     );
@@ -1719,7 +1733,7 @@ impl<'a> Socket<'a> {
             }
             // ACK in the SYN-RECEIVED state must have the exact ACK number, or we RST it.
             (State::SynReceived, _, Some(ack_number)) => {
-                if ack_number != self.local_seq_no + 1 {
+                if ack_number != syn_ack_number {
                     net_debug!("unacceptable ACK in response to SYN|ACK");
                     return Some(Self::rst_reply(ip_repr, repr));
                 }
@@ -1826,17 +1840,14 @@ impl<'a> Socket<'a> {
                 };
 
                 if segment_in_window {
-                    let overlap_start = window_start.max(segment_start);
-                    let overlap_end = window_end.min(segment_end);
-
-                    // the checks done above imply this.
-                    debug_assert!(overlap_start <= overlap_end);
-
                     self.local_rx_last_seq = Some(repr.seq_number);
 
-                    (
-                        &repr.payload[overlap_start - segment_start..overlap_end - segment_start],
-                        overlap_start - window_start,
+                    crate::wire::tcp_accepted_window(
+                        repr.payload,
+                        segment_start,
+                        segment_end,
+                        window_start,
+                        window_end,
                     )
                 } else {
                     // Out-of-window RSTs are silently dropped, per RFC 9293
@@ -2714,12 +2725,19 @@ impl<'a> Socket<'a> {
                 // 2. MSS the remote is willing to accept, probably determined by their MTU
                 // 3. MSS we can send, determined by our MTU.
                 // 4. Our congestion window
-                let options_len = repr.header_len() - TCP_HEADER_LEN;
-                let local_mss = cx.ip_mtu() - ip_repr.header_len() - TCP_HEADER_LEN;
-                let effective_mss = local_mss.min(self.remote_mss).saturating_sub(options_len);
+                // `20` rather than `TCP_HEADER_LEN`: the const is `field::URGENT.end`, and
+                // flux cannot see through the `Range` it comes from. Same value.
+                //
+                // `cmp::min` rather than the `Ord::min` method: identical function, and the
+                // free one is the one with a spec. Without it the segment length is
+                // unconstrained, and `IpRepr::set_payload_len`'s ceiling has nothing to rest on.
+                let options_len = repr.header_len() - 20;
+                let local_mss = cx.ip_mtu() - ip_repr.header_len() - 20;
+                let effective_mss =
+                    cmp::min(local_mss, self.remote_mss).saturating_sub(options_len);
 
                 let offset = if self.pending_fast_retransmit {
-                    let size = effective_mss.min(self.tx_buffer.len());
+                    let size = cmp::min(effective_mss, self.tx_buffer.len());
                     repr.seq_number = self.local_seq_no;
                     repr.payload = self.tx_buffer.get_allocated(0, size);
 
@@ -2759,9 +2777,9 @@ impl<'a> Socket<'a> {
                         // an empty segment elicits no reply, so capping the probe to a
                         // zero length would stall the connection if a window update from
                         // the remote got lost.
-                        win_limit.min(effective_mss)
+                        cmp::min(win_limit, effective_mss)
                     } else {
-                        win_limit.min(effective_mss).min(self.cwnd_remaining())
+                        cmp::min(cmp::min(win_limit, effective_mss), self.cwnd_remaining())
                     };
 
                     let offset = self.flight_size();
@@ -2980,7 +2998,7 @@ fn trace_flags(control: TcpControl, ack_number: Option<TcpSeqNumber>, payload_is
 /// truncates. Same family as the UDP defect at `udp.rs:557`.
 #[flux_rs::trusted(no, reason = "makes and checks Socket::dispatch's payload-length contract")]
 #[flux_rs::sig(
-    fn(&mut Context, IpRepr, SizedTcpRepr, F) -> R
+    fn(&mut Context, IpRepr, {SizedTcpRepr[@t] | t.blen <= 65535}, F) -> R
     where
         F: FnOnce(&mut Context, (IpRepr[@i], SizedTcpRepr{t: i.plen == t.blen})) -> R
 )]

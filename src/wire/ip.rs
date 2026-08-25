@@ -907,7 +907,7 @@ impl Repr {
     #[flux_rs::trusted(no, reason = "carries the per-variant header length to `emit`'s callers")]
     #[flux_rs::sig(
         fn(self: &Self[@r]) -> usize{n:
-            (r.ip_ty == 0 => n == 20) && (r.ip_ty == 1 => n == 40)
+            20 <= n && (r.ip_ty == 0 => n == 20) && (r.ip_ty == 1 => n == 40)
         }
     )]
     #[flux_rs::no_panic]
@@ -1104,11 +1104,49 @@ pub mod checksum {
 
 use crate::wire::pretty_print::PrettyIndent;
 
+/// An IP payload whose length is bounded by the sixteen-bit length field that named it.
+///
+/// The TCP branch below owes `buffer.len <= 65535`: [`TcpRepr::parse_ref`] and
+/// [`TcpPacket::verify_checksum`] both want it, because the pseudo-header checksum is computed
+/// over a sixteen-bit length. Every payload reaching this printer is a window named by IPv4's
+/// `total_len` or IPv6's `payload_len`, both `u16`, so the bound holds -- but it is not
+/// *statable* at [`PrettyPrint::pretty_print`], whose buffer arrives as `&dyn AsRef<[u8]>` with
+/// no length index, and the fragment/header helpers in between are trusted for an ICE and would
+/// erase a `requires`.
+///
+/// A type invariant routes past both. The obligation lands in the checked bodies of the
+/// `pretty_print` impls, where `payload()`'s returned index and the packet's own
+/// `tlen <= 65535` / `plen <= 65535` discharge it.
+///
+/// [`PrettyPrint::pretty_print`]: crate::wire::pretty_print::PrettyPrint::pretty_print
+#[flux_rs::refined_by(len: int)]
+#[flux_rs::invariant(0 <= len && len <= 65535)]
+pub struct SizedPayload<'a> {
+    #[flux_rs::field(&[u8][len])]
+    inner: &'a [u8],
+}
+
+impl<'a> SizedPayload<'a> {
+    /// The only producer of the invariant. Its caller owes the sixteen-bit bound.
+    #[flux_rs::sig(fn(&[u8][@n]) -> SizedPayload[n] requires n <= 65535)]
+    #[flux_rs::no_panic]
+    pub fn new(inner: &'a [u8]) -> SizedPayload<'a> {
+        SizedPayload { inner }
+    }
+
+    /// The payload underneath, keeping its length and the buffer's lifetime.
+    #[flux_rs::sig(fn(&Self[@p]) -> &[u8][p.len])]
+    #[flux_rs::no_panic]
+    pub fn as_slice(&self) -> &'a [u8] {
+        self.inner
+    }
+}
+
 pub fn pretty_print_ip_payload<T: Into<Repr>>(
     f: &mut fmt::Formatter,
     indent: &mut PrettyIndent,
     ip_repr: T,
-    payload: &[u8],
+    payload: SizedPayload<'_>,
 ) -> fmt::Result {
     #[cfg(feature = "proto-ipv4")]
     use super::pretty_print::PrettyPrint;
@@ -1123,15 +1161,15 @@ pub fn pretty_print_ip_payload<T: Into<Repr>>(
         #[cfg(feature = "proto-ipv4")]
         Protocol::Icmp => {
             indent.increase(f)?;
-            Icmpv4Packet::<&[u8]>::pretty_print(&payload, f, indent)
+            Icmpv4Packet::<&[u8]>::pretty_print(&payload.as_slice(), f, indent)
         }
         Protocol::Udp => {
             indent.increase(f)?;
-            match UdpPacket::new_checked_ref(Ref::new(payload)) {
+            match UdpPacket::new_checked_display(Ref::new(payload.as_slice())) {
                 Err(err) => write!(f, "{indent}({err})"),
                 Ok(udp_packet) => {
                     match UdpRepr::parse(
-                        &udp_packet,
+                        udp_packet.as_packet(),
                         &repr.src_addr(),
                         &repr.dst_addr(),
                         &checksum_caps,
@@ -1146,8 +1184,9 @@ pub fn pretty_print_ip_payload<T: Into<Repr>>(
                                 udp_packet.payload().len()
                             )?;
                             let valid =
-                                udp_packet.verify_checksum(&repr.src_addr(), &repr.dst_addr());
+                                udp_packet.as_packet().verify_checksum(&repr.src_addr(), &repr.dst_addr());
                             let partially_valid = udp_packet
+                                .as_packet()
                                 .verify_partial_checksum(&repr.src_addr(), &repr.dst_addr());
 
                             format_checksum(f, valid, partially_valid)
@@ -1160,7 +1199,7 @@ pub fn pretty_print_ip_payload<T: Into<Repr>>(
             indent.increase(f)?;
             // Over `Ref`: `verify_checksum` below is provable only where the buffer's length
             // is in the refinement.
-            match TcpPacket::new_checked_ref(Ref::new(payload)) {
+            match TcpPacket::new_checked_ref(Ref::new(payload.as_slice())) {
                 Err(err) => write!(f, "{indent}({err})"),
                 Ok(tcp_packet) => {
                     match TcpRepr::parse_ref(

@@ -119,3 +119,21 @@ pub fn first_nul(data: &[u8]) -> usize {
     }
     i
 }
+
+/// `n as i32`, for an `n` the caller has already shown fits.
+///
+/// Flux does not model a `usize -> i32` cast, so `n as i32` reads as an unconstrained `i32` and
+/// nothing downstream of it can be named. `n <= i32::MAX` is exactly the condition under which
+/// the cast is the identity on the value, so it is the caller's obligation, not a claim made
+/// here -- the same shape as [`byte_len`] above, which states a language guarantee flux cannot
+/// derive.
+///
+/// This retires no panic. `SeqNumber`'s `Add`/`Sub` still test `rhs` and still panic on the same
+/// inputs; the test is what discharges the bound below, and removing it would leave this
+/// undischarged rather than silently widen anything.
+#[flux_rs::trusted(yes, reason = "flux does not model a usize -> i32 cast")]
+#[flux_rs::sig(fn(n: usize{n <= 2147483647}) -> i32[n])]
+#[flux_rs::no_panic]
+pub const fn usize_to_i32(n: usize) -> i32 {
+    n as i32
+}
