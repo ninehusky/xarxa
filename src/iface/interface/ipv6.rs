@@ -341,12 +341,15 @@ impl InterfaceInner {
             }
         }
 
-        // `suffix` rather than `&ip_payload[k..]`: indexing with a `RangeFrom` returns an
-        // unindexed slice, so the result's length -- which this function's postcondition is
-        // stated over -- would be unknown to the caller.
+        // The checked index, not `flux_util::suffix`. `suffix` is `get_unchecked(at..)`, so
+        // routing through it trades this panic for UB on a buffer that came off the wire. The
+        // bound *is* discharged -- a negative control at this site fires -- but a proved
+        // obligation is what licenses the trade, not what compels it, and the panic is cheaper
+        // than the failure mode it would be swapped for. The cost is that a `RangeFrom` index
+        // returns an unindexed slice, so this function's `r <= n` postcondition is lost.
         HopByHopResponse::Continue(
             ext_repr.next_header,
-            crate::flux_util::suffix(ip_payload, ext_repr.header_len() + ext_repr.data.len()),
+            &ip_payload[ext_repr.header_len() + ext_repr.data.len()..],
         )
     }
 

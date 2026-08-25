@@ -96,9 +96,14 @@ impl InterfaceInner {
     }
 
     /// The `requires` is `Packet::new_checked_ref`'s `Ok` arm verbatim, which is how every
-    /// caller builds the packet. It used to be re-established inside by re-checking through
-    /// `as_window`; taking the packet as a `Packet<Ref>` means the caller's proof survives the
-    /// call instead of being thrown away and redone.
+    /// caller builds the packet, so the caller's proof survives the call instead of being
+    /// thrown away and redone.
+    ///
+    /// It is stated *alongside* the re-check below, not instead of it. Both production callers
+    /// discharge it, but the check is what the crate's own tests reach this body through --
+    /// `tests/ipv4.rs` builds its packet with `new_unchecked` -- and deleting a guard is only
+    /// licensed once every caller proves it cannot fire. Retained, the `requires` costs nothing:
+    /// the check is a no-op on every path that discharges it.
     #[flux_rs::sig(
         fn(&mut Self, &mut SocketSet, PacketMeta, HardwareAddress,
            &Ipv4Packet<Ref>[@p], &mut FragmentsBuffer) -> Option<Packet>
@@ -113,6 +118,7 @@ impl InterfaceInner {
         ipv4_packet: &Ipv4Packet<Ref<'a>>,
         frag: &'a mut FragmentsBuffer,
     ) -> Option<Packet<'a>> {
+        check!(ipv4_packet.check_len());
         let mut ipv4_repr = check!(Ipv4Repr::parse_ref(ipv4_packet, &self.caps.checksum));
         if !self.is_unicast_v4(ipv4_repr.src_addr) && !ipv4_repr.src_addr.is_unspecified() {
             // Discard packets with non-unicast source addresses but allow unspecified
