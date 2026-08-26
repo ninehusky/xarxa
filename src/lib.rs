@@ -13,6 +13,8 @@
 // Needed only so `flux_specs` can name `FromResidual`, which `?` lowers to.
 #![cfg_attr(flux, feature(try_trait_v2))]
 // Needed only so `flux_specs` can name `Step`, the bound on `Range`'s `Iterator` impl.
+// Named inline in the `extern_spec` body, which is stripped in non-flux builds -- a bare
+// `use` of it is not, and breaks them.
 #![cfg_attr(flux, feature(step_trait))]
 
 //! The _xarxa_ library is built in a layered structure, with the layers corresponding

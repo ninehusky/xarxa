@@ -2,7 +2,7 @@
 
 use core::{
     array::IntoIter as ArrayIntoIter,
-    iter::{Enumerate, Filter, FilterMap, Map, Step, Zip},
+    iter::{Enumerate, Filter, FilterMap, Map, Zip},
     ops::Range,
     slice::{ChunksExact, Iter, IterMut},
 };
@@ -195,7 +195,7 @@ impl<B, I: Iterator, F: FnMut(<I as Iterator>::Item) -> Option<B>> Iterator for 
 // none of which can fail to advance. <https://doc.rust-lang.org/1.89.0/src/core/iter/range.rs.html#758>
 #[extern_spec(core::iter)]
 #[assoc(fn next_no_panic() -> bool { true })]
-impl<A: Step> Iterator for Range<A> {
+impl<A: core::iter::Step> Iterator for Range<A> {
     #[no_panic]
     #[spec(fn(&mut Self) -> Option<A>)]
     fn next(&mut self) -> Option<A>;

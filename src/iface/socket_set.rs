@@ -190,12 +190,58 @@ impl<'a> SocketSet<'a> {
     }
 
     /// Iterate every socket in this set.
-    pub(crate) fn items(&self) -> impl Iterator<Item = &Item<'a>> + '_ {
-        self.sockets.iter().filter_map(|x| x.inner.as_ref())
+    pub(crate) fn items(&self) -> Items<'a, '_> {
+        Items {
+            inner: self.sockets.iter(),
+        }
     }
 
     /// Iterate every socket in this set.
-    pub(crate) fn items_mut(&mut self) -> impl Iterator<Item = &mut Item<'a>> + '_ {
-        self.sockets.iter_mut().filter_map(|x| x.inner.as_mut())
+    pub(crate) fn items_mut(&mut self) -> ItemsMut<'a, '_> {
+        ItemsMut {
+            inner: self.sockets.iter_mut(),
+        }
+    }
+}
+
+/// The iterators behind [`SocketSet::items`] and [`SocketSet::items_mut`].
+///
+/// Named rather than `impl Iterator` so they can carry `next_no_panic`. An opaque return
+/// type has no impl block to state it on and no name a caller can reference, so every
+/// `for`, `filter_map` and `map` over one owed a proof no caller could construct.
+pub(crate) struct Items<'a, 'b> {
+    inner: core::slice::Iter<'b, SocketStorage<'a>>,
+}
+
+/// See [`Items`].
+pub(crate) struct ItemsMut<'a, 'b> {
+    inner: core::slice::IterMut<'b, SocketStorage<'a>>,
+}
+
+#[flux_rs::assoc(fn next_no_panic() -> bool { true })]
+impl<'a, 'b> Iterator for Items<'a, 'b> {
+    type Item = &'b Item<'a>;
+
+    fn next(&mut self) -> Option<&'b Item<'a>> {
+        loop {
+            let slot = self.inner.next()?;
+            if let Some(item) = slot.inner.as_ref() {
+                return Some(item);
+            }
+        }
+    }
+}
+
+#[flux_rs::assoc(fn next_no_panic() -> bool { true })]
+impl<'a, 'b> Iterator for ItemsMut<'a, 'b> {
+    type Item = &'b mut Item<'a>;
+
+    fn next(&mut self) -> Option<&'b mut Item<'a>> {
+        loop {
+            let slot = self.inner.next()?;
+            if let Some(item) = slot.inner.as_mut() {
+                return Some(item);
+            }
+        }
     }
 }
