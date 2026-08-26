@@ -105,7 +105,7 @@ pub type SocketBuffer<'a> = RingBuffer<'a, u8>;
 /// The state of a TCP socket, according to [RFC 793].
 ///
 /// [RFC 793]: https://tools.ietf.org/html/rfc793
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum State {
     Closed,
@@ -119,6 +119,23 @@ pub enum State {
     Closing,
     LastAck,
     TimeWait,
+}
+
+// Hand-written rather than derived: `#[derive(PartialEq)]` gives flux no place to put a
+// panic-freedom claim, and `!=` goes to the trait's *default* `ne`, which is unresolved at
+// every call site. `State` is fieldless, so both are a discriminant comparison.
+impl PartialEq for State {
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&State, &State) -> bool)]
+    fn eq(&self, other: &State) -> bool {
+        *self as u8 == *other as u8
+    }
+
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&State, &State) -> bool)]
+    fn ne(&self, other: &State) -> bool {
+        *self as u8 != *other as u8
+    }
 }
 
 impl fmt::Display for State {

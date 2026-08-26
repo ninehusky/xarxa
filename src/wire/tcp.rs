@@ -1520,7 +1520,7 @@ impl<'a> TcpOption<'a> {
 }
 
 /// The possible control flags of a Transmission Control Protocol packet.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Control {
     None,
@@ -1528,6 +1528,23 @@ pub enum Control {
     Syn,
     Fin,
     Rst,
+}
+
+// Hand-written rather than derived: `#[derive(PartialEq)]` gives flux no place to put a
+// panic-freedom claim, and `!=` goes to the trait's *default* `ne`, which is unresolved at
+// every call site. `Control` is fieldless, so both are a discriminant comparison.
+impl PartialEq for Control {
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&Control, &Control) -> bool)]
+    fn eq(&self, other: &Control) -> bool {
+        *self as u8 == *other as u8
+    }
+
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&Control, &Control) -> bool)]
+    fn ne(&self, other: &Control) -> bool {
+        *self as u8 != *other as u8
+    }
 }
 
 #[allow(clippy::len_without_is_empty)]
