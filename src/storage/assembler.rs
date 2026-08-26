@@ -355,7 +355,7 @@ impl Assembler {
     /// |--- 100 ---|--- 200 ---|--- 100 ---|
     ///
     /// Would return the ranges: ``(0, 100), (300, 400)``
-    pub fn iter_data(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+    pub fn iter_data(&self) -> IterData<'_> {
         IterData {
             contigs: self.contigs.iter(),
             offset: 0,
@@ -370,7 +370,7 @@ impl Assembler {
 /// and no assignment can re-establish it. A struct field carries no such index. `scan` moves
 /// the accumulator into a parameter too, but flux has no spec for it or for `flatten`, and the
 /// pair fails parameter inference.
-struct IterData<'a> {
+pub struct IterData<'a> {
     contigs: core::slice::Iter<'a, Contig>,
     offset: usize,
 }

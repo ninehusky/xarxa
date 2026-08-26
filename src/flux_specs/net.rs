@@ -60,6 +60,16 @@ impl From<[u8; 16]> for Ipv6Addr {
     fn from(octets: [u8; 16]) -> Ipv6Addr;
 }
 
+// The eight segments are written into the octet array big-endian; no branch.
+// <https://doc.rust-lang.org/1.89.0/src/core/net/ip_addr.rs.html#2228>
+#[extern_spec(core::net)]
+#[assoc(fn from_no_panic() -> bool { true })]
+impl From<[u16; 8]> for Ipv6Addr {
+    #[no_panic]
+    #[spec(fn(segments: [u16; 8]) -> Ipv6Addr)]
+    fn from(segments: [u16; 8]) -> Ipv6Addr;
+}
+
 // Comparing two fixed-size octet arrays.
 // <https://doc.rust-lang.org/1.89.0/src/core/net/ip_addr.rs.html#1372>
 #[extern_spec(core::net)]
