@@ -220,6 +220,7 @@ impl Address {
 }
 
 #[cfg(all(feature = "proto-ipv4", feature = "proto-ipv6"))]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<::core::net::IpAddr> for Address {
     fn from(x: ::core::net::IpAddr) -> Address {
         match x {
@@ -229,6 +230,7 @@ impl From<::core::net::IpAddr> for Address {
     }
 }
 
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Address> for ::core::net::IpAddr {
     fn from(x: Address) -> ::core::net::IpAddr {
         match x {
@@ -241,6 +243,7 @@ impl From<Address> for ::core::net::IpAddr {
 }
 
 #[cfg(feature = "proto-ipv4")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Ipv4Address> for Address {
     fn from(ipv4: Ipv4Address) -> Address {
         Address::Ipv4(ipv4)
@@ -248,6 +251,7 @@ impl From<Ipv4Address> for Address {
 }
 
 #[cfg(feature = "proto-ipv6")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Ipv6Address> for Address {
     fn from(addr: Ipv6Address) -> Self {
         Address::Ipv6(addr)
@@ -349,6 +353,7 @@ impl Cidr {
 }
 
 #[cfg(feature = "proto-ipv4")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Ipv4Cidr> for Cidr {
     fn from(addr: Ipv4Cidr) -> Self {
         Cidr::Ipv4(addr)
@@ -356,6 +361,7 @@ impl From<Ipv4Cidr> for Cidr {
 }
 
 #[cfg(feature = "proto-ipv6")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Ipv6Cidr> for Cidr {
     fn from(addr: Ipv6Cidr) -> Self {
         Cidr::Ipv6(addr)
@@ -408,6 +414,7 @@ impl Endpoint {
 }
 
 #[cfg(all(feature = "proto-ipv4", feature = "proto-ipv6"))]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<::core::net::SocketAddr> for Endpoint {
     fn from(x: ::core::net::SocketAddr) -> Endpoint {
         Endpoint {
@@ -418,6 +425,7 @@ impl From<::core::net::SocketAddr> for Endpoint {
 }
 
 #[cfg(feature = "proto-ipv4")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<::core::net::SocketAddrV4> for Endpoint {
     fn from(x: ::core::net::SocketAddrV4) -> Endpoint {
         Endpoint {
@@ -428,6 +436,7 @@ impl From<::core::net::SocketAddrV4> for Endpoint {
 }
 
 #[cfg(feature = "proto-ipv6")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<::core::net::SocketAddrV6> for Endpoint {
     fn from(x: ::core::net::SocketAddrV6) -> Endpoint {
         Endpoint {
@@ -437,6 +446,7 @@ impl From<::core::net::SocketAddrV6> for Endpoint {
     }
 }
 
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Endpoint> for ::core::net::SocketAddr {
     fn from(x: Endpoint) -> ::core::net::SocketAddr {
         ::core::net::SocketAddr::new(x.addr.into(), x.port)
@@ -456,6 +466,7 @@ impl defmt::Format for Endpoint {
     }
 }
 
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl<T: Into<Address>> From<(T, u16)> for Endpoint {
     fn from((addr, port): (T, u16)) -> Endpoint {
         Endpoint {
@@ -549,6 +560,7 @@ impl ListenEndpoint {
 }
 
 #[cfg(all(feature = "proto-ipv4", feature = "proto-ipv6"))]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<::core::net::SocketAddr> for ListenEndpoint {
     fn from(x: ::core::net::SocketAddr) -> ListenEndpoint {
         ListenEndpoint::with_addr(x.ip().into(), x.port())
@@ -556,6 +568,7 @@ impl From<::core::net::SocketAddr> for ListenEndpoint {
 }
 
 #[cfg(feature = "proto-ipv4")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<::core::net::SocketAddrV4> for ListenEndpoint {
     fn from(x: ::core::net::SocketAddrV4) -> ListenEndpoint {
         ListenEndpoint::with_addr((*x.ip()).into(), x.port())
@@ -563,6 +576,7 @@ impl From<::core::net::SocketAddrV4> for ListenEndpoint {
 }
 
 #[cfg(feature = "proto-ipv6")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<::core::net::SocketAddrV6> for ListenEndpoint {
     fn from(x: ::core::net::SocketAddrV6) -> ListenEndpoint {
         ListenEndpoint::with_addr((*x.ip()).into(), x.port())
@@ -587,6 +601,7 @@ impl defmt::Format for ListenEndpoint {
 }
 
 /// See the note on `From<Endpoint>`: the assoc is what survives `.into()`.
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<u16> for ListenEndpoint {
     #[flux_rs::trusted(reason = "opaque: a bare port binds no address")]
     #[flux_rs::sig(fn(u16) -> ListenEndpoint[-1])]
@@ -597,6 +612,7 @@ impl From<u16> for ListenEndpoint {
 
 /// Ties the conversion's result index to the source, so `.into()` (which routes through the
 /// blanket `Into` spec, whose `from_val` defaults to `true`) does not lose the version.
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Endpoint> for ListenEndpoint {
     #[flux_rs::trusted(reason = "opaque: constructs a bound endpoint from a full one")]
     #[flux_rs::sig(fn(Endpoint[@v]) -> ListenEndpoint[v])]
@@ -608,6 +624,7 @@ impl From<Endpoint> for ListenEndpoint {
     }
 }
 
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl<T: Into<Address>> From<(T, u16)> for ListenEndpoint {
     fn from((addr, port): (T, u16)) -> ListenEndpoint {
         ListenEndpoint::with_addr(addr.into(), port)
@@ -640,6 +657,7 @@ pub enum Repr {
 }
 
 #[cfg(feature = "proto-ipv4")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Ipv4Repr> for Repr {
     fn from(repr: Ipv4Repr) -> Repr {
         Repr::Ipv4(repr)
@@ -647,6 +665,7 @@ impl From<Ipv4Repr> for Repr {
 }
 
 #[cfg(feature = "proto-ipv6")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Ipv6Repr> for Repr {
     fn from(repr: Ipv6Repr) -> Repr {
         Repr::Ipv6(repr)

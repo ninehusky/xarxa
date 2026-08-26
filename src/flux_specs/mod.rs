@@ -25,6 +25,7 @@ mod array;
 mod byteorder;
 mod cmp;
 mod convert;
+mod convert_nopanic;
 mod flux_core;
 mod heapless;
 mod intrinsics;

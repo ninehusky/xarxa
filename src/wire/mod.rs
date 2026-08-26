@@ -514,6 +514,7 @@ impl core::fmt::Display for HardwareAddress {
 // `.into()` dispatches through core's blanket `Into` impl, which forwards to
 // `from_val` (see `crate::flux_specs`).
 #[cfg(feature = "medium-ethernet")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<EthernetAddress> for HardwareAddress {
     #[flux_rs::sig(fn(EthernetAddress[@o0]) -> HardwareAddress[o0 % 2 == 0])]
     fn from(addr: EthernetAddress) -> Self {
@@ -724,6 +725,7 @@ impl core::fmt::Display for RawHardwareAddress {
 }
 
 #[cfg(feature = "medium-ethernet")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<EthernetAddress> for RawHardwareAddress {
     fn from(addr: EthernetAddress) -> Self {
         Self::from_bytes(addr.as_bytes())
@@ -738,6 +740,7 @@ impl From<Ieee802154Address> for RawHardwareAddress {
 }
 
 #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<HardwareAddress> for RawHardwareAddress {
     fn from(addr: HardwareAddress) -> Self {
         Self::from_bytes(addr.as_bytes())

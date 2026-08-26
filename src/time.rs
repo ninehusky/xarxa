@@ -338,12 +338,14 @@ impl ops::ShrAssign<u32> for Duration {
     }
 }
 
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<::core::time::Duration> for Duration {
     fn from(other: ::core::time::Duration) -> Duration {
         Duration::from_micros(other.as_secs() * 1000000 + other.subsec_micros() as u64)
     }
 }
 
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Duration> for ::core::time::Duration {
     fn from(val: Duration) -> Self {
         ::core::time::Duration::from_micros(val.total_micros())

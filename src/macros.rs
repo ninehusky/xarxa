@@ -67,6 +67,7 @@ macro_rules! enum_with_unknown {
             Unknown($ty)
         }
 
+        #[flux_rs::assoc(fn from_no_panic() -> bool { true })]
         impl ::core::convert::From<$ty> for $name {
             #[flux_rs::trusted(no, reason = "backs the code index")]
             #[flux_rs::sig(fn($ty[@c]) -> $name[c])]
@@ -78,6 +79,7 @@ macro_rules! enum_with_unknown {
             }
         }
 
+        #[flux_rs::assoc(fn from_no_panic() -> bool { true })]
         impl ::core::convert::From<$name> for $ty {
             #[flux_rs::trusted(no, reason = "backs the code index")]
             #[flux_rs::sig(fn($name[@c]) -> $ty[c])]
@@ -110,6 +112,7 @@ macro_rules! enum_with_unknown {
             Unknown($ty)
         }
 
+        #[flux_rs::assoc(fn from_no_panic() -> bool { true })]
         impl ::core::convert::From<$ty> for $name {
             fn from(value: $ty) -> Self {
                 match value {
@@ -119,6 +122,7 @@ macro_rules! enum_with_unknown {
             }
         }
 
+        #[flux_rs::assoc(fn from_no_panic() -> bool { true })]
         impl ::core::convert::From<$name> for $ty {
             fn from(value: $name) -> Self {
                 match value {

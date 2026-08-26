@@ -24,3 +24,21 @@ impl<T, E> Result<T, E> {
     #[spec(fn(Result<T, E>, f: F) -> Result<U, E>)]
     fn and_then<U, F: FnOnce(T) -> Result<U, E>>(self, f: F) -> Result<U, E>;
 }
+
+// `FromResidual` is unstable, so both the import and the spec are gated: `cfg(flux)` is only
+// ever set by `cargo flux`, and a stable build must not see either.
+#[cfg(flux)]
+mod residual {
+    use core::ops::FromResidual;
+
+    use flux_rs::*;
+
+    // `?` on a `Result` lowers to this. Its body is `Err(From::from(e))`, so it panics exactly
+    // when the error conversion does -- which is what the `From` assoc answers.
+    #[extern_spec(core::result)]
+    impl<T, E, F: From<E>> FromResidual<Result<core::convert::Infallible, E>> for Result<T, F> {
+        #[flux_rs::no_panic_if(<F as From<E>>::from_no_panic())]
+        #[spec(fn(Result<core::convert::Infallible, E>) -> Result<T, F>)]
+        fn from_residual(residual: Result<core::convert::Infallible, E>) -> Result<T, F>;
+    }
+}

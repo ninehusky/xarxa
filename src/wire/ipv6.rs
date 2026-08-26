@@ -62,6 +62,7 @@ pub(crate) enum MulticastScope {
     Unknown = 0xFF,
 }
 
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<u8> for MulticastScope {
     fn from(value: u8) -> Self {
         match value {

@@ -559,6 +559,7 @@ impl<'a, T: 'a + NonZst> RingBuffer<'a, T> {
     }
 }
 
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl<'a, T: 'a + NonZst> From<ManagedSlice<'a, T>> for RingBuffer<'a, T> {
     fn from(slice: ManagedSlice<'a, T>) -> RingBuffer<'a, T> {
         RingBuffer::new(slice)

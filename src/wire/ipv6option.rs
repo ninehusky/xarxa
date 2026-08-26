@@ -68,6 +68,7 @@ pub enum FailureType {
     DiscardSendUnicast = 0b11000000,
 }
 
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<u8> for FailureType {
     fn from(value: u8) -> FailureType {
         match value & 0b11000000 {
@@ -80,6 +81,7 @@ impl From<u8> for FailureType {
     }
 }
 
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<FailureType> for u8 {
     fn from(value: FailureType) -> Self {
         match value {
@@ -102,6 +104,7 @@ impl fmt::Display for FailureType {
     }
 }
 
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Type> for FailureType {
     fn from(other: Type) -> FailureType {
         let raw: u8 = other.into();
