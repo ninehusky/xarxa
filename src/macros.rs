@@ -50,7 +50,7 @@ macro_rules! enum_with_unknown {
             ),+ $(,)?
         }
     ) => {
-        #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
+        #[derive(Debug, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
         #[cfg_attr(feature = "defmt", derive(defmt::Format))]
         #[flux_rs::refined_by(code: int)]
         $( #[$enum_attr] )*
@@ -65,6 +65,30 @@ macro_rules! enum_with_unknown {
             // known code rule the other arms out.
             #[flux_rs::variant({{$ty[@c] | $( c != $value && )* true }} -> $name[c])]
             Unknown($ty)
+        }
+
+
+        // Hand-written rather than derived: a derive gives flux no place to state
+        // panic-freedom, and `!=` goes to the trait's *default* `ne` rather than through
+        // `eq`, so both need their own item. Matching directly rather than via `From`
+        // keeps this to one comparison of two `$ty` values.
+        impl ::core::cmp::PartialEq for $name {
+            #[flux_rs::no_panic]
+            #[flux_rs::sig(fn(&$name, &$name) -> bool)]
+            fn eq(&self, other: &$name) -> bool {
+                match (self, other) {
+                    $( ($name::$variant, $name::$variant) => true, )*
+                    ($name::Unknown(a), $name::Unknown(b)) => *a == *b,
+                    #[allow(unreachable_patterns)]
+                    _ => false,
+                }
+            }
+
+            #[flux_rs::no_panic]
+            #[flux_rs::sig(fn(&$name, &$name) -> bool)]
+            fn ne(&self, other: &$name) -> bool {
+                !self.eq(other)
+            }
         }
 
         #[flux_rs::assoc(fn from_no_panic() -> bool { true })]
@@ -101,7 +125,7 @@ macro_rules! enum_with_unknown {
             ),+ $(,)?
         }
     ) => {
-        #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
+        #[derive(Debug, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
         #[cfg_attr(feature = "defmt", derive(defmt::Format))]
         $( #[$enum_attr] )*
         pub enum $name {
@@ -110,6 +134,30 @@ macro_rules! enum_with_unknown {
               $variant
             ),*,
             Unknown($ty)
+        }
+
+
+        // Hand-written rather than derived: a derive gives flux no place to state
+        // panic-freedom, and `!=` goes to the trait's *default* `ne` rather than through
+        // `eq`, so both need their own item. Matching directly rather than via `From`
+        // keeps this to one comparison of two `$ty` values.
+        impl ::core::cmp::PartialEq for $name {
+            #[flux_rs::no_panic]
+            #[flux_rs::sig(fn(&$name, &$name) -> bool)]
+            fn eq(&self, other: &$name) -> bool {
+                match (self, other) {
+                    $( ($name::$variant, $name::$variant) => true, )*
+                    ($name::Unknown(a), $name::Unknown(b)) => *a == *b,
+                    #[allow(unreachable_patterns)]
+                    _ => false,
+                }
+            }
+
+            #[flux_rs::no_panic]
+            #[flux_rs::sig(fn(&$name, &$name) -> bool)]
+            fn ne(&self, other: &$name) -> bool {
+                !self.eq(other)
+            }
         }
 
         #[flux_rs::assoc(fn from_no_panic() -> bool { true })]
