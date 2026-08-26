@@ -68,10 +68,23 @@ pub enum FailureType {
     DiscardSendUnicast = 0b11000000,
 }
 
+/// The two most significant bits, as a value Flux can reason about.
+///
+/// `value & 0b11000000` has exactly four inhabitants. Flux has no bitvector theory, so
+/// neither the mask nor the equivalent `value >> 6` carries a bound; the fact is stated
+/// here instead, where it is one line and true by inspection.
+#[flux_rs::trusted(yes, reason = "masking u8 with 0b11000000 yields 0, 64, 128, or 192; \
+                                  Flux has no bitvector reasoning for `&`")]
+#[flux_rs::no_panic]
+#[flux_rs::sig(fn(u8) -> u8{v: v == 0 || v == 64 || v == 128 || v == 192})]
+fn failure_bits(value: u8) -> u8 {
+    value & 0b11000000
+}
+
 #[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<u8> for FailureType {
     fn from(value: u8) -> FailureType {
-        match value & 0b11000000 {
+        match failure_bits(value) {
             0b00000000 => FailureType::Skip,
             0b01000000 => FailureType::Discard,
             0b10000000 => FailureType::DiscardSendAll,
