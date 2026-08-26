@@ -291,7 +291,7 @@ impl Assembler {
                     .contigs
                     .get(x + shift)
                     .copied()
-                    .unwrap_or_else(Contig::empty);
+                    .unwrap_or_else(|| Contig::empty());
                 x += 1;
             }
         }
