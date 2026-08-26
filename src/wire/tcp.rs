@@ -1354,16 +1354,15 @@ impl<'a> TcpOption<'a> {
         if buffer.is_empty() {
             return Err(Error);
         }
-        match buffer[0] {
-            field::OPT_END => {
-                length = 1;
-                option = TcpOption::EndOfList;
-            }
-            field::OPT_NOP => {
-                length = 1;
-                option = TcpOption::NoOperation;
-            }
-            kind => {
+        let kind = buffer[0];
+        if kind == field::OPT_END {
+            length = 1;
+            option = TcpOption::EndOfList;
+        } else if kind == field::OPT_NOP {
+            length = 1;
+            option = TcpOption::NoOperation;
+        } else {
+            {
                 if buffer.len() < 2 {
                     return Err(Error);
                 }
