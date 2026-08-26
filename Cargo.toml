@@ -68,13 +68,25 @@ no_panic = true
 
 # no_panic quarantine: cones deliberately out of scope. Shrink this list.
 include_trusted = [
-  # Formatting. Reached only through PrettyPrint/net_debug!, never on a TX/RX
-  # path. `arp::pretty_print` also ICEs fixpoint (ADT-sort crash).
+  # Formatting. The reason is the feature set, not the call graph: without `log` or
+  # `defmt`, `net_log!` expands to `{ let _ = arg; }` (see `macros.rs`), so no TX/RX path
+  # formats anything and the only reachable `fmt` is the pretty printers. Enabling `log`
+  # would put `core::fmt` back on that path and make this list load-bearing for real
+  # firmware code; enabling `defmt` is a different question again, since `defmt::Format`
+  # is a separate trait these patterns do not match. `arp::pretty_print` also ICEs
+  # fixpoint (ADT-sort crash), so the entries cannot simply be dropped to check.
+  #
+  # `format_checksum` is in the same cone -- both its callers return `fmt::Result` from
+  # the pretty-print machinery -- but the name matches none of the patterns above.
   "def:core::fmt::Display>::fmt",
   "def:core::fmt::Debug>::fmt",
   "def:pretty_print",
-  # Derived impls. `discriminant_value` is an intrinsic with no MIR, so these
-  # can never be discharged, only assumed. No derived impl is on a panic path.
+  "def:format_checksum",
+  # Derived impls. NOT "can never be discharged": measured 2026-08-26, most of what this
+  # absorbs is core's `PartialEq`/`Hash`/`Clone` on *primitives*, which spec directly. What
+  # is genuinely blocked is the trait-level route -- an assoc on `PartialEq` produces 158
+  # `missing` errors, every one a `#[derive]` impl with no attribute site. Removing these
+  # entries takes the crate 226 -> 469.
   "def:core::cmp::PartialEq>::eq",
   "def:core::cmp::PartialEq>::ne",
   "def:core::cmp::PartialOrd>::partial_cmp",
