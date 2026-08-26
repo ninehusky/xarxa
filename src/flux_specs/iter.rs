@@ -2,9 +2,9 @@
 
 use core::{
     array::IntoIter as ArrayIntoIter,
-    iter::{Enumerate, FilterMap, Map, Step, Zip},
+    iter::{Enumerate, Filter, FilterMap, Map, Step, Zip},
     ops::Range,
-    slice::{Iter, IterMut},
+    slice::{ChunksExact, Iter, IterMut},
 };
 
 use flux_rs::*;
@@ -209,4 +209,38 @@ impl<T, const N: usize> Iterator for ArrayIntoIter<T, N> {
     #[no_panic]
     #[spec(fn(&mut Self) -> Option<<ArrayIntoIter<T, N> as Iterator>::Item>)]
     fn next(&mut self) -> Option<<ArrayIntoIter<T, N> as Iterator>::Item>;
+}
+
+// <https://doc.rust-lang.org/1.89.0/src/core/iter/adapters/filter.rs.html#94>
+#[extern_spec(core::iter)]
+#[assoc(fn next_no_panic() -> bool { <I as Iterator>::next_no_panic() && P::no_panic() })]
+impl<I: Iterator, P: FnMut(&<I as Iterator>::Item) -> bool> Iterator for Filter<I, P> {
+    #[flux_rs::no_panic_if(<I as Iterator>::next_no_panic() && P::no_panic())]
+    #[spec(fn(&mut Self) -> Option<<I as Iterator>::Item>)]
+    fn next(&mut self) -> Option<<I as Iterator>::Item>;
+
+    // `count` drives the iterator and the predicate and adds; it calls nothing else.
+    #[flux_rs::no_panic_if(<I as Iterator>::next_no_panic() && P::no_panic())]
+    #[spec(fn(Self) -> usize)]
+    fn count(self) -> usize;
+}
+
+// `&mut I` forwards every method to `I`.
+// <https://doc.rust-lang.org/1.89.0/src/core/iter/traits/iterator.rs.html#4179>
+#[extern_spec(core::iter)]
+#[assoc(fn next_no_panic() -> bool { <I as Iterator>::next_no_panic() })]
+impl<I: Iterator + ?Sized> Iterator for &mut I {
+    #[flux_rs::no_panic_if(<I as Iterator>::next_no_panic())]
+    #[spec(fn(&mut Self) -> Option<<I as Iterator>::Item>)]
+    fn next(&mut self) -> Option<<I as Iterator>::Item>;
+}
+
+// A pointer bump over fixed-size windows; the remainder is split off up front.
+// <https://doc.rust-lang.org/1.89.0/src/core/slice/iter.rs.html#1782>
+#[extern_spec(core::slice)]
+#[assoc(fn next_no_panic() -> bool { true })]
+impl<'a, T> Iterator for ChunksExact<'a, T> {
+    #[no_panic]
+    #[spec(fn(&mut Self) -> Option<&[T]>)]
+    fn next(&mut self) -> Option<&'a [T]>;
 }

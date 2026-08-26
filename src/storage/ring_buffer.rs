@@ -239,7 +239,7 @@ impl<'a, T: 'a + NonZst> RingBuffer<'a, T> {
     ///
     /// This function is a shortcut for `ring_buf.enqueue_one_with(Ok)`.
     pub fn enqueue_one(&mut self) -> Result<&mut T, Full> {
-        self.enqueue_one_with(Ok)?
+        self.enqueue_one_with(|x| Ok(x))?
     }
 
     /// Call `f` with a single buffer element, and dequeue the element if `f`
@@ -270,7 +270,7 @@ impl<'a, T: 'a + NonZst> RingBuffer<'a, T> {
     ///
     /// This function is a shortcut for `ring_buf.dequeue_one_with(Ok)`.
     pub fn dequeue_one(&mut self) -> Result<&mut T, Empty> {
-        self.dequeue_one_with(Ok)?
+        self.dequeue_one_with(|x| Ok(x))?
     }
 }
 
