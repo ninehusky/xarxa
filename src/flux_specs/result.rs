@@ -1,16 +1,39 @@
 //! `core::result` specs xarxa states on its own behalf.
 //!
-//! `Result` is **not** refined here, for the same reason `Option` is not: an `extern_spec`
-//! carrying `refined_by(is_ok: bool)` is not something this tree can rely on. So `unwrap` and
-//! `expect` are absent -- those genuinely panic and are ledgered, not specified.
+//! `Result` is refined by `is_ok`, which is what lets `unwrap` and `expect` state the
+//! condition under which they do not panic instead of being ledgered as unconditional panic
+//! sites. (`Option` is a different matter: an `extern_spec` refining it ICEs fixpoint.)
 //!
-//! What is here is only the forwarding: a combinator panics exactly when the closure it was
-//! handed does.
+//! The rest is forwarding: a combinator panics exactly when the closure it was handed does.
 
 use flux_rs::*;
 
 #[extern_spec(core::result)]
+#[refined_by(is_ok: bool)]
+enum Result<T, E> {
+    #[variant((T) -> Result<T, E>[true])]
+    Ok(T),
+    #[variant((E) -> Result<T, E>[false])]
+    Err(E),
+}
+
+#[extern_spec(core::result)]
 impl<T, E> Result<T, E> {
+    /// Panics iff the result is `Err`, which the index now states.
+    /// <https://doc.rust-lang.org/1.89.0/src/core/result.rs.html#1097>
+    #[flux_rs::no_panic_if(r)]
+    #[spec(fn(Result<T, E>[@r]) -> T)]
+    fn unwrap(self) -> T
+    where
+        E: core::fmt::Debug;
+
+    /// <https://doc.rust-lang.org/1.89.0/src/core/result.rs.html#1054>
+    #[flux_rs::no_panic_if(r)]
+    #[spec(fn(Result<T, E>[@r], msg: &str) -> T)]
+    fn expect(self, msg: &str) -> T
+    where
+        E: core::fmt::Debug;
+
     #[flux_rs::no_panic_if(F::no_panic())]
     #[spec(fn(Result<T, E>, f: F) -> Result<U, E>)]
     fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Result<U, E>;

@@ -100,3 +100,15 @@ impl From<u32> for i64 {}
 #[extern_spec(core::convert)]
 #[assoc(fn from_no_panic() -> bool { true })]
 impl<T> From<T> for T {}
+
+// `<[T; N]>::try_from(&[T])` compares the slice's length against `N` and returns `Err` if
+// they differ; there is no panicking path in it. Stating the result's `is_ok` in terms of
+// the length is what lets `try_into().unwrap()` discharge at a site where the length is
+// already known from a guard.
+// <https://doc.rust-lang.org/1.89.0/src/core/array/mod.rs.html#264>
+#[extern_spec(core::array)]
+impl<'a, T: Copy + 'a, const N: usize> TryFrom<&'a [T]> for [T; N] {
+    #[no_panic]
+    #[spec(fn(slice: &[T][@n]) -> Result<[T; N], core::array::TryFromSliceError>[n == N])]
+    fn try_from(slice: &'a [T]) -> Result<[T; N], core::array::TryFromSliceError>;
+}

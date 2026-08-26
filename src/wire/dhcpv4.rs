@@ -1064,7 +1064,7 @@ impl<'a> Repr<'a> {
                     }
                 }
                 (field::OPT_REQUESTED_IP, 4) => {
-                    requested_ip = Some(Ipv4Address::from_octets(data.try_into().unwrap()));
+                    requested_ip = Some(Ipv4Address::from_octets(<[u8; 4]>::try_from(data).unwrap()));
                 }
                 (field::OPT_CLIENT_ID, 7) => {
                     let hardware_type = Hardware::from(u16::from(data[0]));
@@ -1074,13 +1074,13 @@ impl<'a> Repr<'a> {
                     client_identifier = Some(EthernetAddress::from_bytes(&data[1..]));
                 }
                 (field::OPT_SERVER_IDENTIFIER, 4) => {
-                    server_identifier = Some(Ipv4Address::from_octets(data.try_into().unwrap()));
+                    server_identifier = Some(Ipv4Address::from_octets(<[u8; 4]>::try_from(data).unwrap()));
                 }
                 (field::OPT_ROUTER, 4) => {
-                    router = Some(Ipv4Address::from_octets(data.try_into().unwrap()));
+                    router = Some(Ipv4Address::from_octets(<[u8; 4]>::try_from(data).unwrap()));
                 }
                 (field::OPT_SUBNET_MASK, 4) => {
-                    subnet_mask = Some(Ipv4Address::from_octets(data.try_into().unwrap()));
+                    subnet_mask = Some(Ipv4Address::from_octets(<[u8; 4]>::try_from(data).unwrap()));
                 }
                 (field::OPT_MAX_DHCP_MESSAGE_SIZE, 2) => {
                     max_size = Some(u16::from_be_bytes([data[0], data[1]]));
@@ -1106,7 +1106,7 @@ impl<'a> Repr<'a> {
                         // if we attempt to push more than 4 addresses, and the only
                         // solution to that is to support more addresses.
                         servers
-                            .push(Ipv4Address::from_octets(chunk.try_into().unwrap()))
+                            .push(Ipv4Address::from_octets(<[u8; 4]>::try_from(chunk).unwrap()))
                             .ok();
                     }
                     dns_servers = Some(servers);

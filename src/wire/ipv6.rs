@@ -641,7 +641,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     )]
     pub fn src_addr(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_octets(sub(data, 8, 16).try_into().unwrap()) // field::SRC_ADDR
+        Address::from_octets(<[u8; 16]>::try_from(sub(data, 8, 16)).unwrap()) // field::SRC_ADDR
     }
 
     /// Return the destination address field.
@@ -653,7 +653,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     )]
     pub fn dst_addr(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_octets(sub(data, 24, 16).try_into().unwrap()) // field::DST_ADDR
+        Address::from_octets(<[u8; 16]>::try_from(sub(data, 24, 16)).unwrap()) // field::DST_ADDR
     }
 }
 
