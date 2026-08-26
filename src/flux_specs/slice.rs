@@ -3,6 +3,8 @@
 #[allow(unused_imports)]
 use core::ops;
 
+use core::slice::ChunksExact;
+
 use flux_rs::*;
 
 /// Flux allows one extern spec per impl, so the flux-core copy and xarxa's own share this
@@ -26,6 +28,12 @@ impl<T> [T] {
     fn copy_from_slice(&mut self, src: &[T])
     where
         T: Copy;
+
+    /// Panics on a zero chunk size and only then; the remainder is split off arithmetically.
+    /// <https://doc.rust-lang.org/1.89.0/src/core/slice/mod.rs.html#1204>
+    #[flux_rs::no_panic_if(chunk_size > 0)]
+    #[spec(fn(&[T], chunk_size: usize) -> ChunksExact<T>)]
+    fn chunks_exact(&self, chunk_size: usize) -> ChunksExact<T>;
 }
 
 /// xarxa's own; `&data[..]` needs it. Sound for the same sealed-trait reason as flux-core's

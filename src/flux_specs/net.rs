@@ -16,6 +16,12 @@ struct Ipv6Addr;
 
 #[extern_spec(core::net)]
 impl Ipv6Addr {
+    // Packs eight segments into the octet array. No branch, no failure mode.
+    // <https://doc.rust-lang.org/1.89.0/src/core/net/ip_addr.rs.html#1740>
+    #[no_panic]
+    #[spec(fn(a: u16, b: u16, c: u16, d: u16, e: u16, f: u16, g: u16, h: u16) -> Ipv6Addr)]
+    const fn new(a: u16, b: u16, c: u16, d: u16, e: u16, f: u16, g: u16, h: u16) -> Ipv6Addr;
+
     #[no_panic]
     #[spec(fn(&Ipv6Addr[@a]) -> bool[a.is_multicast])]
     const fn is_multicast(&self) -> bool;
@@ -42,4 +48,30 @@ impl Ipv4Addr {
     const fn is_unspecified(&self) -> bool;
     #[no_panic]
     const fn is_broadcast(&self) -> bool;
+}
+
+// The octet array *is* the representation; `from` moves it in.
+// <https://doc.rust-lang.org/1.89.0/src/core/net/ip_addr.rs.html#2216>
+#[extern_spec(core::net)]
+#[assoc(fn from_no_panic() -> bool { true })]
+impl From<[u8; 16]> for Ipv6Addr {
+    #[no_panic]
+    #[spec(fn(octets: [u8; 16]) -> Ipv6Addr)]
+    fn from(octets: [u8; 16]) -> Ipv6Addr;
+}
+
+// Comparing two fixed-size octet arrays.
+// <https://doc.rust-lang.org/1.89.0/src/core/net/ip_addr.rs.html#1372>
+#[extern_spec(core::net)]
+impl PartialEq for Ipv4Addr {
+    #[no_panic]
+    #[spec(fn(&Ipv4Addr, &Ipv4Addr) -> bool)]
+    fn eq(&self, other: &Ipv4Addr) -> bool;
+}
+
+#[extern_spec(core::net)]
+impl PartialEq for Ipv6Addr {
+    #[no_panic]
+    #[spec(fn(&Ipv6Addr, &Ipv6Addr) -> bool)]
+    fn eq(&self, other: &Ipv6Addr) -> bool;
 }
