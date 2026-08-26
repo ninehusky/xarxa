@@ -38,13 +38,13 @@ impl InterfaceInner {
                     &ipv4_packet,
                     fragments,
                 )
-                .map(EthernetPacket::Ip)
+                .map(|p| EthernetPacket::Ip(p))
             }
             #[cfg(feature = "proto-ipv6")]
             EthernetProtocol::Ipv6 => {
                 let ipv6_packet = check!(Ipv6Packet::new_checked_ref(Ref::new(eth_frame.payload())));
                 self.process_ipv6(sockets, meta, eth_frame.src_addr().into(), &ipv6_packet)
-                    .map(EthernetPacket::Ip)
+                    .map(|p| EthernetPacket::Ip(p))
             }
             // Drop all other traffic.
             _ => None,

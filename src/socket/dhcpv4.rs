@@ -774,7 +774,7 @@ impl<'a> Socket<'a> {
                 packet: self
                     .receive_packet_buffer
                     .as_deref()
-                    .map(DhcpPacket::new_unchecked),
+                    .map(|b| DhcpPacket::new_unchecked(b)),
             }))
         } else {
             self.config_changed = false;
