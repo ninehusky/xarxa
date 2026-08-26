@@ -33,9 +33,11 @@ pub struct UdpMetadata {
     pub meta: PacketMeta,
 }
 
-#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
+#[flux_rs::assoc(fn from_no_panic() -> bool { <T as Into<IpEndpoint>>::into_no_panic() })]
 impl<T: Into<IpEndpoint>> From<T> for UdpMetadata {
     #[flux_rs::trusted(no, reason = "establishes UdpMetadata's version invariant")]
+    #[flux_rs::no_panic_if(<T as Into<IpEndpoint>>::into_no_panic())]
+    #[flux_rs::sig(fn from(value: T) -> UdpMetadata)]
     fn from(value: T) -> Self {
         Self {
             endpoint: value.into(),

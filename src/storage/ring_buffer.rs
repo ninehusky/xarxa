@@ -92,6 +92,7 @@ impl<'a, T: 'a + NonZst> RingBuffer<'a, T> {
     ///
     /// During creation, every element in `storage` is reset.
     #[flux_rs::trusted(no, reason = "establishes the RingBuffer invariant")]
+    #[flux_rs::no_panic_if(<S as Into<ManagedSlice<T>>>::into_no_panic())]
     #[flux_rs::sig(fn(S) -> RingBuffer<T>{r: r.read_at == 0 && r.length == 0})]
     pub fn new<S>(storage: S) -> RingBuffer<'a, T>
     where

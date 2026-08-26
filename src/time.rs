@@ -30,6 +30,8 @@ impl Instant {
     pub const ZERO: Instant = Instant::from_micros_const(0);
 
     /// Create a new `Instant` from a number of microseconds.
+    #[flux_rs::no_panic_if(T::into_no_panic())]
+    #[flux_rs::sig(fn from_micros(micros: T) -> Instant)]
     pub fn from_micros<T: Into<i64>>(micros: T) -> Instant {
         Instant {
             micros: micros.into(),
@@ -41,6 +43,8 @@ impl Instant {
     }
 
     /// Create a new `Instant` from a number of milliseconds.
+    #[flux_rs::no_panic_if(T::into_no_panic())]
+    #[flux_rs::sig(fn from_millis(millis: T) -> Instant)]
     pub fn from_millis<T: Into<i64>>(millis: T) -> Instant {
         Instant {
             micros: millis.into() * 1000,
@@ -55,6 +59,8 @@ impl Instant {
     }
 
     /// Create a new `Instant` from a number of seconds.
+    #[flux_rs::no_panic_if(T::into_no_panic())]
+    #[flux_rs::sig(fn from_secs(secs: T) -> Instant)]
     pub fn from_secs<T: Into<i64>>(secs: T) -> Instant {
         Instant {
             micros: secs.into() * 1000000,

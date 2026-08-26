@@ -402,6 +402,8 @@ impl Interface {
     }
 
     /// Check whether the interface has the given IP address assigned.
+    #[flux_rs::no_panic_if(<T as Into<IpAddress>>::into_no_panic())]
+    #[flux_rs::sig(fn(&Self, addr: T) -> bool)]
     pub fn has_ip_addr<T: Into<IpAddress>>(&self, addr: T) -> bool {
         self.inner.has_ip_addr(addr)
     }
@@ -1002,6 +1004,8 @@ impl InterfaceInner {
     /// Check whether the interface has the given IP address assigned.
     ///
     /// Always returns true if [`InterfaceInner::any_ip`].
+    #[flux_rs::no_panic_if(<T as Into<IpAddress>>::into_no_panic())]
+    #[flux_rs::sig(fn(&Self, addr: T) -> bool)]
     pub(crate) fn has_ip_addr<T: Into<IpAddress>>(&self, addr: T) -> bool {
         // If any IP is set to true, we don't bother about checking the IP.
         if self.any_ip {
@@ -1013,6 +1017,8 @@ impl InterfaceInner {
     }
 
     /// Check whether the interface listens to given destination multicast IP address.
+    #[flux_rs::no_panic_if(<T as Into<IpAddress>>::into_no_panic())]
+    #[flux_rs::sig(fn(&Self, addr: T) -> bool)]
     fn has_multicast_group<T: Into<IpAddress>>(&self, addr: T) -> bool {
         let addr = addr.into();
 

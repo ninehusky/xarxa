@@ -79,6 +79,8 @@ pub struct SocketSet<'a> {
 
 impl<'a> SocketSet<'a> {
     /// Create a socket set using the provided storage.
+    #[flux_rs::no_panic_if(<SocketsT as Into<ManagedSlice<SocketStorage>>>::into_no_panic())]
+    #[flux_rs::sig(fn(sockets: SocketsT) -> SocketSet)]
     pub fn new<SocketsT>(sockets: SocketsT) -> SocketSet<'a>
     where
         SocketsT: Into<ManagedSlice<'a, SocketStorage<'a>>>,

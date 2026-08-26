@@ -591,6 +591,8 @@ const MIN_REMOTE_MSS: usize = 48;
 impl<'a> Socket<'a> {
     #[allow(unused_comparisons)] // small usize platforms always pass rx_capacity check
     /// Create a socket using the given buffers.
+    #[flux_rs::no_panic_if(<T as Into<SocketBuffer>>::into_no_panic())]
+    #[flux_rs::sig(fn(rx_buffer: T, tx_buffer: T) -> Socket)]
     pub fn new<T>(rx_buffer: T, tx_buffer: T) -> Socket<'a>
     where
         T: Into<SocketBuffer<'a>>,
@@ -961,6 +963,8 @@ impl<'a> Socket<'a> {
     /// This function returns `Err(Error::InvalidState)` if the socket was already open
     /// (see [is_open](#method.is_open)), and `Err(Error::Unaddressable)`
     /// if the port in the given endpoint is zero.
+    #[flux_rs::no_panic_if(<T as Into<IpListenEndpoint>>::into_no_panic())]
+    #[flux_rs::sig(fn(&mut Self, local_endpoint: T) -> Result<(), ListenError>)]
     pub fn listen<T>(&mut self, local_endpoint: T) -> Result<(), ListenError>
     where
         T: Into<IpListenEndpoint>,
@@ -1033,6 +1037,9 @@ impl<'a> Socket<'a> {
     /// It also returns an error if the local or remote port is zero, or if the remote address
     /// is unspecified.
     #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
+    #[flux_rs::no_panic_if(<T as Into<IpEndpoint>>::into_no_panic()
+        && <U as Into<IpListenEndpoint>>::into_no_panic())]
+    #[flux_rs::sig(fn(&mut Self, &mut Context, remote_endpoint: T, local_endpoint: U) -> Result<(), ConnectError>)]
     pub fn connect<T, U>(
         &mut self,
         cx: &mut Context,

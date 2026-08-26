@@ -466,8 +466,10 @@ impl defmt::Format for Endpoint {
     }
 }
 
-#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
+#[flux_rs::assoc(fn from_no_panic() -> bool { <T as Into<Address>>::into_no_panic() })]
 impl<T: Into<Address>> From<(T, u16)> for Endpoint {
+    #[flux_rs::no_panic_if(<T as Into<Address>>::into_no_panic())]
+    #[flux_rs::sig(fn from(v: (T, u16)) -> Endpoint)]
     fn from((addr, port): (T, u16)) -> Endpoint {
         Endpoint {
             addr: addr.into(),
@@ -624,8 +626,10 @@ impl From<Endpoint> for ListenEndpoint {
     }
 }
 
-#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
+#[flux_rs::assoc(fn from_no_panic() -> bool { <T as Into<Address>>::into_no_panic() })]
 impl<T: Into<Address>> From<(T, u16)> for ListenEndpoint {
+    #[flux_rs::no_panic_if(<T as Into<Address>>::into_no_panic())]
+    #[flux_rs::sig(fn from(v: (T, u16)) -> ListenEndpoint)]
     fn from((addr, port): (T, u16)) -> ListenEndpoint {
         ListenEndpoint::with_addr(addr.into(), port)
     }

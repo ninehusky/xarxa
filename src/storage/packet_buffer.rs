@@ -80,6 +80,9 @@ impl<'a, H> PacketBuffer<'a, H> {
     ///
     /// Metadata storage limits the maximum _number_ of packets in the buffer and payload
     /// storage limits the maximum _total size_ of packets.
+    #[flux_rs::no_panic_if(<MS as Into<ManagedSlice<PacketMetadata<H>>>>::into_no_panic()
+        && <PS as Into<ManagedSlice<u8>>>::into_no_panic())]
+    #[flux_rs::sig(fn(metadata_storage: MS, payload_storage: PS) -> PacketBuffer<H>)]
     pub fn new<MS, PS>(metadata_storage: MS, payload_storage: PS) -> PacketBuffer<'a, H>
     where
         MS: Into<ManagedSlice<'a, PacketMetadata<H>>>,
