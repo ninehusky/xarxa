@@ -89,14 +89,17 @@ impl Medium {
 ))]
 mod sys;
 
+#[cfg(feature = "phy-debug")]
 mod fault_injector;
 #[cfg(feature = "alloc")]
 mod fuzz_injector;
 #[cfg(feature = "alloc")]
 mod loopback;
+#[cfg(feature = "phy-debug")]
 mod pcap_writer;
 #[cfg(all(feature = "phy-raw_socket", unix))]
 mod raw_socket;
+#[cfg(feature = "phy-debug")]
 mod tracer;
 #[cfg(all(
     feature = "phy-tuntap_interface",
@@ -110,14 +113,17 @@ mod tuntap_interface;
 ))]
 pub use self::sys::wait;
 
+#[cfg(feature = "phy-debug")]
 pub use self::fault_injector::FaultInjector;
 #[cfg(feature = "alloc")]
 pub use self::fuzz_injector::{FuzzInjector, Fuzzer};
 #[cfg(feature = "alloc")]
 pub use self::loopback::Loopback;
+#[cfg(feature = "phy-debug")]
 pub use self::pcap_writer::{PcapLinkType, PcapMode, PcapSink, PcapWriter};
 #[cfg(all(feature = "phy-raw_socket", unix))]
 pub use self::raw_socket::RawSocket;
+#[cfg(feature = "phy-debug")]
 pub use self::tracer::{Tracer, TracerDirection, TracerPacket};
 #[cfg(all(
     feature = "phy-tuntap_interface",

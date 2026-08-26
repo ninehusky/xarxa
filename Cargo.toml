@@ -165,8 +165,19 @@ default = [
   "proto-ipv4",  "proto-dhcpv4", "proto-ipv6", "proto-ipv6-slaac", "proto-dns",
   "proto-ipv4-fragmentation", "proto-sixlowpan-fragmentation",
   "socket-raw", "socket-icmp", "socket-udp", "socket-tcp", "socket-dhcpv4", "socket-dns", "socket-mdns",
-  "packetmeta-id", "async", "multicast", "auto-icmp-echo-reply"
+  "packetmeta-id", "async", "multicast", "auto-icmp-echo-reply",
+  "phy-debug"
 ]
+
+# Debug instrumentation: the fault injector, the pcap writer and the tracer. In `default`,
+# so an ordinary build is unchanged, but the firmware config runs `--no-default-features`
+# and does not compile them. They were the only `phy` shims with no `cfg` of their own --
+# `fuzz_injector`, `loopback` and `raw_socket` are all gated already.
+#
+# This scopes the panic-freedom claim rather than shrinking it: the firmware links none of
+# these (0 `xarxa::phy::` symbols in its panic dump), so gating them removes 29 verification
+# obligations and zero bytes.
+phy-debug = []
 
 # Private features
 # Features starting with "_" are considered private. They should not be enabled by
