@@ -115,4 +115,25 @@ trait Iterator {
     where
         Self: Sized,
         P: FnMut(Self::Item) -> bool;
+
+    #[flux_rs::no_panic_if(F::no_panic())]
+    #[spec(fn(Self, f: F))]
+    fn for_each<F>(self, f: F)
+    where
+        Self: Sized,
+        F: FnMut(Self::Item);
+
+    #[flux_rs::no_panic_if(F::no_panic())]
+    #[spec(fn(Self, f: F) -> Option<Self::Item>)]
+    fn min_by_key<B: Ord, F>(self, f: F) -> Option<Self::Item>
+    where
+        Self: Sized,
+        F: FnMut(&Self::Item) -> B;
+
+    #[flux_rs::no_panic_if(F::no_panic())]
+    #[spec(fn(Self, f: F) -> Option<Self::Item>)]
+    fn max_by_key<B: Ord, F>(self, f: F) -> Option<Self::Item>
+    where
+        Self: Sized,
+        F: FnMut(&Self::Item) -> B;
 }

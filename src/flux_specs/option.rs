@@ -22,4 +22,8 @@ impl<T> Option<T> {
     #[flux_rs::no_panic_if(F::no_panic())]
     #[spec(fn(Option<T>, F) -> Option<U>)]
     fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Option<U>;
+
+    #[flux_rs::no_panic_if(F::no_panic())]
+    #[spec(fn(Option<T>, f: F) -> T)]
+    fn unwrap_or_else<F: FnOnce() -> T>(self, f: F) -> T;
 }
