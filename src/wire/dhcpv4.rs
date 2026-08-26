@@ -168,6 +168,53 @@ struct OptionCursor<'a> {
     buf: &'a [u8],
 }
 
+/// The iterator behind [`Packet::options`].
+///
+/// Named rather than `impl Iterator`: an opaque return type has no impl block to state
+/// `next_no_panic` on and no name a caller can reference, so every `for` over it owed a
+/// proof no caller could construct.
+pub struct OptionIter<'a> {
+    cur: OptionCursor<'a>,
+}
+
+#[flux_rs::assoc(fn next_no_panic() -> bool { true })]
+impl<'a> Iterator for OptionIter<'a> {
+    type Item = DhcpOption<'a>;
+
+    fn next(&mut self) -> Option<DhcpOption<'a>> {
+        loop {
+            let buf = self.cur.buf;
+            // No more options, return.
+            if buf.is_empty() {
+                return None;
+            }
+
+            match buf[0] {
+                field::OPT_END => return None,
+
+                // Skip padding.
+                field::OPT_PAD => self.cur = OptionCursor { buf: tail(buf, 1) },
+                kind => {
+                    if buf.len() < 2 {
+                        return None;
+                    }
+
+                    let len = buf[1] as usize;
+
+                    if buf.len() < 2 + len {
+                        return None;
+                    }
+
+                    let opt = DhcpOption { kind, data: &buf[2..2 + len] };
+
+                    self.cur = OptionCursor { buf: tail(buf, 2 + len) };
+                    return Some(opt);
+                }
+            }
+        }
+    }
+}
+
 /// A read/write wrapper around a Dynamic Host Configuration Protocol packet buffer.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -581,49 +628,16 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// has no production for a lifetime there -- and the `_` placeholder ICEs the checker
     /// (`struct_compat.rs:536`, index `usize::MAX`). The elided form parses and checks.
     #[flux_rs::trusted(no, reason = "panic site: opens the options window at a fixed offset")]
-    #[flux_rs::sig(fn(&Packet<T>[@p]) -> impl Iterator<Item = DhcpOption>
+    #[flux_rs::sig(fn(&Packet<T>[@p]) -> OptionIter
                    requires 240 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
     #[flux_rs::no_panic]
     #[inline]
-    pub fn options(&self) -> impl Iterator<Item = DhcpOption<'_>> + '_ {
-        let mut cur = OptionCursor {
-            buf: tail(self.buffer.as_ref(), 240), // field::OPTIONS
-        };
-        iter::from_fn(move || {
-            loop {
-                let buf = cur.buf;
-                // No more options, return.
-                if buf.is_empty() {
-                    return None;
-                }
-
-                match buf[0] {
-                    field::OPT_END => return None,
-
-                    // Skip padding.
-                    field::OPT_PAD => cur = OptionCursor { buf: tail(buf, 1) },
-                    kind => {
-                        if buf.len() < 2 {
-                            return None;
-                        }
-
-                        let len = buf[1] as usize;
-
-                        if buf.len() < 2 + len {
-                            return None;
-                        }
-
-                        let opt = DhcpOption {
-                            kind,
-                            data: &buf[2..2 + len],
-                        };
-
-                        cur = OptionCursor { buf: tail(buf, 2 + len) };
-                        return Some(opt);
-                    }
-                }
-            }
-        })
+    pub fn options(&self) -> OptionIter<'_> {
+        OptionIter {
+            cur: OptionCursor {
+                buf: tail(self.buffer.as_ref(), 240), // field::OPTIONS
+            },
+        }
     }
 
     /// The `108 <= len` bound proves the window. `&data[..len]` is not proved: flux-core specs
