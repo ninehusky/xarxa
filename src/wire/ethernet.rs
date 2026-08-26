@@ -24,13 +24,36 @@ impl fmt::Display for EtherType {
 }
 
 /// A six-octet Ethernet II address.
-#[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
+#[derive(Debug, Hash, Eq, PartialOrd, Ord, Clone, Copy, Default)]
 #[repr(C)]
 #[flux_rs::refined_by(o0: int)]
 pub struct Address {
     #[flux_rs::field(u8[o0])]
     o0: u8,
     rest: [u8; 5],
+}
+
+// Hand-written rather than derived. The derived `eq` compares `rest` through the generic
+// `[T; N]: PartialEq` impl, whose panic-freedom depends on the element's `eq` and so cannot
+// be claimed for all `T`. Element-wise, every comparison is a `u8` against a `u8`.
+// `!=` also needs its own item: it goes to the trait's default `ne`, not through `eq`.
+impl PartialEq for Address {
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&Address, &Address) -> bool)]
+    fn eq(&self, other: &Address) -> bool {
+        self.o0 == other.o0
+            && self.rest[0] == other.rest[0]
+            && self.rest[1] == other.rest[1]
+            && self.rest[2] == other.rest[2]
+            && self.rest[3] == other.rest[3]
+            && self.rest[4] == other.rest[4]
+    }
+
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&Address, &Address) -> bool)]
+    fn ne(&self, other: &Address) -> bool {
+        !self.eq(other)
+    }
 }
 
 // `as_bytes` below reinterprets an `Address` as six contiguous octets. These make the
