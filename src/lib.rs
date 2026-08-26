@@ -12,6 +12,8 @@
 #![cfg_attr(flux, feature(core_intrinsics, discriminant_kind))]
 // Needed only so `flux_specs` can name `FromResidual`, which `?` lowers to.
 #![cfg_attr(flux, feature(try_trait_v2))]
+// Needed only so `flux_specs` can name `Step`, the bound on `Range`'s `Iterator` impl.
+#![cfg_attr(flux, feature(step_trait))]
 
 //! The _xarxa_ library is built in a layered structure, with the layers corresponding
 //! to the levels of API abstraction. Only the highest layers would be used by a typical

@@ -26,4 +26,12 @@ impl<T> Option<T> {
     #[flux_rs::no_panic_if(F::no_panic())]
     #[spec(fn(Option<T>, f: F) -> T)]
     fn unwrap_or_else<F: FnOnce() -> T>(self, f: F) -> T;
+
+    // Same argument as `map`. `is_none_or` is not specified alongside it: it takes an
+    // `impl FnOnce` rather than a named parameter, so `no_panic_if` has nothing to name.
+    // Call sites use `map_or(true, ..)`, which is the same function with a nameable `F`.
+    // <https://doc.rust-lang.org/1.89.0/src/core/option.rs.html#1113>
+    #[flux_rs::no_panic_if(F::no_panic())]
+    #[spec(fn(Option<T>, default: U, f: F) -> U)]
+    fn map_or<U, F: FnOnce(T) -> U>(self, default: U, f: F) -> U;
 }

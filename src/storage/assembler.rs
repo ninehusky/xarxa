@@ -375,6 +375,7 @@ struct IterData<'a> {
     offset: usize,
 }
 
+#[flux_rs::assoc(fn next_no_panic() -> bool { true })]
 impl Iterator for IterData<'_> {
     type Item = (usize, usize);
 

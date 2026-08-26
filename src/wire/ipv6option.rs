@@ -699,6 +699,7 @@ impl<'a> Ipv6OptionsIterator<'a> {
     }
 }
 
+#[flux_rs::assoc(fn next_no_panic() -> bool { true })]
 impl<'a> Iterator for Ipv6OptionsIterator<'a> {
     type Item = Result<Repr<'a>>;
 

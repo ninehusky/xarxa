@@ -216,7 +216,7 @@ impl InterfaceInner {
             if self
                 .routes
                 .lookup(&IpAddress::Ipv4(ipv4_repr.dst_addr), self.now)
-                .is_none_or(|router_addr| !self.has_ip_addr(router_addr))
+                .map_or(true, |router_addr| !self.has_ip_addr(router_addr))
             {
                 net_trace!("Rejecting IPv4 packet; no matching routes");
 
