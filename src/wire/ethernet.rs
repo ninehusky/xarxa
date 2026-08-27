@@ -651,6 +651,8 @@ impl Repr {
     // The length is read through `as_mut` rather than `as_ref` because the setters' bounds are
     // stated over `as_mut_reft`, and flux relates the two associated refinements only if the
     // fact arrives in that form. Same check, same condition, same value.
+    #[flux_rs::no_panic_if(14 <= <T as AsMut<[u8]>>::as_mut_reft(f.buffer))]
+    #[flux_rs::sig(fn(&Self, frame: &mut Frame<T>[@f]))]
     pub fn emit<T: AsRef<[u8]> + AsMut<[u8]>>(&self, frame: &mut Frame<T>) {
         assert!(frame.buffer.as_mut().len() >= self.buffer_len());
         frame.set_src_addr(self.src_addr);

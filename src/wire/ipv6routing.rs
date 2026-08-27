@@ -430,13 +430,19 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     /// This function may panic if the routing type is not set.
     //
     // This reads through `AsRef` and writes through `AsMut`, and flux relates the two lengths
-    // nowhere, so both are stated. No `no_panic`: the `_` arm's `panic!` is reachable -- the
-    // routing type is buffer contents and nothing here rules the other variants out.
+    // nowhere, so both are stated.
+    //
+    // The `_` arm handles routing types this function has no layout for. `rtype` is the ghost
+    // anchored to the octet at offset 0, so the type *is* nameable: `2` is `Type::Type2` and
+    // `3` is `Type::Rpl`, the two arms below. `Repr::emit` calls `set_routing_type` immediately
+    // before each `clear_reserved`, which is what discharges this.
     #[flux_rs::trusted(no, reason = "panic site: writes the header at a fixed offset")]
+    #[flux_rs::no_panic_if(h.rtype == 2 || h.rtype == 3)]
     #[flux_rs::sig(
         fn(self: &mut Header<T>[@h])
         requires
-            1 <= <T as AsRef<[u8]>>::as_ref_reft(h.buffer)
+            (h.rtype == 2 || h.rtype == 3)
+            && 1 <= <T as AsRef<[u8]>>::as_ref_reft(h.buffer)
             && 6 <= <T as AsMut<[u8]>>::as_mut_reft(h.buffer)
     )]
     #[inline]
@@ -444,21 +450,21 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
         let routing_type = self.routing_type();
         let data = self.buffer.as_mut();
 
-        match routing_type {
-            Type::Type2 => {
-                data[2] = 0;
-                data[3] = 0;
-                data[4] = 0;
-                data[5] = 0;
-            }
-            Type::Rpl => {
-                // Retain the higher order 4 bits of the padding field
-                data[3] &= 0xF0; // field::PAD
-                data[4] = 0;
-                data[5] = 0;
-            }
-
-            _ => panic!("Unrecognized routing type when clearing reserved fields."),
+        // `if`/`else` rather than a `match`: flux does not carry the negation of the earlier
+        // arms into a match's catch-all, so the final arm reads as reachable however tightly
+        // `rtype` is constrained. Spelled this way the guards are ordinary path conditions.
+        if routing_type == Type::Type2 {
+            data[2] = 0;
+            data[3] = 0;
+            data[4] = 0;
+            data[5] = 0;
+        } else if routing_type == Type::Rpl {
+            // Retain the higher order 4 bits of the padding field
+            data[3] &= 0xF0; // field::PAD
+            data[4] = 0;
+            data[5] = 0;
+        } else {
+            panic!("Unrecognized routing type when clearing reserved fields.")
         }
     }
 }

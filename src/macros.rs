@@ -73,8 +73,12 @@ macro_rules! enum_with_unknown {
         // `eq`, so both need their own item. Matching directly rather than via `From`
         // keeps this to one comparison of two `$ty` values.
         impl ::core::cmp::PartialEq for $name {
+            // The result is the index equality, not just a bool: two values of this type are
+            // equal exactly when their codes are. Named variants carry their literal and
+            // `Unknown`'s index is its payload, so the body proves it. Without this an
+            // `if x == Variant` guard establishes nothing about `x` in the branch.
             #[flux_rs::no_panic]
-            #[flux_rs::sig(fn(&$name, &$name) -> bool)]
+            #[flux_rs::sig(fn(&$name[@a], &$name[@b]) -> bool[a == b])]
             fn eq(&self, other: &$name) -> bool {
                 match (self, other) {
                     $( ($name::$variant, $name::$variant) => true, )*
@@ -85,7 +89,7 @@ macro_rules! enum_with_unknown {
             }
 
             #[flux_rs::no_panic]
-            #[flux_rs::sig(fn(&$name, &$name) -> bool)]
+            #[flux_rs::sig(fn(&$name[@a], &$name[@b]) -> bool[a != b])]
             fn ne(&self, other: &$name) -> bool {
                 !self.eq(other)
             }
