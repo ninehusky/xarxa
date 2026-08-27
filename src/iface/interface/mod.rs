@@ -1417,6 +1417,12 @@ impl InterfaceInner {
     // it ICEs in `fixpoint_encoding.rs:1623` at `parsers.rs:163` and checks nothing.
     #[flux_rs::opts(check_overflow = "strict")]
     #[flux_rs::trusted(no, reason = "entry point: must discharge Ipv4Repr::emit's buffer bound")]
+    // The three `tx_token` calls below -- two `consume` and a `set_meta` -- are the token's to
+    // answer for, not xarxa's.
+    #[flux_rs::no_panic_if(<Tx as TxToken>::tx_no_panic())]
+    #[flux_rs::sig(
+        fn(&mut Self, Tx, PacketMeta, Packet, &mut Fragmenter) -> Result<(), DispatchError>
+    )]
     fn dispatch_ip<Tx: TxToken>(
         &mut self,
         // NOTE(unused_mut): tx_token isn't always mutated, depending on
