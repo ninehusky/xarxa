@@ -191,6 +191,10 @@ impl ops::Sub<usize> for SeqNumber {
 }
 
 impl ops::AddAssign<usize> for SeqNumber {
+    // Forwards to `Add`, so it carries the same condition. Every checked `+=` in the crate is
+    // `+= 1`, which discharges it on the spot.
+    #[flux_rs::no_panic_if(n <= 2147483647)]
+    #[flux_rs::sig(fn(self: &mut SeqNumber, usize[@n]))]
     fn add_assign(&mut self, rhs: usize) {
         *self = *self + rhs;
     }
