@@ -50,6 +50,7 @@ pub(crate) trait AddressExt {
 
     /// If `self` is a CIDR-compatible subnet mask, return `Some(prefix_len)`,
     /// where `prefix_len` is the number of leading zeroes. Return `None` otherwise.
+    #[flux_rs::sig(fn(&Self) -> Option<u8{v: v <= 32}>)]
     fn prefix_len(&self) -> Option<u8>;
 }
 
@@ -62,6 +63,8 @@ impl AddressExt for Address {
         !(self.is_broadcast() || self.is_multicast() || self.is_unspecified())
     }
 
+    #[flux_rs::trusted(yes, reason = "counts the leading one-bits of a fixed-width address, so the result cannot exceed its width; the loop bound is not something flux follows")]
+    #[flux_rs::sig(fn(&Address) -> Option<u8{v: v <= 32}>)]
     fn prefix_len(&self) -> Option<u8> {
         let mut ones = true;
         let mut prefix_len = 0;
@@ -90,8 +93,12 @@ impl AddressExt for Address {
 /// A specification of an IPv4 CIDR block, containing an address and a variable-length
 /// subnet masking prefix length.
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+// See the note on `ipv6::Cidr`: `new` requires the bound, so every `Cidr` carries it.
+#[flux_rs::refined_by(prefix_len: int)]
+#[flux_rs::invariant(prefix_len <= 32)]
 pub struct Cidr {
     address: Address,
+    #[flux_rs::field(u8[prefix_len])]
     prefix_len: u8,
 }
 
@@ -100,6 +107,8 @@ impl Cidr {
     ///
     /// # Panics
     /// This function panics if the prefix length is larger than 32.
+    #[flux_rs::no_panic_if(p <= 32)]
+    #[flux_rs::sig(fn(Address, p: u8) -> Cidr[p] requires p <= 32)]
     pub const fn new(address: Address, prefix_len: u8) -> Cidr {
         assert!(prefix_len <= 32);
         Cidr {
@@ -127,6 +136,8 @@ impl Cidr {
     }
 
     /// Return the prefix length of this IPv4 CIDR block.
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&Cidr[@c]) -> u8[c.prefix_len])]
     pub const fn prefix_len(&self) -> u8 {
         self.prefix_len
     }

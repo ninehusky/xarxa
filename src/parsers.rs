@@ -110,6 +110,10 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// `Ok` is returned only past the `value < max_value` test below, so the bound is exact.
+    /// It is what lets `Ipv4Cidr::from_str` discharge `Cidr::new`'s prefix-length precondition
+    /// without a second check.
+    #[flux_rs::sig(fn(&mut Self, usize, max_value: u32, bool) -> Result<u32{v: v < max_value}>)]
     fn accept_number(&mut self, max_digits: usize, max_value: u32, hex: bool) -> Result<u32> {
         let mut value = self.accept_digit(hex)? as u32;
         for _ in 1..max_digits {

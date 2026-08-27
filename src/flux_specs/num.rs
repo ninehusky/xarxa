@@ -64,7 +64,10 @@ impl u16 {
 
 #[extern_spec(core::num)]
 impl u32 {
+    // A u32 has 32 bits, so a population count cannot exceed 32. Stating it is what lets
+    // `Ipv4Cidr::from_netmask` establish the `prefix_len <= 32` invariant.
     #[no_panic]
+    #[spec(fn(u32) -> u32{v: v <= 32})]
     const fn count_ones(self) -> u32;
     #[no_panic]
     const fn count_zeros(self) -> u32;

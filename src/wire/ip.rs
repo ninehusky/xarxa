@@ -211,6 +211,14 @@ impl Address {
 
     /// If `self` is a CIDR-compatible subnet mask, return `Some(prefix_len)`,
     /// where `prefix_len` is the number of leading zeroes. Return `None` otherwise.
+    ///
+    /// The bound depends on the family, which the index carries, so a v4 address yields a
+    /// length `Ipv4Cidr::new` accepts without a second check.
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(
+        fn(&Address[@a]) -> Option<u8{v: (a.address_ty == 0 => v <= 32)
+                                      && (a.address_ty == 1 => v <= 128)}>
+    )]
     pub fn prefix_len(&self) -> Option<u8> {
         match self {
             #[cfg(feature = "proto-ipv4")]
@@ -298,6 +306,13 @@ impl Cidr {
     ///
     /// # Panics
     /// This function panics if the given prefix length is invalid for the given address.
+    #[flux_rs::no_panic_if(
+        (a.address_ty == 0 => p <= 32) && (a.address_ty == 1 => p <= 128)
+    )]
+    #[flux_rs::sig(
+        fn(Address[@a], p: u8) -> Cidr
+        requires (a.address_ty == 0 => p <= 32) && (a.address_ty == 1 => p <= 128)
+    )]
     pub const fn new(addr: Address, prefix_len: u8) -> Cidr {
         match addr {
             #[cfg(feature = "proto-ipv4")]
