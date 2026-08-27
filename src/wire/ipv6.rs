@@ -114,6 +114,8 @@ pub(crate) trait AddressExt {
     /// # Panics
     /// This function panics if the given address is not
     /// unicast.
+    #[flux_rs::no_panic_if(false)]
+    #[flux_rs::sig(fn(&Self) -> Address)]
     fn solicited_node(&self) -> Address;
 
     /// Return the scope of the address.
@@ -187,6 +189,8 @@ impl AddressExt for Address {
         bytes
     }
 
+    #[flux_rs::no_panic_if(a.is_unicast)]
+    #[flux_rs::sig(fn(&Address[@a]) -> Address)]
     fn solicited_node(&self) -> Address {
         assert!(self.x_is_unicast());
         let o = self.octets();

@@ -508,8 +508,9 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> AddressRecord<T> {
     // `AddressRecordRepr` by its `mcast_addr` flag is the first half of the fix; the
     // `groups` map is the second and is the same missing piece as elsewhere.
     #[flux_rs::trusted(no, reason = "panic site: writes into the record at a fixed offset")]
+    #[flux_rs::no_panic_if(a.is_multicast)]
     #[flux_rs::sig(
-        fn(&mut AddressRecord<T>[@r], _)
+        fn(&mut AddressRecord<T>[@r], Ipv6Address[@a])
         requires 20 <= <T as AsMut<[u8]>>::as_mut_reft(r.buffer)
     )]
     #[inline]
