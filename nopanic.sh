@@ -10,8 +10,12 @@ OUT="_np"; mkdir -p "$OUT"
 L="$OUT/$TAG.log"
 
 FEATURES=medium-ethernet,socket-udp,socket-tcp,socket-dhcpv4,proto-ipv4,proto-ipv6
+# TARGET= runs at the host word size; TARGET=thumbv7em-none-eabi is the firmware's.
+# Flux models usize as unbounded either way, so this changes cfg, not arithmetic.
+TARGET_ARG=""
+[ -n "${TARGET:-}" ] && TARGET_ARG="--target $TARGET"
 FLUX_SYSROOT="${FLUX_SYSROOT:-/Users/andrew/research/flux-npif/sysroot}" \
-  FLUX_CACHE=false cargo flux check -p xarxa --no-default-features --features "$FEATURES" > "$L" 2>&1
+  RUSTFLAGS="-C debug-assertions=off" FLUX_CACHE=false cargo flux check -p xarxa $TARGET_ARG --no-default-features --features "$FEATURES" > "$L" 2>&1
 
 fail=0
 chk() { # name expected actual
