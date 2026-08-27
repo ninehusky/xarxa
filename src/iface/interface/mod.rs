@@ -1375,6 +1375,7 @@ impl InterfaceInner {
             checksum_caps: &ChecksumCapabilities,
         )
         requires
+            ipr.ip_ty == p.ip_ty &&
             (ipr.ip_ty == 0 => n == 20 + ipr.plen) &&
             (ipr.ip_ty == 1 => n == 40 + ipr.plen) &&
             (p.blen != -1 => (p.blen <= 65535 &&
