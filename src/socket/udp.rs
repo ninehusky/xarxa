@@ -17,18 +17,18 @@ use crate::wire::{IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, U
 /// See [`Socket`] for the obligation this helps discharge.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-#[flux_rs::refined_by(dst_ty: int)]
+#[flux_rs::refined_by(dst_ty: int, dst_unicast: bool)]
 pub struct UdpMetadata {
     /// The IP endpoint from which an incoming datagram was received, or to which an outgoing
     /// datagram will be sent.
-    #[flux_rs::field(IpEndpoint[dst_ty])]
+    #[flux_rs::field(IpEndpoint[dst_ty, dst_unicast])]
     pub endpoint: IpEndpoint,
     /// The IP address to which an incoming datagram was sent, or from which an outgoing datagram
     /// will be sent. Incoming datagrams always have this set. On outgoing datagrams, if it is not
     /// set, and the socket is not bound to a single address anyway, a suitable address will be
     /// determined using the algorithms of RFC 6724 (candidate source address selection) or some
     /// heuristic (for IPv4).
-    #[flux_rs::field(Option<IpAddress{v : v == dst_ty}>)]
+    #[flux_rs::field(Option<IpAddress{v : v.address_ty == dst_ty}>)]
     pub local_address: Option<IpAddress>,
     pub meta: PacketMeta,
 }

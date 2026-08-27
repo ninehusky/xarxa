@@ -92,15 +92,15 @@ impl fmt::Display for Protocol {
 
 /// An internetworking address.
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-#[flux_rs::refined_by(address_ty: int)]
+#[flux_rs::refined_by(address_ty: int, is_unicast: bool)]
 pub enum Address {
     /// An IPv4 address.
     #[cfg(feature = "proto-ipv4")]
-    #[flux_rs::variant((Ipv4Address) -> Address[0])]
+    #[flux_rs::variant((Ipv4Address[@a]) -> Address[0, a])]
     Ipv4(Ipv4Address),
     /// An IPv6 address.
     #[cfg(feature = "proto-ipv6")]
-    #[flux_rs::variant((Ipv6Address) -> Address[1])]
+    #[flux_rs::variant((Ipv6Address[@a]) -> Address[1, a.is_unicast])]
     Ipv6(Ipv6Address),
 }
 
@@ -108,7 +108,7 @@ pub enum Address {
 impl Address {
     /// Create an address wrapping an IPv4 address with the given octets.
     #[cfg(feature = "proto-ipv4")]
-    #[flux_rs::sig(fn(u8, u8, u8, u8) -> Address[0])]
+    #[flux_rs::sig(fn(u8, u8, u8, u8) -> Address{v: v.address_ty == 0})]
     pub const fn v4(a0: u8, a1: u8, a2: u8, a3: u8) -> Address {
         Address::Ipv4(Ipv4Address::new(a0, a1, a2, a3))
     }
@@ -116,7 +116,7 @@ impl Address {
     /// Create an address wrapping an IPv6 address with the given octets.
     #[cfg(feature = "proto-ipv6")]
     #[allow(clippy::too_many_arguments)]
-    #[flux_rs::sig(fn(u16, u16, u16, u16, u16, u16, u16, u16) -> Address[1])]
+    #[flux_rs::sig(fn(u16, u16, u16, u16, u16, u16, u16, u16) -> Address{v: v.address_ty == 1})]
     pub const fn v6(
         a0: u16,
         a1: u16,
@@ -131,7 +131,7 @@ impl Address {
     }
 
     /// Return the protocol version.
-    #[flux_rs::sig(fn(&Address[@v]) -> Version[v])]
+    #[flux_rs::sig(fn(&Address[@a]) -> Version[a.address_ty])]
     pub const fn version(&self) -> Version {
         match self {
             #[cfg(feature = "proto-ipv4")]
@@ -147,7 +147,7 @@ impl Address {
     /// `Version` yields a plain `bool`, so Flux cannot relate the result back to the
     /// addresses. The signature here states that relation explicitly, which is what
     /// lets a caller's version guard discharge downstream obligations.
-    #[flux_rs::sig(fn(&Address[@a], &Address[@b]) -> bool[a == b])]
+    #[flux_rs::sig(fn(&Address[@a], &Address[@b]) -> bool[a.address_ty == b.address_ty])]
     pub fn same_version(&self, other: &Address) -> bool {
         // Scrutinised separately rather than as a tuple: Flux loses the refinement
         // through tuple construction.
@@ -168,6 +168,8 @@ impl Address {
     }
 
     /// Query whether the address is a valid unicast address.
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&Address[@a]) -> bool[a.is_unicast])]
     pub fn is_unicast(&self) -> bool {
         match self {
             #[cfg(feature = "proto-ipv4")]
@@ -398,16 +400,16 @@ impl defmt::Format for Cidr {
 /// See also ['ListenEndpoint'], which allows not specifying the address
 /// in order to listen on a given port on any address.
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-#[flux_rs::refined_by(addr_ty: int)]
+#[flux_rs::refined_by(addr_ty: int, addr_unicast: bool)]
 pub struct Endpoint {
-    #[flux_rs::field(Address[addr_ty])]
+    #[flux_rs::field(Address[addr_ty, addr_unicast])]
     pub addr: Address,
     pub port: u16,
 }
 
 impl Endpoint {
     /// Create an endpoint address from given address and port.
-    #[flux_rs::sig(fn(Address[@v], u16) -> Endpoint[v])]
+    #[flux_rs::sig(fn(Address[@a], u16) -> Endpoint[a.address_ty, a.is_unicast])]
     pub const fn new(addr: Address, port: u16) -> Endpoint {
         Endpoint { addr, port }
     }
@@ -533,7 +535,7 @@ impl ListenEndpoint {
     /// keeps it in the payload constraint rather than indexing the `Option`, which would
     /// need `-Fstd-extern-specs`.
     #[flux_rs::trusted(reason = "opaque: projects the hidden addr field")]
-    #[flux_rs::sig(fn(&ListenEndpoint[@t]) -> Option<Address{v: v == t && t != -1}>)]
+    #[flux_rs::sig(fn(&ListenEndpoint[@t]) -> Option<Address{v: v.address_ty == t && t != -1}>)]
     pub const fn addr(&self) -> Option<Address> {
         self.addr
     }
@@ -545,7 +547,7 @@ impl ListenEndpoint {
     /// this type, where the rest of it already is. `-1` is reserved for "no address", so an
     /// endpoint built from an `Address` never carries it.
     #[flux_rs::trusted(reason = "opaque: constructs an endpoint with a definite address")]
-    #[flux_rs::sig(fn(addr: Address[@t], port: u16) -> ListenEndpoint[t])]
+    #[flux_rs::sig(fn(addr: Address[@a], port: u16) -> ListenEndpoint[a.address_ty])]
     pub const fn with_addr(addr: Address, port: u16) -> ListenEndpoint {
         ListenEndpoint {
             addr: Some(addr),
@@ -617,7 +619,7 @@ impl From<u16> for ListenEndpoint {
 #[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Endpoint> for ListenEndpoint {
     #[flux_rs::trusted(reason = "opaque: constructs a bound endpoint from a full one")]
-    #[flux_rs::sig(fn(Endpoint[@v]) -> ListenEndpoint[v])]
+    #[flux_rs::sig(fn(Endpoint[@e]) -> ListenEndpoint[e.addr_ty])]
     fn from(endpoint: Endpoint) -> ListenEndpoint {
         ListenEndpoint {
             addr: Some(endpoint.addr),
@@ -766,7 +768,7 @@ impl Repr {
     // `p <= 65535` is `Ipv4Repr`/`Ipv6Repr`'s own invariant: the enclosing header's length
     // field is sixteen bits, so a longer payload cannot be represented on the wire. Stating it
     // here rather than at the two struct literals below puts it where callers can see it.
-    #[flux_rs::sig(fn(Address[@v], Address[v], Protocol, plen: usize{plen <= 65535}, u8) -> Repr[v, plen])]
+    #[flux_rs::sig(fn(Address[@a], Address{w: w.address_ty == a.address_ty}, Protocol, plen: usize{plen <= 65535}, u8) -> Repr[a.address_ty, plen])]
     pub fn new(
         src_addr: Address,
         dst_addr: Address,
@@ -856,7 +858,7 @@ impl Repr {
     }
 
     /// Return the source address.
-    #[flux_rs::sig(fn(&Repr[@r]) -> Address[r.ip_ty])]
+    #[flux_rs::sig(fn(&Repr[@r]) -> Address{v: v.address_ty == r.ip_ty})]
     pub const fn src_addr(&self) -> Address {
         match *self {
             #[cfg(feature = "proto-ipv4")]
@@ -867,7 +869,7 @@ impl Repr {
     }
 
     /// Return the destination address.
-    #[flux_rs::sig(fn(&Repr[@r]) -> Address[r.ip_ty])]
+    #[flux_rs::sig(fn(&Repr[@r]) -> Address{v: v.address_ty == r.ip_ty})]
     pub const fn dst_addr(&self) -> Address {
         match *self {
             #[cfg(feature = "proto-ipv4")]

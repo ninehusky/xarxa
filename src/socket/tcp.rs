@@ -459,11 +459,11 @@ enum AckDelayTimer {
 // `addr_ty`: unsure if this is something that
 // should be enforced globally (as it is now)
 // or only in the `no_panic` context.
-#[flux_rs::refined_by(addr_ty: int)]
+#[flux_rs::refined_by(addr_ty: int, local_unicast: bool, remote_unicast: bool)]
 struct Tuple {
-    #[flux_rs::field(IpEndpoint[addr_ty])]
+    #[flux_rs::field(IpEndpoint[addr_ty, local_unicast])]
     local: IpEndpoint,
-    #[flux_rs::field(IpEndpoint[addr_ty])]
+    #[flux_rs::field(IpEndpoint[addr_ty, remote_unicast])]
     remote: IpEndpoint,
 }
 
@@ -2527,7 +2527,7 @@ impl<'a> Socket<'a> {
     // built inside a trusted body would have its invariant assumed rather than proved.
     // Here it is proved -- both addresses come from the same `IpRepr`, whose accessors
     // are indexed by its version.
-    #[flux_rs::sig(fn(&IpRepr[@r], u16, u16) -> Tuple[r.ip_ty])]
+    #[flux_rs::sig(fn(&IpRepr[@r], u16, u16) -> Tuple{t: t.addr_ty == r.ip_ty})]
     #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
     fn tuple_from_repr(ip_repr: &IpRepr, local_port: u16, remote_port: u16) -> Tuple {
         Tuple {

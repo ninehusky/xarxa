@@ -948,7 +948,7 @@ impl InterfaceInner {
 
     #[allow(unused)] // unused depending on which sockets are enabled
     #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
-    #[flux_rs::sig(fn(&Self, &IpAddress[@v]) -> Option<IpAddress[v]>)]
+    #[flux_rs::sig(fn(&Self, &IpAddress[@v]) -> Option<IpAddress{s: s.address_ty == v.address_ty}>)]
     pub(crate) fn get_source_address(&self, dst_addr: &IpAddress) -> Option<IpAddress> {
         match dst_addr {
             #[cfg(feature = "proto-ipv4")]

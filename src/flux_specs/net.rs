@@ -11,8 +11,14 @@ use flux_rs::*;
 /// `is_multicast` is `self.segments()[0] & 0xff00 == 0xff00` in core, over the private
 /// octets; Flux has no MIR for it, so without a refinement the result is havoced.
 #[extern_spec(core::net)]
-#[refined_by(is_multicast: bool)]
+#[refined_by(is_multicast: bool, is_unicast: bool)]
 struct Ipv6Addr;
+
+/// The same device as `Ipv6Addr`'s flags: a ghost bit, not a projection of the octets. It
+/// makes "this address is unicast" statable as a precondition instead of a runtime assert.
+#[extern_spec(core::net)]
+#[refined_by(is_unicast: bool)]
+struct Ipv4Addr;
 
 #[extern_spec(core::net)]
 impl Ipv6Addr {

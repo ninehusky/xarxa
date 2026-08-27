@@ -55,6 +55,9 @@ pub(crate) trait AddressExt {
 
 impl AddressExt for Address {
     /// Query whether the address is an unicast address.
+    #[flux_rs::trusted(yes, reason = "the ghost flag has no relation to the octets, so this equality is the flag's definition rather than something the body can prove; body is three total predicates")]
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&Address[@a]) -> bool[a])]
     fn x_is_unicast(&self) -> bool {
         !(self.is_broadcast() || self.is_multicast() || self.is_unspecified())
     }

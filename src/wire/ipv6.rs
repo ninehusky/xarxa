@@ -154,6 +154,9 @@ impl AddressExt for Address {
         }
     }
 
+    #[flux_rs::trusted(yes, reason = "the ghost flag has no relation to the octets, so this equality is the flag's definition rather than something the body can prove; body is three total predicates")]
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&Address[@a]) -> bool[a.is_unicast])]
     fn x_is_unicast(&self) -> bool {
         !(self.is_multicast() || self.is_unspecified())
     }
