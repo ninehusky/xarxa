@@ -89,7 +89,10 @@ impl InterfaceInner {
     /// `ArpRepr::buffer_len()`, which is 28.
     #[flux_rs::opts(check_overflow = "strict")]
     #[flux_rs::trusted(no, reason = "poses the Ethernet header writes' buffer bound")]
-    #[flux_rs::no_panic_if(F::no_panic())]
+    // The `tx_token.consume` below is the token's to answer for, as in `dispatch_ip`; the
+    // closure is the caller's. Both go in one attribute -- two `no_panic_if` on an item is a
+    // `duplicated attribute` error.
+    #[flux_rs::no_panic_if(F::no_panic() && <Tx as TxToken>::tx_no_panic())]
     #[flux_rs::sig(
         fn(self: &mut InterfaceInner, Tx, buffer_len: usize[@bl], F)
             -> Result<(), DispatchError>

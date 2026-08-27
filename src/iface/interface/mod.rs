@@ -1112,6 +1112,11 @@ impl InterfaceInner {
     }
 
     #[cfg(feature = "medium-ethernet")]
+    // Both `dispatch_ip` and `dispatch_ethernet` below are the token's to answer for.
+    #[flux_rs::no_panic_if(<Tx as TxToken>::tx_no_panic())]
+    #[flux_rs::sig(
+        fn(&mut Self, Tx, EthernetPacket, &mut Fragmenter) -> Result<(), DispatchError>
+    )]
     fn dispatch<Tx>(
         &mut self,
         tx_token: Tx,
@@ -1176,6 +1181,12 @@ impl InterfaceInner {
     }
 
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
+    // See `dispatch`.
+    #[flux_rs::no_panic_if(<Tx as TxToken>::tx_no_panic())]
+    #[flux_rs::sig(
+        fn(&mut Self, Tx, &IpAddress, &mut Fragmenter)
+            -> Result<(HardwareAddress, Tx), DispatchError>
+    )]
     fn lookup_hardware_addr<Tx>(
         &mut self,
         tx_token: Tx,
