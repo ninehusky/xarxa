@@ -255,6 +255,10 @@ impl From<Address> for ::core::net::IpAddr {
 #[cfg(feature = "proto-ipv4")]
 #[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Ipv4Address> for Address {
+    // Naming the family is what lets a caller holding two addresses from one `Ipv4Repr` show
+    // they agree, which is `checksum::pseudo_header`'s precondition.
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(Ipv4Address[@a]) -> Address[0, a])]
     fn from(ipv4: Ipv4Address) -> Address {
         Address::Ipv4(ipv4)
     }
@@ -263,6 +267,9 @@ impl From<Ipv4Address> for Address {
 #[cfg(feature = "proto-ipv6")]
 #[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Ipv6Address> for Address {
+    // See the IPv4 impl above.
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(Ipv6Address[@a]) -> Address[1, a.is_unicast])]
     fn from(addr: Ipv6Address) -> Self {
         Address::Ipv6(addr)
     }
@@ -1104,23 +1111,40 @@ pub mod checksum {
         ])
     }
 
+    /// A pseudo-header is formed from the two ends of one IP repr, so the families agree --
+    /// `IpRepr::new` already requires it. Stating it is what makes the mixed arms dead.
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(
+        fn(&Address[@s], &Address[@d], Protocol, u32) -> u16
+        requires s.address_ty == d.address_ty
+    )]
     pub fn pseudo_header(
         src_addr: &Address,
         dst_addr: &Address,
         next_header: Protocol,
         length: u32,
     ) -> u16 {
-        match (src_addr, dst_addr) {
+        // Scrutinised separately rather than as a tuple, for the same reason as
+        // `same_version` above: flux loses the refinement through tuple construction, and it
+        // does not carry the negation of earlier arms into a match's catch-all either. Nested
+        // this way every arm names a variant, so each one is an ordinary path condition.
+        match src_addr {
             #[cfg(feature = "proto-ipv4")]
-            (Address::Ipv4(src_addr), Address::Ipv4(dst_addr)) => {
-                pseudo_header_v4(src_addr, dst_addr, next_header, length)
-            }
+            Address::Ipv4(src_addr) => match dst_addr {
+                Address::Ipv4(dst_addr) => {
+                    pseudo_header_v4(src_addr, dst_addr, next_header, length)
+                }
+                #[cfg(feature = "proto-ipv6")]
+                Address::Ipv6(_) => unreachable!(),
+            },
             #[cfg(feature = "proto-ipv6")]
-            (Address::Ipv6(src_addr), Address::Ipv6(dst_addr)) => {
-                pseudo_header_v6(src_addr, dst_addr, next_header, length)
-            }
-            #[allow(unreachable_patterns)]
-            _ => unreachable!(),
+            Address::Ipv6(src_addr) => match dst_addr {
+                #[cfg(feature = "proto-ipv4")]
+                Address::Ipv4(_) => unreachable!(),
+                Address::Ipv6(dst_addr) => {
+                    pseudo_header_v6(src_addr, dst_addr, next_header, length)
+                }
+            },
         }
     }
 

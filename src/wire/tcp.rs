@@ -768,7 +768,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     // `checksum::pseudo_header` and is a *value* obligation on the two addresses, a different
     // axis from the length work here. The `requires` covers only the header read.
     #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
-    #[flux_rs::sig(fn(&Packet<T>[@p], &IpAddress, &IpAddress) -> bool requires 18 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::sig(fn(&Packet<T>[@p], &IpAddress[@s], &IpAddress[@d]) -> bool requires s.address_ty == d.address_ty && 18 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
     pub fn verify_partial_checksum(&self, src_addr: &IpAddress, dst_addr: &IpAddress) -> bool {
         if cfg!(fuzzing) {
             return true;
@@ -793,7 +793,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     // `checksum::data`'s own bound: this hands it the whole buffer, so the bound lands on the
     // buffer rather than on a window of it.
     #[flux_rs::trusted(no, reason = "panic site: checksums the whole buffer")]
-    #[flux_rs::sig(fn(&Packet<T>[@p], &IpAddress, &IpAddress) -> bool requires <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535)]
+    #[flux_rs::sig(fn(&Packet<T>[@p], &IpAddress[@s], &IpAddress[@d]) -> bool requires s.address_ty == d.address_ty && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535)]
     pub fn verify_checksum(&self, src_addr: &IpAddress, dst_addr: &IpAddress) -> bool {
         if cfg!(fuzzing) {
             return true;
@@ -1094,8 +1094,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     // `Packet::verify_checksum` for where the `<= 65535` comes from.
     #[flux_rs::trusted(no, reason = "panic site: checksums the whole buffer")]
     #[flux_rs::sig(
-        fn(self: &mut Packet<T>[@p], &IpAddress, &IpAddress)
-        requires 18 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer) && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
+        fn(self: &mut Packet<T>[@p], &IpAddress[@s], &IpAddress[@d])
+        requires s.address_ty == d.address_ty
+              && 18 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer) && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
     )]
     pub fn fill_checksum(&mut self, src_addr: &IpAddress, dst_addr: &IpAddress) {
         self.set_checksum(0);
@@ -1684,8 +1685,8 @@ impl<'a> Repr<'a> {
     /// not a lie about it, and that the options window does not run backwards -- and over `Ref`
     /// they are statable.
     #[flux_rs::sig(
-        fn(&Packet<Ref>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities) -> Result<Repr>
-        requires p.buffer.len <= 65535
+        fn(&Packet<Ref>[@p], &IpAddress[@s], &IpAddress[@d], &ChecksumCapabilities) -> Result<Repr>
+        requires s.address_ty == d.address_ty && p.buffer.len <= 65535
     )]
     pub fn parse_ref(
         packet: &Packet<Ref<'a>>,
@@ -1845,8 +1846,9 @@ impl<'a> Repr<'a> {
     // is still `&mut Packet<T>`. Same move as `ipv4::Repr::emit`.
     #[flux_rs::trusted(no, reason = "panic site: the header setters and the payload copy")]
     #[flux_rs::sig(
-        fn(&Self[@r], packet: &strg Packet<T>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities)
-        requires hdr_len(r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c) + r.plen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        fn(&Self[@r], packet: &strg Packet<T>[@p], &IpAddress[@s], &IpAddress[@d], &ChecksumCapabilities)
+        requires s.address_ty == d.address_ty
+              && hdr_len(r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c) + r.plen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
               && hdr_len(r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c) + r.plen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
               && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
         ensures packet: Packet<T>{q: q.buffer == p.buffer}
@@ -2053,9 +2055,10 @@ impl<'a> SizedRepr<'a> {
 
     /// Emit the representation into `packet`, exactly as [`Repr::emit`] would.
     #[flux_rs::sig(
-        fn(&Self[@s], packet: &strg Packet<T>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities)
-        requires s.blen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
-              && s.blen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+        fn(&Self[@r], packet: &strg Packet<T>[@p], &IpAddress[@s], &IpAddress[@d], &ChecksumCapabilities)
+        requires s.address_ty == d.address_ty
+              && r.blen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+              && r.blen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
               && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
         ensures packet: Packet<T>{q: q.buffer == p.buffer}
     )]
