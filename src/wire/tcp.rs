@@ -1558,6 +1558,8 @@ impl PartialEq for Control {
 #[allow(clippy::len_without_is_empty)]
 impl Control {
     /// Return the length of a control flag, in terms of sequence space.
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(Control) -> usize{v: v <= 1})]
     pub const fn len(self) -> usize {
         match self {
             Control::Syn | Control::Fin => 1,
@@ -1693,7 +1695,8 @@ impl<'a> Repr<'a> {
     /// not a lie about it, and that the options window does not run backwards -- and over `Ref`
     /// they are statable.
     #[flux_rs::sig(
-        fn(&Packet<Ref>[@p], &IpAddress[@s], &IpAddress[@d], &ChecksumCapabilities) -> Result<Repr>
+        fn(&Packet<Ref>[@p], &IpAddress[@s], &IpAddress[@d], &ChecksumCapabilities)
+            -> Result<Repr{r: r.plen <= 65535}>
         requires s.address_ty == d.address_ty && p.buffer.len <= 65535
     )]
     pub fn parse_ref(
@@ -1941,6 +1944,12 @@ impl<'a> Repr<'a> {
     }
 
     /// Return the length of the segment, in terms of sequence space.
+    ///
+    /// Stated against `plen` rather than as a constant: `Repr` deliberately carries no
+    /// invariant on its payload length (492 struct literals would owe it), so the ceiling has
+    /// to come from whatever the caller already knows about its own `repr`.
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&Self[@r]) -> usize{v: v <= r.plen + 1})]
     pub const fn segment_len(&self) -> usize {
         self.payload.len() + self.control.len()
     }

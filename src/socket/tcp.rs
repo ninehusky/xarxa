@@ -1520,7 +1520,11 @@ impl<'a> Socket<'a> {
 
     /// Carries [`Self::reply`]'s length equality through: none of the three fields set below
     /// is one [`TcpRepr::buffer_len`] counts, which is why the setters can keep `blen`.
+    // `plen <= 65535` is the incoming segment's payload: it came off an IP packet, whose own
+    // repr bounds it. `Repr` carries no invariant (492 struct literals would owe it), so the
+    // bound is stated here and discharged by the caller that parsed it.
     #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
+    #[flux_rs::sig(fn(&IpRepr, &TcpRepr[@r]) -> Reply requires r.plen <= 65535)]
     pub(crate) fn rst_reply(ip_repr: &IpRepr, repr: &TcpRepr) -> Reply<'static> {
         debug_assert!(repr.control != TcpControl::Rst);
 
@@ -1669,6 +1673,11 @@ impl<'a> Socket<'a> {
         }
     }
 
+    // See `rst_reply` for where `plen <= 65535` comes from.
+    #[flux_rs::sig(
+        fn(self: &mut Self, cx: &mut Context, &IpRepr, &TcpRepr[@r]) -> Option<Reply>
+        requires r.plen <= 65535
+    )]
     pub(crate) fn process(
         &mut self,
         cx: &mut Context,
