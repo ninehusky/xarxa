@@ -486,6 +486,55 @@ pub enum CongestionControl {
     Cubic,
 }
 
+/// The remote's advertised window, in octets.
+///
+/// A newtype rather than a component of `Socket`'s index: a type invariant travels with the
+/// value, so this carries its ceiling without `Socket` being indexed at all -- which in turn
+/// means no mutating method needs `&strg`. Indexing `Socket` for the same two bounds costs
+/// ~30 errors and ICEs fixpoint once `process` is converted (xarxa-ice/ICE-INBOX.md).
+///
+/// The ceiling is `65535 << 14`: the window field is a `u16` and `tcp::Repr::parse` clamps the
+/// scale to 14 per RFC 1323.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[flux_rs::refined_by(v: int)]
+#[flux_rs::invariant(0 <= v && v <= 1073725440)]
+pub(crate) struct WinLen(#[flux_rs::field(usize[v])] usize);
+
+impl WinLen {
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(usize[@n]) -> WinLen[n] requires n <= 1073725440)]
+    const fn new(v: usize) -> WinLen {
+        WinLen(v)
+    }
+
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(WinLen[@w]) -> usize[w])]
+    const fn get(self) -> usize {
+        self.0
+    }
+}
+
+/// The remote's maximum segment size, in octets. Same device as [`WinLen`]; the ceiling is
+/// `u16::MAX`, because the MSS option is a `u16` and the default is 536.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[flux_rs::refined_by(v: int)]
+#[flux_rs::invariant(0 <= v && v <= 65535)]
+pub(crate) struct Mss(#[flux_rs::field(usize[v])] usize);
+
+impl Mss {
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(usize[@n]) -> Mss[n] requires n <= 65535)]
+    const fn new(v: usize) -> Mss {
+        Mss(v)
+    }
+
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(Mss[@m]) -> usize[m])]
+    const fn get(self) -> usize {
+        self.0
+    }
+}
+
 /// A Transmission Control Protocol socket.
 ///
 /// A TCP socket may passively listen for connections or actively connect to another endpoint.
@@ -550,7 +599,7 @@ pub struct Socket<'a> {
     /// Whether or not the remote supports selective ACK as described in RFC 2018.
     remote_has_sack: bool,
     /// The maximum number of data octets that the remote side may receive.
-    remote_mss: usize,
+    remote_mss: Mss,
     /// The timestamp of the last packet received.
     remote_last_ts: Option<Instant>,
     /// The sequence number of the last packet received, used for sACK
@@ -649,7 +698,7 @@ impl<'a> Socket<'a> {
             remote_win_shift: rx_cap_log2.saturating_sub(16) as u8,
             remote_win_scale: None,
             remote_has_sack: false,
-            remote_mss: DEFAULT_MSS,
+            remote_mss: Mss::new(DEFAULT_MSS),
             remote_last_ts: None,
             local_rx_last_ack: None,
             local_rx_last_seq: None,
@@ -963,7 +1012,7 @@ impl<'a> Socket<'a> {
         self.remote_win_len = 0;
         self.remote_win_scale = None;
         self.remote_win_shift = rx_cap_log2.saturating_sub(16) as u8;
-        self.remote_mss = DEFAULT_MSS;
+        self.remote_mss = Mss::new(DEFAULT_MSS);
         self.remote_last_ts = None;
         self.ack_delay_timer = AckDelayTimer::Idle;
         self.challenge_ack_timer = Instant::from_secs(0);
@@ -2005,10 +2054,10 @@ impl<'a> Socket<'a> {
                 if let Maybe::Just(max_seg_size) = repr.max_seg_size {
                     // Treat a zero MSS as if the option were absent, like Linux does.
                     if max_seg_size != 0 {
-                        self.remote_mss = (max_seg_size as usize).max(MIN_REMOTE_MSS);
+                        self.remote_mss = Mss::new(core::cmp::max(max_seg_size as usize, MIN_REMOTE_MSS));
                         self.congestion_controller
                             .inner_mut()
-                            .set_mss(self.remote_mss);
+                            .set_mss(self.remote_mss.get());
                     }
                 }
 
@@ -2059,10 +2108,10 @@ impl<'a> Socket<'a> {
                 if let Maybe::Just(max_seg_size) = repr.max_seg_size {
                     // Treat a zero MSS as if the option were absent, like Linux does.
                     if max_seg_size != 0 {
-                        self.remote_mss = (max_seg_size as usize).max(MIN_REMOTE_MSS);
+                        self.remote_mss = Mss::new(core::cmp::max(max_seg_size as usize, MIN_REMOTE_MSS));
                         self.congestion_controller
                             .inner_mut()
-                            .set_mss(self.remote_mss);
+                            .set_mss(self.remote_mss.get());
                     }
                 }
 
@@ -2226,7 +2275,7 @@ impl<'a> Socket<'a> {
                     let in_flight = self.flight_size();
                     self.congestion_controller.inner_mut().on_dup_ack(
                         cx.now(),
-                        self.remote_mss,
+                        self.remote_mss.get(),
                         in_flight,
                     );
                 }
@@ -2418,7 +2467,7 @@ impl<'a> Socket<'a> {
         };
 
         let local_mss = cx.ip_mtu() - ip_header_len - TCP_HEADER_LEN;
-        let effective_mss = local_mss.min(self.remote_mss).saturating_sub(options_len);
+        let effective_mss = local_mss.min(self.remote_mss.get()).saturating_sub(options_len);
 
         // Have we sent data that hasn't been ACKed yet?
         let data_in_flight = self.remote_last_seq != self.local_seq_no;
@@ -2501,7 +2550,7 @@ impl<'a> Socket<'a> {
     /// <https://elixir.bootlin.com/linux/v6.11.4/source/net/ipv4/tcp_input.c#L5747>.
     fn immediate_ack_to_transmit(&self) -> bool {
         if let Some(remote_last_ack) = self.remote_last_ack {
-            remote_last_ack + self.remote_mss < self.remote_seq_no + self.rx_buffer.len()
+            remote_last_ack + self.remote_mss.get() < self.remote_seq_no + self.rx_buffer.len()
         } else {
             false
         }
@@ -2768,7 +2817,7 @@ impl<'a> Socket<'a> {
                 let options_len = repr.header_len() - 20;
                 let local_mss = cx.ip_mtu() - ip_repr.header_len() - 20;
                 let effective_mss =
-                    cmp::min(local_mss, self.remote_mss).saturating_sub(options_len);
+                    cmp::min(local_mss, self.remote_mss.get()).saturating_sub(options_len);
 
                 let offset = if self.pending_fast_retransmit {
                     let size = cmp::min(effective_mss, self.tx_buffer.len());
@@ -3633,7 +3682,7 @@ mod test {
             }
         );
         assert_eq!(s.state, State::SynReceived);
-        assert_eq!(s.remote_mss, MIN_REMOTE_MSS);
+        assert_eq!(s.remote_mss.get(), MIN_REMOTE_MSS);
     }
 
     #[test]
@@ -3650,7 +3699,7 @@ mod test {
             }
         );
         assert_eq!(s.state, State::SynReceived);
-        assert_eq!(s.remote_mss, DEFAULT_MSS);
+        assert_eq!(s.remote_mss.get(), DEFAULT_MSS);
     }
 
     #[test]
@@ -4094,7 +4143,7 @@ mod test {
             }
         );
         assert_eq!(s.state, State::Established);
-        assert_eq!(s.remote_mss, MIN_REMOTE_MSS);
+        assert_eq!(s.remote_mss.get(), MIN_REMOTE_MSS);
     }
 
     #[test]
@@ -4128,7 +4177,7 @@ mod test {
             }
         );
         assert_eq!(s.state, State::Established);
-        assert_eq!(s.remote_mss, DEFAULT_MSS);
+        assert_eq!(s.remote_mss.get(), DEFAULT_MSS);
     }
 
     #[test]
@@ -5397,7 +5446,7 @@ mod test {
         // construct socket where remote MSS is less than local MSS
         let mut s = socket_established();
         s.set_tsval_generator(Some(|| 1));
-        s.remote_mss = EFFECTIVE_MSS;
+        s.remote_mss = Mss::new(EFFECTIVE_MSS);
 
         // Payload should contain 12 bytes less due to timestamp
         s.send_slice(&[0; EFFECTIVE_MSS]).unwrap();
@@ -5420,7 +5469,7 @@ mod test {
         // construct socket where remote MSS is more than local MSS
         let mut s = socket_established_with_buffer_sizes(EFFECTIVE_MSS, 64);
         s.set_tsval_generator(Some(|| 1));
-        s.remote_mss = 9999;
+        s.remote_mss = Mss::new(9999);
         s.remote_win_len = 9999;
 
         // Payload should contain 12 bytes less due to timestamp
@@ -5475,7 +5524,7 @@ mod test {
             }
         );
         assert_eq!(s.state, State::Established);
-        assert_eq!(s.remote_mss, MIN_REMOTE_MSS);
+        assert_eq!(s.remote_mss.get(), MIN_REMOTE_MSS);
 
         s.send_slice(&[0; 64]).unwrap();
         recv!(
@@ -6610,7 +6659,7 @@ mod test {
         let mut s = socket_established_with_buffer_sizes(8192, 64);
         s.set_congestion_control(CongestionControl::Reno);
         s.remote_win_len = 65535;
-        s.remote_mss = 1024;
+        s.remote_mss = Mss::new(1024);
 
         let data = [b'x'; 8192];
         s.send_slice(&data[..]).unwrap();
@@ -6653,7 +6702,7 @@ mod test {
         let mut s = socket_established_with_buffer_sizes(8192, 64);
         s.set_congestion_control(CongestionControl::Reno);
         s.remote_win_len = 65535;
-        s.remote_mss = 1024;
+        s.remote_mss = Mss::new(1024);
 
         // Normal ACK of previously received segment
         send!(s, time 0, TcpRepr {
@@ -6714,7 +6763,7 @@ mod test {
     #[test]
     fn test_data_retransmit_bursts() {
         let mut s = socket_established();
-        s.remote_mss = 6;
+        s.remote_mss = Mss::new(6);
         s.send_slice(b"abcdef012345").unwrap();
 
         recv!(s, time 0, Ok(TcpRepr {
@@ -6755,7 +6804,7 @@ mod test {
     #[test]
     fn test_data_retransmit_bursts_half_ack() {
         let mut s = socket_established();
-        s.remote_mss = 6;
+        s.remote_mss = Mss::new(6);
         s.send_slice(b"abcdef012345").unwrap();
 
         recv!(s, time 0, Ok(TcpRepr {
@@ -6794,7 +6843,7 @@ mod test {
     #[test]
     fn test_retransmit_timer_restart_on_partial_ack() {
         let mut s = socket_established();
-        s.remote_mss = 6;
+        s.remote_mss = Mss::new(6);
         s.send_slice(b"abcdef012345").unwrap();
 
         recv!(s, time 0, Ok(TcpRepr {
@@ -6833,7 +6882,7 @@ mod test {
     #[test]
     fn test_data_retransmit_bursts_half_ack_close() {
         let mut s = socket_established();
-        s.remote_mss = 6;
+        s.remote_mss = Mss::new(6);
         s.send_slice(b"abcdef012345").unwrap();
         s.close();
 
@@ -6981,7 +7030,7 @@ mod test {
     #[test]
     fn test_established_queue_during_retransmission() {
         let mut s = socket_established();
-        s.remote_mss = 6;
+        s.remote_mss = Mss::new(6);
         s.send_slice(b"abcdef123456ABCDEF").unwrap();
         recv!(s, time 1000, Ok(TcpRepr {
             seq_number: LOCAL_SEQ + 1,
@@ -7103,7 +7152,7 @@ mod test {
     #[test]
     fn test_fast_retransmit_after_triple_duplicate_ack() {
         let mut s = socket_established();
-        s.remote_mss = 3;
+        s.remote_mss = Mss::new(3);
 
         // Normal ACK of previously received segment
         send!(s, time 0, TcpRepr {
@@ -7324,7 +7373,7 @@ mod test {
     #[test]
     fn test_fast_retransmit_duplicate_detection() {
         let mut s = socket_established();
-        s.remote_mss = 6;
+        s.remote_mss = Mss::new(6);
 
         // Normal ACK of previously received segment
         send!(s, time 0, TcpRepr {
@@ -7530,7 +7579,7 @@ mod test {
     #[test]
     fn test_data_retransmit_ack_more_than_expected() {
         let mut s = socket_established();
-        s.remote_mss = 6;
+        s.remote_mss = Mss::new(6);
         s.send_slice(b"aaaaaabbbbbbcccccc").unwrap();
 
         recv!(s, time 0, Ok(TcpRepr {
@@ -7738,7 +7787,7 @@ mod test {
     fn test_recv_out_of_recv_win() {
         let mut s = socket_established();
         s.set_ack_delay(Some(ACK_DELAY_DEFAULT));
-        s.remote_mss = 32;
+        s.remote_mss = Mss::new(32);
 
         // No ACKs are sent due to the ACK delay.
         send!(
@@ -7875,7 +7924,7 @@ mod test {
     #[test]
     fn test_psh_transmit() {
         let mut s = socket_established();
-        s.remote_mss = 6;
+        s.remote_mss = Mss::new(6);
         s.send_slice(b"abcdef").unwrap();
         s.send_slice(b"123456").unwrap();
         recv!(s, time 0, Ok(TcpRepr {
@@ -8178,7 +8227,7 @@ mod test {
     #[test]
     fn test_fill_peer_window() {
         let mut s = socket_established();
-        s.remote_mss = 6;
+        s.remote_mss = Mss::new(6);
         s.send_slice(b"abcdef123456!@#$%^").unwrap();
         recv!(
             s,
@@ -8414,7 +8463,7 @@ mod test {
         let mut s = socket_established_with_buffer_sizes(8192, 64);
         s.set_congestion_control(CongestionControl::Reno);
         s.remote_win_len = 65535;
-        s.remote_mss = 1024;
+        s.remote_mss = Mss::new(1024);
 
         let data = [b'x'; 4096];
         s.send_slice(&data[..]).unwrap();
@@ -9442,7 +9491,7 @@ mod test {
     #[test]
     fn test_nagle() {
         let mut s = socket_established();
-        s.remote_mss = 6;
+        s.remote_mss = Mss::new(6);
 
         s.send_slice(b"abcdef").unwrap();
         recv!(
@@ -9508,7 +9557,7 @@ mod test {
         let mut s = socket_established_with_buffer_sizes(256, 64);
         s.set_nagle_enabled(true);
         s.set_tsval_generator(Some(|| 1));
-        s.remote_mss = EFFECTIVE_MSS;
+        s.remote_mss = Mss::new(EFFECTIVE_MSS);
 
         // Send small segment to "arm" Nagle's
         s.send_slice(b"abcdef").unwrap();
@@ -9541,7 +9590,7 @@ mod test {
     #[test]
     fn test_final_packet_in_stream_doesnt_wait_for_nagle() {
         let mut s = socket_established();
-        s.remote_mss = 6;
+        s.remote_mss = Mss::new(6);
         s.send_slice(b"abcdef0").unwrap();
         s.socket.close();
 
