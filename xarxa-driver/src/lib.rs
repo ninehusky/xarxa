@@ -84,7 +84,7 @@ impl Timestamp {
 /// }
 /// ```
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Default)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 #[non_exhaustive]
 pub struct PacketMeta {
     /// An opaque identifier for this packet.
@@ -301,6 +301,11 @@ pub struct DeviceCapabilities {
 ///     }
 /// }
 /// ```
+// Whether driving the device can panic is a property of the *implementor*, not of this
+// trait: xarxa cannot prove anything about a `Device` it has never seen. `device_no_panic`
+// states that question, so xarxa's own panic-freedom becomes an explicit contract --
+// "xarxa does not panic, provided your `Device` does not" -- rather than an assumption.
+#[flux_rs::assoc(fn device_no_panic() -> bool)]
 pub trait Device {
     /// A token to receive a single network packet.
     type RxToken<'a>: RxToken
@@ -318,15 +323,21 @@ pub trait Device {
     /// on the contents of the received packet. For example, this makes it possible to
     /// handle arbitrarily large ICMP echo ("ping") requests, where the all received bytes
     /// need to be sent back, without heap allocation.
+    #[flux_rs::no_panic_if(<Self as Device>::device_no_panic())]
+    #[flux_rs::sig(fn(&mut Self) -> Option<(Self::RxToken<_>, Self::TxToken<_>)>)]
     fn receive(&mut self) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)>;
 
     /// Construct a transmit token.
     ///
     /// Note that [`TxToken::consume`] is infallible, so it is not allowed to return a token
     /// if there is no free space and fail later.
+    #[flux_rs::no_panic_if(<Self as Device>::device_no_panic())]
+    #[flux_rs::sig(fn(&mut Self) -> Option<Self::TxToken<_>>)]
     fn transmit(&mut self) -> Option<Self::TxToken<'_>>;
 
     /// Get a description of device capabilities.
+    #[flux_rs::no_panic_if(<Self as Device>::device_no_panic())]
+    #[flux_rs::sig(fn(&Self) -> DeviceCapabilities)]
     fn capabilities(&self) -> DeviceCapabilities;
 
     /// Poll for the timestamp of an already-transmitted packet.
@@ -357,6 +368,8 @@ pub trait Device {
     }
 }
 
+// Forwards every method, so its condition is exactly `T`'s.
+#[flux_rs::assoc(fn device_no_panic() -> bool { <T as Device>::device_no_panic() })]
 impl<T: ?Sized + Device> Device for &mut T {
     type RxToken<'a>
         = T::RxToken<'a>
@@ -367,14 +380,20 @@ impl<T: ?Sized + Device> Device for &mut T {
     where
         Self: 'a;
 
+    #[flux_rs::no_panic_if(<T as Device>::device_no_panic())]
+    #[flux_rs::sig(fn(&mut Self) -> Option<(Self::RxToken<_>, Self::TxToken<_>)>)]
     fn receive(&mut self) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         T::receive(self)
     }
 
+    #[flux_rs::no_panic_if(<T as Device>::device_no_panic())]
+    #[flux_rs::sig(fn(&mut Self) -> Option<Self::TxToken<_>>)]
     fn transmit(&mut self) -> Option<Self::TxToken<'_>> {
         T::transmit(self)
     }
 
+    #[flux_rs::no_panic_if(<T as Device>::device_no_panic())]
+    #[flux_rs::sig(fn(&Self) -> DeviceCapabilities)]
     fn capabilities(&self) -> DeviceCapabilities {
         T::capabilities(self)
     }
@@ -385,23 +404,52 @@ impl<T: ?Sized + Device> Device for &mut T {
     }
 }
 
+// Hand-written rather than derived: `RxToken::meta`'s default body is `PacketMeta::default()`,
+// and a derived `Default` has no MIR for flux to look at, so every caller of `meta` owed a
+// proof about a function that cannot fail. Every field here is a literal.
+impl Default for PacketMeta {
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn() -> PacketMeta)]
+    fn default() -> PacketMeta {
+        PacketMeta {
+            #[cfg(feature = "packetmeta-id")]
+            id: 0,
+            #[cfg(feature = "packetmeta-timestamp")]
+            timestamp: None,
+            #[cfg(feature = "packetmeta-timestamp")]
+            request_timestamp: false,
+        }
+    }
+}
+
 /// A token to receive a single network packet.
+//
+// `rx_no_panic` is the token's half of the contract `Device::device_no_panic` states: xarxa
+// cannot prove anything about a token it has never seen, so it asks instead.
+#[flux_rs::assoc(fn rx_no_panic() -> bool)]
 pub trait RxToken {
     /// Consumes the token to receive a single network packet.
     ///
     /// This method receives a packet and then calls the given closure `f` with the raw
     /// packet bytes as argument.
+    #[flux_rs::no_panic_if(<Self as RxToken>::rx_no_panic() && F::no_panic())]
+    #[flux_rs::sig(fn(self: Self, f: F) -> R)]
     fn consume<R, F>(self, f: F) -> R
     where
         F: FnOnce(&[u8]) -> R;
 
     /// The packet metadata associated with the frame received by this [`RxToken`].
+    #[flux_rs::no_panic_if(<Self as RxToken>::rx_no_panic())]
+    #[flux_rs::sig(fn(&Self) -> PacketMeta)]
     fn meta(&self) -> PacketMeta {
         PacketMeta::default()
     }
 }
 
 /// A token to transmit a single network packet.
+//
+// See [`RxToken`] for why this is a question rather than a claim.
+#[flux_rs::assoc(fn tx_no_panic() -> bool)]
 pub trait TxToken {
     /// Consumes the token to send a single network packet.
     ///
@@ -409,6 +457,7 @@ pub trait TxToken {
     /// closure `f` with a mutable reference to that buffer. The closure should construct
     /// a valid network packet (e.g. an ethernet packet) in the buffer. When the closure
     /// returns, the transmit buffer is sent out.
+    #[flux_rs::no_panic_if(<Self as TxToken>::tx_no_panic() && F::no_panic())]
     #[flux_rs::sig(
         fn(self: Self, len: usize[@n], f: F) -> R
         where
@@ -420,6 +469,8 @@ pub trait TxToken {
 
     /// The packet metadata to be associated with the frame to be transmitted by this [`TxToken`].
     #[allow(unused_variables)]
+    #[flux_rs::no_panic_if(<Self as TxToken>::tx_no_panic())]
+    #[flux_rs::sig(fn(&mut Self, PacketMeta))]
     fn set_meta(&mut self, meta: PacketMeta) {}
 }
 

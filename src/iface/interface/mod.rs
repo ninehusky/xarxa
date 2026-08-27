@@ -206,7 +206,12 @@ impl Interface {
     /// # Panics
     /// This function panics if the [`Config::hardware_addr`] does not match
     /// the medium of the device.
-    pub fn new(config: Config, device: &mut (impl Device + ?Sized), now: Instant) -> Self {
+    //
+    // A named `D`, for the same reason as `device_caps`: an argument-position impl trait has
+    // no type parameter to name in `device_no_panic`. Source-compatible for callers.
+    #[flux_rs::no_panic_if(<D as Device>::device_no_panic())]
+    #[flux_rs::sig(fn(Config, &mut D, Instant) -> Self)]
+    pub fn new<D: Device + ?Sized>(config: Config, device: &mut D, now: Instant) -> Self {
         let caps = device.capabilities();
         let medium = Medium::from_driver(caps.medium);
         assert_eq!(
@@ -751,8 +756,14 @@ impl Interface {
     /// call in that body that also takes `device` with an unsolved existential variable
     /// (`parameter inference error`), which aborts the whole function's check. Isolating the
     /// call here confines that to one statement. Behaviour is unchanged.
+    //
+    // A named `D` rather than `impl Device`: an argument-position impl trait has no type
+    // parameter to name, so `<D as Device>::device_no_panic()` could not be written. The Rust
+    // signature is equivalent.
     #[flux_rs::trusted(no)]
-    fn device_caps(device: &mut (impl Device + ?Sized)) -> DeviceCapabilities {
+    #[flux_rs::no_panic_if(<D as Device>::device_no_panic())]
+    #[flux_rs::sig(fn(&mut D) -> DeviceCapabilities)]
+    fn device_caps<D: Device + ?Sized>(device: &mut D) -> DeviceCapabilities {
         device.capabilities()
     }
 
