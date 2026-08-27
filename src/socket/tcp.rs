@@ -863,12 +863,28 @@ impl<'a> Socket<'a> {
     /// since the last window update and adjust the window length accordingly. This ensures a fair
     /// comparison between the last window length and the new window length we're going to
     /// advertise.
+    /// `win << self.remote_win_shift`, with the ceiling the shift's provenance gives it.
+    ///
+    /// Trusted for two reasons. Flux has no bitvector theory, so `<<` is opaque to it whatever
+    /// the operands. And the shift's bound is a property of how a `Socket` is built:
+    /// [`Socket::new`] panics on an rx buffer over 1 GiB, so `rx_cap_log2 <= 31`, and all four
+    /// assignments to `remote_win_shift` in this file are either that value minus 16 or `0` --
+    /// at most 15. `65535 << 15` is 2147450880, just under `i32::MAX`, which is what
+    /// `SeqNumber`'s `Add` needs.
+    #[flux_rs::trusted(yes, reason = "`<<` is opaque to flux; the shift is at most 15 because \
+                                      `Socket::new` rejects an rx buffer over 1 GiB")]
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&Socket, u16) -> usize{v: v <= 2147450880})]
+    fn scaled_win(&self, win: u16) -> usize {
+        (win as usize) << self.remote_win_shift
+    }
+
     #[inline]
     fn last_scaled_window(&self) -> Option<u16> {
         let last_ack = self.remote_last_ack?;
         let next_ack = self.remote_seq_no + self.rx_buffer.len();
 
-        let last_win = (self.remote_last_win as usize) << self.remote_win_shift;
+        let last_win = self.scaled_win(self.remote_last_win);
         let last_win_adjusted = last_ack + last_win - next_ack;
 
         Some(u16::try_from(last_win_adjusted >> self.remote_win_shift).unwrap_or(u16::MAX))
@@ -1857,7 +1873,7 @@ impl<'a> Socket<'a> {
 
         let window_start = self.remote_seq_no + self.rx_buffer.len();
         let window_end = if let Some(last_ack) = self.remote_last_ack {
-            last_ack + ((self.remote_last_win as usize) << self.remote_win_shift)
+            last_ack + self.scaled_win(self.remote_last_win)
         } else {
             window_start
         };
