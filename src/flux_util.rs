@@ -92,7 +92,10 @@ pub fn suffix_mut<T>(data: &mut [T], at: usize) -> &mut [T] {
 ///
 /// Restricted to `[u8]` on purpose -- the bound is false for a slice of zero-sized elements.
 #[flux_rs::trusted(yes, reason = "core guarantees an allocation is at most isize::MAX bytes")]
-#[flux_rs::sig(fn(&[u8][@n]) -> usize{v: v == n && n <= 9223372036854775807})]
+#[cfg_attr(not(target_pointer_width = "32"),
+    flux_rs::sig(fn(&[u8][@n]) -> usize{v: v == n && n <= 9223372036854775807}))]
+#[cfg_attr(target_pointer_width = "32",
+    flux_rs::sig(fn(&[u8][@n]) -> usize{v: v == n && n <= 2147483647}))]
 #[flux_rs::no_panic]
 pub const fn byte_len(data: &[u8]) -> usize {
     data.len()

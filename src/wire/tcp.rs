@@ -158,7 +158,11 @@ impl ops::Add<usize> for SeqNumber {
     // The guard below is what discharges `usize_to_i32`'s bound; the panic stays and this
     // retires none of it. `rhs as i32` became `usize_to_i32(rhs)`, which is the same cast --
     // flux does not model the `as`, and that is all the helper supplies.
+    // The panic stays. `no_panic_if` states the condition it guards -- every `rhs` in the crate
+    // is a buffer length or window, and on a 32-bit target no allocation reaches `i32::MAX`.
+    // Nothing here changes what runs; the obligation moves to the callers, where it is real.
     #[flux_rs::reveal(wrap32_up)]
+    #[flux_rs::no_panic_if(n <= 2147483647)]
     #[flux_rs::sig(fn(SeqNumber[@a], usize[@n]) -> SeqNumber[wrap32_up(a.v + n)])]
     fn add(self, rhs: usize) -> SeqNumber {
         if rhs > i32::MAX as usize {
@@ -172,7 +176,11 @@ impl ops::Sub<usize> for SeqNumber {
     type Output = SeqNumber;
 
     // See `Add<usize>` above.
+    // The panic stays. `no_panic_if` states the condition it guards -- every `rhs` in the crate
+    // is a buffer length or window, and on a 32-bit target no allocation reaches `i32::MAX`.
+    // Nothing here changes what runs; the obligation moves to the callers, where it is real.
     #[flux_rs::reveal(wrap32_down)]
+    #[flux_rs::no_panic_if(n <= 2147483647)]
     #[flux_rs::sig(fn(SeqNumber[@a], usize[@n]) -> SeqNumber[wrap32_down(a.v - n)])]
     fn sub(self, rhs: usize) -> SeqNumber {
         if rhs > i32::MAX as usize {
