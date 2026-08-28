@@ -641,9 +641,19 @@ impl Interface {
         }
     }
 
-    fn socket_ingress(
+    // Three contracts, because this touches all three: `receive` is the device's, `meta` and
+    // `consume` are the receive token's, and the `dispatch` inside the closure is the transmit
+    // token's. A named `D` so the associated types can be spelled; `<_>` for the GAT lifetime,
+    // which is a syntax error written `<'_>` and an arity error omitted.
+    #[flux_rs::no_panic_if(
+        <D as Device>::device_no_panic()
+            && <<D as Device>::RxToken<_> as RxToken>::rx_no_panic()
+            && <<D as Device>::TxToken<_> as TxToken>::tx_no_panic()
+    )]
+    #[flux_rs::sig(fn(&mut Self, &mut D, &mut SocketSet) -> PollIngressSingleResult)]
+    fn socket_ingress<D: Device + ?Sized>(
         &mut self,
-        device: &mut (impl Device + ?Sized),
+        device: &mut D,
         sockets: &mut SocketSet<'_>,
     ) -> PollIngressSingleResult {
         let Some((rx_token, tx_token)) = device.receive() else {
