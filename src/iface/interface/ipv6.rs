@@ -159,7 +159,10 @@ impl InterfaceInner {
     pub fn has_solicited_node(&self, addr: Ipv6Address) -> bool {
         self.ip_addrs.iter().any(|cidr| {
             match *cidr {
-                IpCidr::Ipv6(cidr) if cidr.address() != Ipv6Address::LOCALHOST => {
+                // `!(a == b)` rather than `a != b`: `!=` resolves to `PartialEq`'s *default*
+                // `ne`, which core's derived impl does not define, so no extern spec can
+                // reach it. `eq` is specified in `flux_specs::net`. Same operation.
+                IpCidr::Ipv6(cidr) if !(cidr.address() == Ipv6Address::LOCALHOST) => {
                     // Take the lower order 24 bits of the IPv6 address and
                     // append those bits to FF02:0:0:0:0:1:FF00::/104.
                     addr.octets()[14..] == cidr.address().octets()[14..]

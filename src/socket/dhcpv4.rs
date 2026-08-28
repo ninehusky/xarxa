@@ -421,8 +421,8 @@ impl<'a> Socket<'a> {
                     // changed every time if the receive packet buffer is set,
                     // but we only write changes to the rest of the config now.
                     let config_changed =
-                        state.config != config || self.receive_packet_buffer.is_some();
-                    if state.config != config {
+                        !(state.config == config) || self.receive_packet_buffer.is_some();
+                    if !(state.config == config) {
                         state.config = config;
                     }
                     if config_changed {
