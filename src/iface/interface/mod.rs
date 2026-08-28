@@ -477,10 +477,18 @@ impl Interface {
     /// and [`poll_ingress_single()`](Self::poll_ingress_single).
     /// This allows you to insert yields or process other events between processing
     /// individual ingress packets.
-    pub fn poll(
+    //
+    // The contract surfaces here, at the public entry point, which is where it belongs: only
+    // the consumer knows whether their `Device` panics. xarxa's guarantee is conditional on
+    // it and says so.
+    #[flux_rs::no_panic_if(<D as Device>::device_no_panic()
+            && <<D as Device>::RxToken<_> as RxToken>::rx_no_panic()
+            && <<D as Device>::TxToken<_> as TxToken>::tx_no_panic())]
+    #[flux_rs::sig(fn(&mut Self, Instant, &mut D, &mut SocketSet) -> PollResult)]
+    pub fn poll<D: Device + ?Sized>(
         &mut self,
         timestamp: Instant,
-        device: &mut (impl Device + ?Sized),
+        device: &mut D,
         sockets: &mut SocketSet<'_>,
     ) -> PollResult {
         self.inner.now = timestamp;
@@ -555,10 +563,15 @@ impl Interface {
     /// - whether the state of any socket might have changed.
     ///
     /// Since it processes at most one packet, this is guaranteed to always perform a bounded amount of work.
-    pub fn poll_ingress_single(
+    // See [`Self::poll`].
+    #[flux_rs::no_panic_if(<D as Device>::device_no_panic()
+            && <<D as Device>::RxToken<_> as RxToken>::rx_no_panic()
+            && <<D as Device>::TxToken<_> as TxToken>::tx_no_panic())]
+    #[flux_rs::sig(fn(&mut Self, Instant, &mut D, &mut SocketSet) -> PollIngressSingleResult)]
+    pub fn poll_ingress_single<D: Device + ?Sized>(
         &mut self,
         timestamp: Instant,
-        device: &mut (impl Device + ?Sized),
+        device: &mut D,
         sockets: &mut SocketSet<'_>,
     ) -> PollIngressSingleResult {
         self.inner.now = timestamp;
@@ -721,9 +734,13 @@ impl Interface {
     }
 
     #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
-    fn socket_egress(
+    #[flux_rs::no_panic_if(<D as Device>::device_no_panic()
+            && <<D as Device>::RxToken<_> as RxToken>::rx_no_panic()
+            && <<D as Device>::TxToken<_> as TxToken>::tx_no_panic())]
+    #[flux_rs::sig(fn(&mut Self, &mut D, &mut SocketSet) -> PollResult)]
+    fn socket_egress<D: Device + ?Sized>(
         &mut self,
-        device: &mut (impl Device + ?Sized),
+        device: &mut D,
         sockets: &mut SocketSet<'_>,
     ) -> PollResult {
         let _caps = Self::device_caps(device);
