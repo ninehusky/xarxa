@@ -171,7 +171,10 @@ impl AddressExt for Address {
     }
 
     fn is_link_local(&self) -> bool {
-        self.octets()[0..8] == [0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+        crate::flux_util::bytes_eq(
+            &self.octets()[0..8],
+            &[0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        )
     }
 
     #[flux_rs::no_panic_if(m <= 128)]
@@ -222,10 +225,12 @@ impl AddressExt for Address {
     }
 
     fn is_solicited_node_multicast(&self) -> bool {
-        self.octets()[0..13]
-            == [
+        crate::flux_util::bytes_eq(
+            &self.octets()[0..13],
+            &[
                 0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xFF,
-            ]
+            ],
+        )
     }
 
     #[flux_rs::trusted(yes, reason = "counts the leading one-bits of a fixed-width address, so the result cannot exceed its width; the loop bound is not something flux follows")]
@@ -327,7 +332,10 @@ impl Cidr {
             return true;
         }
 
-        self.address.mask(self.prefix_len) == addr.mask(self.prefix_len)
+        crate::flux_util::bytes_eq(
+            &self.address.mask(self.prefix_len),
+            &addr.mask(self.prefix_len),
+        )
     }
 
     /// Query whether the subnetwork described by this IPV6 CIDR block contains

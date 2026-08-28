@@ -165,7 +165,10 @@ impl InterfaceInner {
                 IpCidr::Ipv6(cidr) if !(cidr.address() == Ipv6Address::LOCALHOST) => {
                     // Take the lower order 24 bits of the IPv6 address and
                     // append those bits to FF02:0:0:0:0:1:FF00::/104.
-                    addr.octets()[14..] == cidr.address().octets()[14..]
+                    crate::flux_util::bytes_eq(
+                        &addr.octets()[14..],
+                        &cidr.address().octets()[14..],
+                    )
                 }
                 _ => false,
             }

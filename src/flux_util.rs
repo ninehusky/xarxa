@@ -140,3 +140,26 @@ pub fn first_nul(data: &[u8]) -> usize {
 pub const fn usize_to_i32(n: usize) -> i32 {
     n as i32
 }
+
+/// `a == b` for byte slices, open-coded.
+///
+/// `[T] == [U; N]` goes through a generic `T: PartialEq<U>`, so flux reaches it as
+/// `MightPanic(Transitive)` and every comparison of two byte arrays owes a proof no caller can
+/// construct. Comparing bytes cannot fail; restricting to `[u8]` is what makes that statable,
+/// the same device as [`byte_len`]. The body is exactly what `PartialEq for [T]` does: compare
+/// the lengths, then the elements.
+#[flux_rs::no_panic]
+#[flux_rs::sig(fn(&[u8][@n], &[u8][@m]) -> bool)]
+pub fn bytes_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
