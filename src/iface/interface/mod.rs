@@ -981,13 +981,12 @@ impl InterfaceInner {
     /// downstream callers rather than discharged here.
     #[flux_rs::sig(fn(&HardwareAddress[true]))]
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
-    #[allow(unsafe_code)]
     #[flux_rs::trusted(no, reason = "discharges the assert(false) licensing unreachable_unchecked")]
     fn check_hardware_addr(addr: &HardwareAddress) {
         if !addr.is_unicast() {
             // If the assert never fires, Flux has shown this branch unreachable.
             flux_rs::assert(false);
-            unsafe { core::hint::unreachable_unchecked() }
+            panic!("Hardware address {addr} is not unicast")
         }
     }
 

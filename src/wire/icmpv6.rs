@@ -586,7 +586,6 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// with [set_msg_type].
     ///
     /// [set_msg_type]: #method.set_msg_type
-    #[allow(unsafe_code)]
     #[flux_rs::trusted(no, reason = "discharges the assert(false) licensing unreachable_unchecked")]
     // The buffer bound is per-arm: MLD query also clears `SQRV` at octet 24, MLD report only
     // reaches `RECORD_RESV.end`, and the NDISC types only reach `UNUSED.end`.
@@ -634,7 +633,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
             | Message::Unknown(_) => {
                 // If this assert never fires, Flux has shown this branch unreachable.
                 flux_rs::assert(false);
-                unsafe { core::hint::unreachable_unchecked() }
+                panic!("Message type does not have any reserved fields.")
             }
         }
     }

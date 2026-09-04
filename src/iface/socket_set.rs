@@ -32,20 +32,18 @@ pub(crate) struct Item<'a> {
 #[flux_rs::trusted(yes, reason = "unchecked indexing; `i < n` is discharged at the call site")]
 #[flux_rs::sig(fn(&[T][@n], i: usize) -> &T requires i < n)]
 #[flux_rs::no_panic]
-#[allow(unsafe_code)]
 fn slot<T>(slots: &[T], i: usize) -> &T {
     // SAFETY: `i < n` is a precondition flux discharges at every call site.
-    unsafe { slots.get_unchecked(i) }
+    &slots[i]
 }
 
 /// Mutable counterpart of [`slot`].
 #[flux_rs::trusted(yes, reason = "unchecked indexing; `i < n` is discharged at the call site")]
 #[flux_rs::sig(fn(&mut [T][@n], i: usize) -> &mut T requires i < n)]
 #[flux_rs::no_panic]
-#[allow(unsafe_code)]
 fn slot_mut<T>(slots: &mut [T], i: usize) -> &mut T {
     // SAFETY: `i < n` is a precondition flux discharges at every call site.
-    unsafe { slots.get_unchecked_mut(i) }
+    &mut slots[i]
 }
 
 /// A handle, identifying a socket in an Interface.

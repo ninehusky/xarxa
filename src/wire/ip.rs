@@ -738,7 +738,6 @@ impl Repr {
     /// Panics if `src_addr` and `dst_addr` are different IP version.
     // The mismatched arms are discharged by Flux (see the `assert(false)` below), so the
     // unchecked form is a-okay here.
-    #[allow(unsafe_code)]
     #[flux_rs::trusted(no, reason = "discharges the assert(false) licensing unreachable_unchecked")]
     // `p <= 65535` is `Ipv4Repr`/`Ipv6Repr`'s own invariant: the enclosing header's length
     // field is sixteen bits, so a longer payload cannot be represented on the wire. Stating it
@@ -769,7 +768,7 @@ impl Repr {
                     // If the bottom assert never fires, then Flux has determined
                     // the panic unreachable.
                     flux_rs::assert(false);
-                    unsafe { core::hint::unreachable_unchecked() }
+                    panic!("IP version mismatch: src={src_addr:?} dst={dst_addr:?}")
                 },
             },
             #[cfg(feature = "proto-ipv6")]
@@ -785,7 +784,7 @@ impl Repr {
                 _ => {
                     // Follows the same reasoning as above.
                     flux_rs::assert(false);
-                    unsafe { core::hint::unreachable_unchecked() }
+                    panic!("IP version mismatch: src={src_addr:?} dst={dst_addr:?}")
                 }
             },
         }

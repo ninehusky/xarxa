@@ -128,11 +128,10 @@ impl AsRef<[u8]> for Buf<'_> {
     #[flux_rs::trusted(yes, reason = "opaque: `offset <= inner.len()` holds by construction")]
     #[flux_rs::no_panic]
     #[flux_rs::sig(fn(self: &Self[@source]) -> &[u8][Self::as_ref_reft(source)])]
-    #[allow(unsafe_code)]
     fn as_ref(&self) -> &[u8] {
         // SAFETY: `offset <= inner.len()` is a *closed-module invariant*, not a caller
         // obligation -- see the module docs above for the enumeration that establishes it.
-        unsafe { self.inner.get_unchecked(self.offset..) }
+        &self.inner[self.offset..]
     }
 }
 
@@ -145,11 +144,10 @@ impl AsMut<[u8]> for Buf<'_> {
     #[flux_rs::trusted(yes, reason = "opaque: `offset <= inner.len()` holds by construction")]
     #[flux_rs::no_panic]
     #[flux_rs::sig(fn(self: &mut Self[@source]) -> &mut [u8][Self::as_mut_reft(source)])]
-    #[allow(unsafe_code)]
     fn as_mut(&mut self) -> &mut [u8] {
         // SAFETY: `offset <= inner.len()` is a *closed-module invariant*, not a caller
         // obligation -- see the module docs above for the enumeration that establishes it.
-        unsafe { self.inner.get_unchecked_mut(self.offset..) }
+        &mut self.inner[self.offset..]
     }
 }
 
@@ -278,7 +276,6 @@ pub fn write_u24_at(data: &mut [u8], at: usize, value: u32) {
 #[flux_rs::trusted(yes, reason = "sub-slice length is not recoverable; see flux-rs/flux#1714")]
 #[flux_rs::sig(fn(&mut [u8][@n], at: usize, octets: &[u8; 4]) requires at + 4 <= n)]
 #[flux_rs::no_panic]
-#[allow(unsafe_code)]
 pub fn write_octets4_at(data: &mut [u8], at: usize, octets: &[u8; 4]) {
     // SAFETY: `at + 4 <= n` is a precondition, discharged by the caller and checked by Flux at
     // every call site, so `data[at..at + 4]` is in bounds; it also rules out the `at + 4`
@@ -303,7 +300,7 @@ pub fn write_octets4_at(data: &mut [u8], at: usize, octets: &[u8; 4]) {
     // corrupts adjacent memory, and Miri reports the offset). That is the stated interface, not a
     // defect -- but it is why the bound belongs in the signature where a consumer's checker can
     // see it, and why widening these setters' visibility without the `requires` would be wrong.
-    unsafe { core::ptr::copy_nonoverlapping(octets.as_ptr(), data.as_mut_ptr().add(at), 4) }
+    data[at..at + 4].copy_from_slice(octets)
 }
 
 /// Copy a 16-octet address into `data` at `at`. See [`read_u16_at`] for why this is trusted.
