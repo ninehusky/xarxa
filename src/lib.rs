@@ -1,5 +1,7 @@
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
-#![deny(unsafe_code)]
+// Measurement arm: the panic->UB conversion pass emits inline `unsafe`.
+// Lint-only change, no codegen effect.
+#![allow(unsafe_code)]
 // Only under `cargo flux`, which injects `--cfg=flux` and pins its own nightly. Needed so
 // `flux_specs` can name `PointeeSized` when mirroring core's `AsMut for &mut T` impl, whose
 // generics an extern spec must match exactly. Stable and MSRV builds never see this.

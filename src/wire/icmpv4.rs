@@ -379,7 +379,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     #[inline]
     pub fn set_msg_type(&mut self, value: Message) {
         let data = self.buffer.as_mut();
-        data[0] = value.into() // field::TYPE
+        unsafe { *data.get_unchecked_mut(0) = value.into(); } // field::TYPE
     }
 
     /// Set the message code field.
@@ -389,7 +389,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     #[inline]
     pub fn set_msg_code(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[1] = value // field::CODE
+        unsafe { *data.get_unchecked_mut(1) = value; } // field::CODE
     }
 
     /// Set the checksum field.
@@ -475,7 +475,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     pub fn data_mut(&mut self) -> &mut [u8] {
         let range = self.header_len()..;
         let data = self.buffer.as_mut();
-        &mut data[range]
+        unsafe { data.get_unchecked_mut(range) }
     }
 }
 
@@ -706,7 +706,7 @@ impl<'a> Repr<'a> {
                 packet.set_echo_seq_no(seq_no);
                 let window = packet.data_mut();
                 let data_len = cmp::min(window.len(), data.len());
-                window[..data_len].copy_from_slice(&data[..data_len])
+                (unsafe { window.get_unchecked_mut(..data_len) }).copy_from_slice((unsafe { data.get_unchecked(..data_len) }))
             }
 
             Repr::EchoReply {
@@ -720,7 +720,7 @@ impl<'a> Repr<'a> {
                 packet.set_echo_seq_no(seq_no);
                 let window = packet.data_mut();
                 let data_len = cmp::min(window.len(), data.len());
-                window[..data_len].copy_from_slice(&data[..data_len])
+                (unsafe { window.get_unchecked_mut(..data_len) }).copy_from_slice((unsafe { data.get_unchecked(..data_len) }))
             }
 
             Repr::DstUnreachable {

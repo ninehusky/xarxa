@@ -300,7 +300,7 @@ impl InterfaceInner {
                     reason: Icmpv6ParamProblem::UnrecognizedOption,
                     pointer: ipv6_repr.buffer_len() as u32,
                     header: ipv6_repr,
-                    data: &ip_payload[0..payload_len],
+                    data: (unsafe { ip_payload.get_unchecked(0..payload_len) }),
                 },
             )
         };
@@ -349,7 +349,7 @@ impl InterfaceInner {
         // returns an unindexed slice, so this function's `r <= n` postcondition is lost.
         HopByHopResponse::Continue(
             ext_repr.next_header,
-            &ip_payload[ext_repr.header_len() + ext_repr.data.len()..],
+            unsafe { ip_payload.get_unchecked(ext_repr.header_len() + ext_repr.data.len()..) },
         )
     }
 

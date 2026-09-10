@@ -437,7 +437,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[flux_rs::no_panic]
     pub fn dscp(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[field::DSCP_ECN] >> 2
+        (unsafe { *data.get_unchecked(field::DSCP_ECN) }) >> 2
     }
 
     /// Return the Explicit Congestion Notification field.
@@ -448,7 +448,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[flux_rs::no_panic]
     pub fn ecn(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[field::DSCP_ECN] & 0x03
+        (unsafe { *data.get_unchecked(field::DSCP_ECN) }) & 0x03
     }
 
     /// The u16 at offset 2, with its bound proved and no claim about its value.
@@ -653,7 +653,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     #[flux_rs::no_panic]
     pub fn set_version(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::VER_IHL] = (data[field::VER_IHL] & !0xf0) | (value << 4);
+        unsafe { *data.get_unchecked_mut(field::VER_IHL) = ((unsafe { *data.get_unchecked(field::VER_IHL) }) & !0xf0) | (value << 4); }
     }
 
     /// Set the header length, in octets.
@@ -673,7 +673,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     #[flux_rs::no_panic]
     pub fn set_header_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::VER_IHL] = (data[field::VER_IHL] & !0x0f) | ((value / 4) & 0x0f);
+        unsafe { *data.get_unchecked_mut(field::VER_IHL) = (data[field::VER_IHL] & !0x0f) | ((value / 4) & 0x0f); }
         self.ghlen = Ghost::unknown();
     }
 
@@ -687,7 +687,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     #[flux_rs::no_panic]
     pub fn set_dscp(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::DSCP_ECN] = (data[field::DSCP_ECN] & !0xfc) | (value << 2)
+        unsafe { *data.get_unchecked_mut(field::DSCP_ECN) = ((unsafe { *data.get_unchecked(field::DSCP_ECN) }) & !0xfc) | (value << 2); }
     }
 
     /// Set the Explicit Congestion Notification field.
@@ -700,7 +700,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     #[flux_rs::no_panic]
     pub fn set_ecn(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::DSCP_ECN] = (data[field::DSCP_ECN] & !0x03) | (value & 0x03)
+        unsafe { *data.get_unchecked_mut(field::DSCP_ECN) = (data[field::DSCP_ECN] & !0x03) | (value & 0x03); }
     }
 
     /// Set the total length field.
@@ -810,7 +810,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     #[flux_rs::no_panic]
     pub fn set_hop_limit(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::TTL] = value
+        unsafe { *data.get_unchecked_mut(field::TTL) = value; }
     }
 
     /// Set the next header (protocol) field.
@@ -824,7 +824,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     #[flux_rs::no_panic]
     pub fn set_next_header(&mut self, value: Protocol) {
         let data = self.buffer.as_mut();
-        data[field::PROTOCOL] = value.into()
+        unsafe { *data.get_unchecked_mut(field::PROTOCOL) = value.into(); }
     }
 
     /// Set the header checksum field.

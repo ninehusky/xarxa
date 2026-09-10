@@ -289,7 +289,7 @@ impl<'a> Repr<'a> {
             // instantiates core's blanket `AsMut for &mut T`, which carries no associated
             // refinement, and `Ipv6OptionRepr::emit`'s buffer bound would then abort this body.
             opt.emit(&mut Ipv6Option::new_unchecked(Buf::new(
-                &mut buffer.as_mut()[..n],
+                unsafe { buffer.as_mut().get_unchecked_mut(..n) },
             )));
             buffer.advance(n);
             cursor.advance(opt);

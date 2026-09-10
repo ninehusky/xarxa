@@ -342,7 +342,7 @@ pub fn sub(data: &[u8], at: usize, n: usize) -> &[u8] {
 #[flux_rs::sig(fn(&[u8][@len], at: usize) -> &[u8] requires at <= len)]
 #[flux_rs::no_panic]
 pub fn tail(data: &[u8], at: usize) -> &[u8] {
-    &data[at..]
+    (unsafe { data.get_unchecked(at..) })
 }
 
 /// Copy `src` into the `len`-octet window of `data` at `at`. See [`read_u16_at`] for why the

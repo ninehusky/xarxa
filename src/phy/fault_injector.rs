@@ -257,7 +257,7 @@ impl<D: Device> Device for FaultInjector<D> {
 
         if self.state.maybe(self.config.corrupt_pct) {
             net_trace!("rx: randomly corrupting a packet");
-            self.state.corrupt(&mut buf[..]);
+            self.state.corrupt((unsafe { buf.get_unchecked_mut(..) }));
         }
 
         let rx = RxToken { buf, meta: rx_meta };

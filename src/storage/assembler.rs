@@ -173,7 +173,7 @@ impl Assembler {
         debug_assert!(self.contigs[at].has_data());
 
         // `while` rather than `for i in at..N - 1`: flux does not bound a `for` loop's
-        // induction variable, so `contigs[i]` and `contigs[i + 1]` were unproved. The condition
+        // induction variable, so `(unsafe { *contigs.get_unchecked(i) })` and `(unsafe { *contigs.get_unchecked(i + 1) })` were unproved. The condition
         // of a `while` it does track. Same range, same iterations.
         let mut i = at;
         while i < ASSEMBLER_MAX_SEGMENT_COUNT - 1 {

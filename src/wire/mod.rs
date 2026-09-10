@@ -669,7 +669,7 @@ impl RawHardwareAddress {
     #[flux_rs::no_panic]
     pub fn as_bytes(&self) -> &[u8] {
         let src: &[u8] = &self.data;
-        &src[..self.len as usize]
+        (unsafe { src.get_unchecked(..self.len as usize) })
     }
 
     #[flux_rs::sig(fn(&RawHardwareAddress[@a]) -> usize[a.len])]

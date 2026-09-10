@@ -317,7 +317,7 @@ impl<T: AsRef<[u8]>> NdiscOption<T> {
     #[inline]
     pub fn option_type(&self) -> Type {
         let data = self.buffer.as_ref();
-        Type::from(data[field::TYPE])
+        Type::from((unsafe { *data.get_unchecked(field::TYPE) }))
     }
 
     /// Read the length octet, with no claim about the ghost.
@@ -374,7 +374,7 @@ impl<T: AsRef<[u8]>> NdiscOption<T> {
         // `RawHardwareAddress::from_bytes` requires stays visible. Same value.
         let len = core::cmp::min(MAX_HARDWARE_ADDRESS_LEN, self.data_len() as usize * 8 - 2);
         let data = self.buffer.as_ref();
-        RawHardwareAddress::from_bytes(&data[2..len + 2])
+        RawHardwareAddress::from_bytes((unsafe { data.get_unchecked(2..len + 2) }))
     }
 }
 
@@ -563,7 +563,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> NdiscOption<T> {
     #[inline]
     pub fn set_link_layer_addr(&mut self, addr: RawHardwareAddress) {
         let data = self.buffer.as_mut();
-        data[2..2 + addr.len()].copy_from_slice(addr.as_bytes())
+        (unsafe { data.get_unchecked_mut(2..2 + addr.len()) }).copy_from_slice(addr.as_bytes())
     }
 }
 
@@ -857,7 +857,7 @@ impl<'a> Repr<'a> {
                     // 40 is `ip_repr.buffer_len()`, which is `IPV6_HEADER_LEN` for every IPv6
                     // packet -- that header is fixed width -- spelled as the literal because
                     // `Ipv6Repr::buffer_len` is a `const fn` with no signature.
-                    let payload = &redirected_packet[40..];
+                    let payload = (unsafe { redirected_packet.get_unchecked(40..) });
                     // `Ipv6Packet::check_len` tested this and returns `Result<()>`, so what it
                     // established did not survive the call; by the time this `Err` is reachable
                     // `new_checked` above has already returned the same one. Rung 2 on
@@ -873,7 +873,7 @@ impl<'a> Repr<'a> {
 
                     Ok(Repr::RedirectedHeader(RedirectedHeader {
                         header: ip_repr,
-                        data: &payload[..payload_len],
+                        data: (unsafe { payload.get_unchecked(..payload_len) }),
                     }))
                 }
             }

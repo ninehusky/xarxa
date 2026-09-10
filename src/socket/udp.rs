@@ -546,7 +546,7 @@ impl<'a> Socket<'a> {
         }
 
         let length = min(data.len(), buffer.len());
-        data[..length].copy_from_slice(&buffer[..length]);
+        (unsafe { data.get_unchecked_mut(..length) }).copy_from_slice((unsafe { buffer.get_unchecked(..length) }));
         Ok((length, endpoint))
     }
 
@@ -589,7 +589,7 @@ impl<'a> Socket<'a> {
         }
 
         let length = min(data.len(), buffer.len());
-        data[..length].copy_from_slice(&buffer[..length]);
+        (unsafe { data.get_unchecked_mut(..length) }).copy_from_slice((unsafe { buffer.get_unchecked(..length) }));
         Ok((length, endpoint))
     }
 

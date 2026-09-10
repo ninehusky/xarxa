@@ -1903,7 +1903,7 @@ impl<'a> Repr<'a> {
         }
         packet.set_urgent_at(0);
         let mut window = packet.payload_buf();
-        window.as_mut()[..self.payload.len()].copy_from_slice(self.payload);
+        unsafe { window.as_mut().get_unchecked_mut(..self.payload.len()) }.copy_from_slice(self.payload);
 
         if checksum_caps.tcp.tx() {
             packet.fill_checksum(src_addr, dst_addr)
