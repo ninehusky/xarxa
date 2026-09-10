@@ -15,6 +15,21 @@ license = "0BSD"
 [package.metadata.flux]
 enabled = true
 
+# `#[derive(defmt::Format)]` raises `possible out-of-bounds access` inside defmt's own
+# formatting machinery, and one unpaid obligation here aborts the build before xarxa is
+# ever reached -- which is why the firmware configuration had never been checked end to
+# end. Trusting this crate cannot affect any xarxa result: it does not reference `xarxa::`
+# at all, so nothing here can sit on a chain above an xarxa panic site.
+#
+# `include_trusted = ["def:..."]` would be the precise tool and does not work on these:
+# the items are macro-expanded, and three patterns (`def:format`, `def:Format`,
+# `def:CHECK`, plus `include_trusted_impl`) all left the six errors standing.
+#
+# The controls in `spec_is_live` carry `trusted(no)` so they stay CHECKED. A blanket
+# `default_trusted` would otherwise silence the tripwire whose entire purpose is to fail
+# loudly if the `consume` closure refinement regresses.
+default_trusted = true
+
 # `cfg(flux)` is injected by `cargo flux`; `cfg(flux_negative_control)` is set by
 # hand to build the negative control in `spec_is_live`. Neither is ever set by a
 # normal `cargo build`.
