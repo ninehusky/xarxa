@@ -719,7 +719,7 @@ where
     // length, since `Buf::new` has offset 0.
     let mut window = packet.payload_buf();
     let data = window.as_mut();
-    let mut opt_pkt = NdiscOption::new_unchecked(crate::wire::Buf::new(unsafe { data.get_unchecked_mut(offset..) }));
+    let mut opt_pkt = NdiscOption::new_unchecked(crate::wire::Buf::new(&mut data[offset..]));
     opt.emit(&mut opt_pkt);
 }
 
