@@ -38,3 +38,31 @@ impl i32 {
                                          else { num + rhs }])]
     fn wrapping_add(self, rhs: i32) -> i32;
 }
+
+// Bit-counting and byte-order intrinsics. Each lowers to a single machine instruction or a
+// byte shuffle: no branch, no failure mode. Flux reaches them as `MightPanic(Transitive)`
+// and so charges every caller for a proof that cannot be written. `no_panic` with no `spec`
+// leaves the *value* havoced, which is what the callers already assume.
+#[extern_spec(core::num)]
+impl u16 {
+    #[no_panic]
+    const fn to_be_bytes(self) -> [u8; 2];
+    #[no_panic]
+    const fn from_be_bytes(bytes: [u8; 2]) -> u16;
+}
+
+#[extern_spec(core::num)]
+impl u32 {
+    #[no_panic]
+    const fn count_ones(self) -> u32;
+    #[no_panic]
+    const fn count_zeros(self) -> u32;
+    #[no_panic]
+    const fn leading_zeros(self) -> u32;
+    #[no_panic]
+    const fn trailing_zeros(self) -> u32;
+    #[no_panic]
+    const fn to_be_bytes(self) -> [u8; 4];
+    #[no_panic]
+    const fn from_be_bytes(bytes: [u8; 4]) -> u32;
+}
