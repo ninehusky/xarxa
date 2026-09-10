@@ -112,7 +112,7 @@ impl<'a> SocketSet<'a> {
         }
 
         match &mut self.sockets {
-            ManagedSlice::Borrowed(_) => panic!("adding a socket to a full SocketSet"),
+            ManagedSlice::Borrowed(_) => unsafe { core::hint::unreachable_unchecked() },
             #[cfg(feature = "alloc")]
             ManagedSlice::Owned(sockets) => {
                 sockets.push(SocketStorage { inner: None });
@@ -139,7 +139,7 @@ impl<'a> SocketSet<'a> {
             Some(item) => {
                 T::downcast(&item.socket).expect("handle refers to a socket of a wrong type")
             }
-            None => panic!("handle does not refer to a valid socket"),
+            None => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 
@@ -156,7 +156,7 @@ impl<'a> SocketSet<'a> {
         match slot_mut(&mut self.sockets, handle.0).inner.as_mut() {
             Some(item) => T::downcast_mut(&mut item.socket)
                 .expect("handle refers to a socket of a wrong type"),
-            None => panic!("handle does not refer to a valid socket"),
+            None => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 
@@ -173,7 +173,7 @@ impl<'a> SocketSet<'a> {
         net_trace!("[{}]: removing", handle.0);
         match slot_mut(&mut self.sockets, handle.0).inner.take() {
             Some(item) => item.socket,
-            None => panic!("handle does not refer to a valid socket"),
+            None => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 

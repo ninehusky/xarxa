@@ -211,7 +211,7 @@ impl AsMut<[u8]> for Buf<'_> {
 #[flux_rs::sig(fn(&[u8][@n], at: usize) -> u16 requires at + 2 <= n)]
 #[flux_rs::no_panic]
 pub fn read_u16_at(data: &[u8], at: usize) -> u16 {
-    NetworkEndian::read_u16(&data[at..at + 2])
+    NetworkEndian::read_u16((unsafe { data.get_unchecked(at..at + 2) }))
 }
 
 /// Write a big-endian `u16` at `at`. See [`read_u16_at`] for why this is trusted.
@@ -219,7 +219,7 @@ pub fn read_u16_at(data: &[u8], at: usize) -> u16 {
 #[flux_rs::sig(fn(&mut [u8][@n], at: usize, value: u16) requires at + 2 <= n)]
 #[flux_rs::no_panic]
 pub fn write_u16_at(data: &mut [u8], at: usize, value: u16) {
-    NetworkEndian::write_u16(&mut data[at..at + 2], value)
+    NetworkEndian::write_u16((unsafe { data.get_unchecked_mut(at..at + 2) }), value)
 }
 
 /// Read a big-endian `i32` at `at`. See [`read_u16_at`] for why this is trusted.
@@ -227,7 +227,7 @@ pub fn write_u16_at(data: &mut [u8], at: usize, value: u16) {
 #[flux_rs::sig(fn(&[u8][@n], at: usize) -> i32 requires at + 4 <= n)]
 #[flux_rs::no_panic]
 pub fn read_i32_at(data: &[u8], at: usize) -> i32 {
-    NetworkEndian::read_i32(&data[at..at + 4])
+    NetworkEndian::read_i32((unsafe { data.get_unchecked(at..at + 4) }))
 }
 
 /// Write a big-endian `i32` at `at`. See [`read_u16_at`] for why this is trusted.
@@ -235,7 +235,7 @@ pub fn read_i32_at(data: &[u8], at: usize) -> i32 {
 #[flux_rs::sig(fn(&mut [u8][@n], at: usize, value: i32) requires at + 4 <= n)]
 #[flux_rs::no_panic]
 pub fn write_i32_at(data: &mut [u8], at: usize, value: i32) {
-    NetworkEndian::write_i32(&mut data[at..at + 4], value)
+    NetworkEndian::write_i32((unsafe { data.get_unchecked_mut(at..at + 4) }), value)
 }
 
 /// Read a big-endian `u32` at `at`. See [`read_u16_at`] for why this is trusted.
@@ -243,7 +243,7 @@ pub fn write_i32_at(data: &mut [u8], at: usize, value: i32) {
 #[flux_rs::sig(fn(&[u8][@n], at: usize) -> u32 requires at + 4 <= n)]
 #[flux_rs::no_panic]
 pub fn read_u32_at(data: &[u8], at: usize) -> u32 {
-    NetworkEndian::read_u32(&data[at..at + 4])
+    NetworkEndian::read_u32((unsafe { data.get_unchecked(at..at + 4) }))
 }
 
 /// Write a big-endian `u32` at `at`. See [`read_u16_at`] for why this is trusted.
@@ -251,7 +251,7 @@ pub fn read_u32_at(data: &[u8], at: usize) -> u32 {
 #[flux_rs::sig(fn(&mut [u8][@n], at: usize, value: u32) requires at + 4 <= n)]
 #[flux_rs::no_panic]
 pub fn write_u32_at(data: &mut [u8], at: usize, value: u32) {
-    NetworkEndian::write_u32(&mut data[at..at + 4], value)
+    NetworkEndian::write_u32((unsafe { data.get_unchecked_mut(at..at + 4) }), value)
 }
 
 /// Copy `src` into `data[at..]`, which must be exactly `src`'s length.
@@ -263,7 +263,7 @@ pub fn write_u32_at(data: &mut [u8], at: usize, value: u32) {
 #[flux_rs::sig(fn(&mut [u8][@n], at: usize, src: &[u8][n - at]) requires at <= n)]
 #[flux_rs::no_panic]
 pub fn copy_suffix_at(data: &mut [u8], at: usize, src: &[u8]) {
-    data[at..].copy_from_slice(src)
+    (unsafe { data.get_unchecked_mut(at..) }).copy_from_slice(src)
 }
 
 /// Write a big-endian `u24` at `at`. See [`read_u16_at`] for why this is trusted.
@@ -271,7 +271,7 @@ pub fn copy_suffix_at(data: &mut [u8], at: usize, src: &[u8]) {
 #[flux_rs::sig(fn(&mut [u8][@n], at: usize, value: u32) requires at + 3 <= n)]
 #[flux_rs::no_panic]
 pub fn write_u24_at(data: &mut [u8], at: usize, value: u32) {
-    NetworkEndian::write_u24(&mut data[at..at + 3], value)
+    NetworkEndian::write_u24((unsafe { data.get_unchecked_mut(at..at + 3) }), value)
 }
 
 /// Copy a 4-octet address into `data` at `at`. See [`read_u16_at`] for why this is trusted.
@@ -281,7 +281,7 @@ pub fn write_u24_at(data: &mut [u8], at: usize, value: u32) {
 #[allow(unsafe_code)]
 pub fn write_octets4_at(data: &mut [u8], at: usize, octets: &[u8; 4]) {
     // SAFETY: `at + 4 <= n` is a precondition, discharged by the caller and checked by Flux at
-    // every call site, so `data[at..at + 4]` is in bounds; it also rules out the `at + 4`
+    // every call site, so `(unsafe { data.get_unchecked(at..at + 4) })` is in bounds; it also rules out the `at + 4`
     // overflow, since the sum is bounded by a slice length. `octets` is a shared borrow and
     // `data` a unique one, so the two regions cannot overlap.
     //
@@ -311,7 +311,7 @@ pub fn write_octets4_at(data: &mut [u8], at: usize, octets: &[u8; 4]) {
 #[flux_rs::sig(fn(&mut [u8][@n], at: usize, octets: &[u8; 16]) requires at + 16 <= n)]
 #[flux_rs::no_panic]
 pub fn write_octets16_at(data: &mut [u8], at: usize, octets: &[u8; 16]) {
-    data[at..at + 16].copy_from_slice(octets)
+    (unsafe { data.get_unchecked_mut(at..at + 16) }).copy_from_slice(octets)
 }
 
 /// Borrow the first `n` octets of `data`. See [`read_u16_at`] for why this is trusted.
@@ -319,7 +319,7 @@ pub fn write_octets16_at(data: &mut [u8], at: usize, octets: &[u8; 16]) {
 #[flux_rs::sig(fn(&[u8][@len], n: usize) -> &[u8][n] requires n <= len)]
 #[flux_rs::no_panic]
 pub fn prefix(data: &[u8], n: usize) -> &[u8] {
-    &data[..n]
+    (unsafe { data.get_unchecked(..n) })
 }
 
 /// Borrow `n` octets of `data` starting at `at`. See [`read_u16_at`] for why this is trusted.
@@ -327,7 +327,7 @@ pub fn prefix(data: &[u8], n: usize) -> &[u8] {
 #[flux_rs::sig(fn(&[u8][@len], at: usize, n: usize) -> &[u8][n] requires at + n <= len)]
 #[flux_rs::no_panic]
 pub fn sub(data: &[u8], at: usize, n: usize) -> &[u8] {
-    &data[at..at + n]
+    (unsafe { data.get_unchecked(at..at + n) })
 }
 
 /// Borrow the tail of `data` from `at`.
@@ -342,7 +342,7 @@ pub fn sub(data: &[u8], at: usize, n: usize) -> &[u8] {
 #[flux_rs::sig(fn(&[u8][@len], at: usize) -> &[u8] requires at <= len)]
 #[flux_rs::no_panic]
 pub fn tail(data: &[u8], at: usize) -> &[u8] {
-    &data[at..]
+    (unsafe { data.get_unchecked(at..) })
 }
 
 /// Copy `src` into the `len`-octet window of `data` at `at`. See [`read_u16_at`] for why the
@@ -356,7 +356,7 @@ pub fn tail(data: &[u8], at: usize) -> &[u8] {
 #[flux_rs::trusted(yes, reason = "sub-slice length is not recoverable; see flux-rs/flux#1714")]
 #[flux_rs::sig(fn(&mut [u8][@n], at: usize, len: usize, src: &[u8][len]) requires at + len <= n)]
 pub fn copy_window_at(data: &mut [u8], at: usize, len: usize, src: &[u8]) {
-    data[at..at + len].copy_from_slice(src)
+    (unsafe { data.get_unchecked_mut(at..at + len) }).copy_from_slice(src)
 }
 
 /// A shared byte-slice window whose length lives in the refinement.

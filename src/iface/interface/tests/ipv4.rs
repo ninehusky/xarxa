@@ -23,13 +23,13 @@ fn test_any_ip_accept_arp(#[case] medium: Medium) {
             ]),
             target_protocol_addr: Ipv4Address::from_octets([192, 168, 1, 3]),
         };
-        let mut frame = EthernetFrame::new_unchecked(&mut buffer[..]);
+        let mut frame = EthernetFrame::new_unchecked((unsafe { buffer.get_unchecked_mut(..) }));
         ethernet_repr.emit(&mut frame);
 
-        let mut frame = ArpPacket::new_unchecked(&mut buffer[ethernet_repr.buffer_len()..]);
+        let mut frame = ArpPacket::new_unchecked((unsafe { buffer.get_unchecked_mut(ethernet_repr.buffer_len()..) }));
         frame_repr.emit(&mut frame);
 
-        &buffer[..ethernet_repr.buffer_len() + frame_repr.buffer_len()]
+        (unsafe { buffer.get_unchecked(..ethernet_repr.buffer_len() + frame_repr.buffer_len()) })
     }
 
     let (mut iface, mut sockets, _) = setup(medium);
@@ -85,7 +85,7 @@ fn test_no_icmp_no_unicast(#[case] medium: Medium) {
 
     let mut bytes = vec![0u8; 54];
     repr.emit(&mut bytes, &ChecksumCapabilities::default());
-    let frame = Ipv4Packet::new_unchecked(Ref::new(&bytes[..]));
+    let frame = Ipv4Packet::new_unchecked(Ref::new((unsafe { bytes.get_unchecked(..) })));
 
     // Ensure that the unknown protocol frame does not trigger an
     // ICMP error response when the destination address is a
@@ -123,7 +123,7 @@ fn test_icmp_error_no_payload(#[case] medium: Medium) {
 
     let mut bytes = vec![0u8; 34];
     repr.emit(&mut bytes, &ChecksumCapabilities::default());
-    let frame = Ipv4Packet::new_unchecked(Ref::new(&bytes[..]));
+    let frame = Ipv4Packet::new_unchecked(Ref::new((unsafe { bytes.get_unchecked(..) })));
 
     // The expected Destination Unreachable response due to the
     // unknown protocol
@@ -413,14 +413,14 @@ fn test_handle_ipv4_broadcast(#[case] medium: Medium) {
     let mut bytes = vec![0u8; ipv4_repr.buffer_len() + icmpv4_repr.buffer_len()];
     let frame = {
         ipv4_repr.emit(
-            &mut Ipv4Packet::new_unchecked(&mut bytes[..]),
+            &mut Ipv4Packet::new_unchecked((unsafe { bytes.get_unchecked_mut(..) })),
             &ChecksumCapabilities::default(),
         );
         icmpv4_repr.emit(
-            &mut Icmpv4Packet::new_unchecked(&mut bytes[ipv4_repr.buffer_len()..]),
+            &mut Icmpv4Packet::new_unchecked((unsafe { bytes.get_unchecked_mut(ipv4_repr.buffer_len()..) })),
             &ChecksumCapabilities::default(),
         );
-        Ipv4Packet::new_unchecked(Ref::new(&bytes[..]))
+        Ipv4Packet::new_unchecked(Ref::new((unsafe { bytes.get_unchecked(..) })))
     };
 
     // Expected ICMPv4 echo reply
@@ -659,7 +659,7 @@ fn test_icmpv4_socket(#[case] medium: Medium) {
 
     // Ensure the ident we bound to and the ident of the packet are the same.
     let mut bytes = [0xff; 24];
-    let mut packet = Icmpv4Packet::new_unchecked(&mut bytes[..]);
+    let mut packet = Icmpv4Packet::new_unchecked((unsafe { bytes.get_unchecked_mut(..) }));
     let echo_repr = Icmpv4Repr::EchoRequest {
         ident,
         seq_no,
@@ -731,9 +731,9 @@ fn test_handle_igmp(#[case] medium: Medium) {
                         Ipv4Packet::new_checked_ref(Ref::new(eth_frame.payload())).ok()?
                     }
                     #[cfg(feature = "medium-ip")]
-                    Medium::Ip => Ipv4Packet::new_checked_ref(Ref::new(&frame[..])).ok()?,
+                    Medium::Ip => Ipv4Packet::new_checked_ref(Ref::new((unsafe { frame.get_unchecked(..) }))).ok()?,
                     #[cfg(feature = "medium-ieee802154")]
-                    Medium::Ieee802154 => todo!(),
+                    Medium::Ieee802154 => unsafe { core::hint::unreachable_unchecked() },
                 };
                 let ipv4_repr = Ipv4Repr::parse_ref(&ipv4_packet, checksum_caps).ok()?;
                 let ip_payload = ipv4_packet.payload();
@@ -825,7 +825,7 @@ fn test_packet_len(#[case] medium: Medium) {
             net_debug!("TxToken get len: {}", len);
             assert!(len <= self.max_transmission_unit);
             let mut junk = [0; 1536];
-            f(&mut junk[..len])
+            f((unsafe { junk.get_unchecked_mut(..len) }))
         }
     }
 
@@ -940,14 +940,14 @@ fn test_raw_socket_no_reply_udp(#[case] medium: Medium) {
             &ChecksumCapabilities::default(),
         );
         udp_repr.emit(
-            &mut UdpPacket::new_unchecked(&mut bytes[ipv4_repr.buffer_len()..]),
+            &mut UdpPacket::new_unchecked((unsafe { bytes.get_unchecked_mut(ipv4_repr.buffer_len()..) })),
             &src_addr.into(),
             &dst_addr.into(),
             PAYLOAD_LEN,
             |buf| fill_slice(buf, 0x2a),
             &ChecksumCapabilities::default(),
         );
-        Ipv4Packet::new_unchecked(Ref::new(&bytes[..]))
+        Ipv4Packet::new_unchecked(Ref::new((unsafe { bytes.get_unchecked(..) })))
     };
 
     check_no_reply_raw_socket(medium, &frame);
@@ -998,12 +998,12 @@ fn test_raw_socket_no_reply_tcp(#[case] medium: Medium) {
             &ChecksumCapabilities::default(),
         );
         tcp_repr.emit(
-            &mut TcpPacket::new_unchecked(&mut bytes[ipv4_repr.buffer_len()..]),
+            &mut TcpPacket::new_unchecked((unsafe { bytes.get_unchecked_mut(ipv4_repr.buffer_len()..) })),
             &src_addr.into(),
             &dst_addr.into(),
             &ChecksumCapabilities::default(),
         );
-        Ipv4Packet::new_unchecked(Ref::new(&bytes[..]))
+        Ipv4Packet::new_unchecked(Ref::new((unsafe { bytes.get_unchecked(..) })))
     };
 
     check_no_reply_raw_socket(medium, &frame);
@@ -1060,7 +1060,7 @@ fn test_raw_socket_with_udp_socket(#[case] medium: Medium) {
         dst_port: 68,
     };
     let mut bytes = vec![0xff; udp_repr.header_len() + UDP_PAYLOAD.len()];
-    let mut packet = UdpPacket::new_unchecked(&mut bytes[..]);
+    let mut packet = UdpPacket::new_unchecked((unsafe { bytes.get_unchecked_mut(..) }));
     udp_repr.emit(
         &mut packet,
         &src_addr.into(),
@@ -1085,14 +1085,14 @@ fn test_raw_socket_with_udp_socket(#[case] medium: Medium) {
             &ChecksumCapabilities::default(),
         );
         udp_repr.emit(
-            &mut UdpPacket::new_unchecked(&mut bytes[ipv4_repr.buffer_len()..]),
+            &mut UdpPacket::new_unchecked((unsafe { bytes.get_unchecked_mut(ipv4_repr.buffer_len()..) })),
             &src_addr.into(),
             &dst_addr.into(),
             UDP_PAYLOAD.len(),
             |buf| buf.copy_from_slice(&UDP_PAYLOAD),
             &ChecksumCapabilities::default(),
         );
-        Ipv4Packet::new_unchecked(Ref::new(&bytes[..]))
+        Ipv4Packet::new_unchecked(Ref::new((unsafe { bytes.get_unchecked(..) })))
     };
 
     assert_eq!(
@@ -1183,7 +1183,7 @@ fn test_raw_socket_tx_fragmentation(#[case] medium: Medium) {
             // Buffer is something arbitrarily large.
             // We cannot capture the dynamic packet_size calculation here.
             let mut buffer = [0; 2048];
-            let result = f(&mut buffer[..len]);
+            let result = f((unsafe { buffer.get_unchecked_mut(..len) }));
             // Verify the payload size is aligned.
             let payload_size = len - IPV4_HEADER_LEN;
             assert!(payload_size.is_multiple_of(IPV4_FRAGMENT_PAYLOAD_ALIGNMENT));
@@ -1314,7 +1314,7 @@ fn test_raw_socket_rx_fragmentation(#[case] medium: Medium) {
         let header_len = repr.buffer_len();
         let mut bytes = vec![0u8; header_len + payload_len];
         {
-            let mut pkt = Ipv4Packet::new_unchecked(&mut bytes[..]);
+            let mut pkt = Ipv4Packet::new_unchecked((unsafe { bytes.get_unchecked_mut(..) }));
             repr.emit(&mut pkt, &ChecksumCapabilities::default());
             pkt.set_ident(ident);
             pkt.set_dont_frag(false);
@@ -1324,7 +1324,7 @@ fn test_raw_socket_rx_fragmentation(#[case] medium: Medium) {
             pkt.fill_checksum();
         }
         // Fill payload with a simple pattern for validation
-        for b in &mut bytes[header_len..] {
+        for b in (unsafe { bytes.get_unchecked_mut(header_len..) }) {
             *b = payload_byte;
         }
         bytes
@@ -1333,8 +1333,8 @@ fn test_raw_socket_rx_fragmentation(#[case] medium: Medium) {
     let frag1_bytes = build_fragment(first_payload_len, true, 0, 0xAA);
     let frag2_bytes = build_fragment(last_payload_len, false, first_payload_len as u16, 0xBB);
 
-    let frag1 = Ipv4Packet::new_unchecked(Ref::new(&frag1_bytes[..]));
-    let frag2 = Ipv4Packet::new_unchecked(Ref::new(&frag2_bytes[..]));
+    let frag1 = Ipv4Packet::new_unchecked(Ref::new((unsafe { frag1_bytes.get_unchecked(..) })));
+    let frag2 = Ipv4Packet::new_unchecked(Ref::new((unsafe { frag2_bytes.get_unchecked(..) })));
 
     // First fragment alone should not be delivered to the raw socket.
     assert_eq!(
@@ -1402,7 +1402,7 @@ fn test_icmp_reply_size(#[case] medium: Medium) {
         dst_port: 68,
     };
     let mut bytes = vec![0xff; udp_repr.header_len() + MAX_PAYLOAD_LEN];
-    let mut packet = UdpPacket::new_unchecked(&mut bytes[..]);
+    let mut packet = UdpPacket::new_unchecked((unsafe { bytes.get_unchecked_mut(..) }));
     udp_repr.emit(
         &mut packet,
         &src_addr.into(),
@@ -1424,7 +1424,7 @@ fn test_icmp_reply_size(#[case] medium: Medium) {
     let expected_icmp_repr = Icmpv4Repr::DstUnreachable {
         reason: Icmpv4DstUnreachable::PortUnreachable,
         header: ip_repr,
-        data: &payload[..MAX_PAYLOAD_LEN],
+        data: (unsafe { payload.get_unchecked(..MAX_PAYLOAD_LEN) }),
     };
 
     let expected_ip_repr = Ipv4Repr {

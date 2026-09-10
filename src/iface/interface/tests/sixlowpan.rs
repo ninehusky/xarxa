@@ -17,7 +17,7 @@ fn ieee802154_wrong_pan_id(#[case] medium: Medium) {
         iface.inner.process_ieee802154(
             &mut sockets,
             PacketMeta::default(),
-            &data[..],
+            (unsafe { data.get_unchecked(..) }),
             &mut iface.fragments
         ),
         response,
@@ -71,7 +71,7 @@ fn icmp_echo_request(#[case] medium: Medium) {
         iface.inner.process_ieee802154(
             &mut sockets,
             PacketMeta::default(),
-            &data[..],
+            (unsafe { data.get_unchecked(..) }),
             &mut iface.fragments
         ),
         response,
@@ -355,7 +355,7 @@ In at rhoncus tortor. Cras blandit tellus diam, varius vestibulum nibh commodo n
     assert_eq!(
         socket.recv(),
         Ok((
-            &udp_data[..],
+            (unsafe { udp_data.get_unchecked(..) }),
             udp::UdpMetadata {
                 local_address: Some(
                     Ipv6Address::new(0xfe80, 0, 0, 0, 0x92fc, 0x48c2, 0xa441, 0xfc76).into()

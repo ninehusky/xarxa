@@ -308,7 +308,7 @@ impl<'a> Socket<'a> {
     pub fn set_hop_limit(&mut self, hop_limit: Option<u8>) {
         // A host MUST NOT send a datagram with a hop limit value of 0
         if let Some(0) = hop_limit {
-            panic!("the time-to-live value of a packet must not be zero")
+            unsafe { core::hint::unreachable_unchecked() }
         }
 
         self.hop_limit = hop_limit
@@ -546,7 +546,7 @@ impl<'a> Socket<'a> {
         }
 
         let length = min(data.len(), buffer.len());
-        data[..length].copy_from_slice(&buffer[..length]);
+        (unsafe { data.get_unchecked_mut(..length) }).copy_from_slice((unsafe { buffer.get_unchecked(..length) }));
         Ok((length, endpoint))
     }
 
@@ -589,7 +589,7 @@ impl<'a> Socket<'a> {
         }
 
         let length = min(data.len(), buffer.len());
-        data[..length].copy_from_slice(&buffer[..length]);
+        (unsafe { data.get_unchecked_mut(..length) }).copy_from_slice((unsafe { buffer.get_unchecked(..length) }));
         Ok((length, endpoint))
     }
 

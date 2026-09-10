@@ -158,8 +158,8 @@ impl<'a> Parser<'a> {
         let octets = self.accept_ipv4_octets()?;
 
         Ok((
-            ((octets[0] as u16) << 8) | (octets[1] as u16),
-            ((octets[2] as u16) << 8) | (octets[3] as u16),
+            (((unsafe { *octets.get_unchecked(0) }) as u16) << 8) | ((unsafe { *octets.get_unchecked(1) }) as u16),
+            (((unsafe { *octets.get_unchecked(2) }) as u16) << 8) | ((unsafe { *octets.get_unchecked(3) }) as u16),
         ))
     }
 
@@ -212,11 +212,11 @@ impl<'a> Parser<'a> {
         match self.try_do(|p| p.accept_number(4, 0x10000, true)) {
             Some(part) if !use_tail && *head_idx < 8 => {
                 // Valid u16 to be added to the address
-                head[*head_idx] = part as u16;
+                unsafe { *head.get_unchecked_mut(*head_idx) = part as u16; }
                 *head_idx += 1;
 
                 let filled = *head_idx;
-                if filled == 6 && head[0..filled] == [0, 0, 0, 0, 0, 0xffff] {
+                if filled == 6 && (unsafe { head.get_unchecked(0..filled) }) == [0, 0, 0, 0, 0, 0xffff] {
                     // `try_do` open-coded: its closure would capture `head_idx`, and a `&strg`
                     // does not survive a capture, so the postcondition would be lost exactly
                     // where it is needed. Same save-and-restore, same short-circuit.
@@ -228,8 +228,8 @@ impl<'a> Parser<'a> {
                     };
                     match parsed {
                         Ok((a, b)) => {
-                            head[6] = a;
-                            head[7] = b;
+                            unsafe { *head.get_unchecked_mut(6) = a; }
+                            unsafe { *head.get_unchecked_mut(7) = b; }
                             *head_idx = 8;
                         }
                         Err(()) => self.pos = pos,
@@ -239,10 +239,10 @@ impl<'a> Parser<'a> {
             }
             Some(part) if *tail_idx < 6 => {
                 // Valid u16 to be added to the address
-                tail[*tail_idx] = part as u16;
+                unsafe { *tail.get_unchecked_mut(*tail_idx) = part as u16; }
                 *tail_idx += 1;
 
-                if *tail_idx == 1 && tail[0] == 0xffff && head[0..8] == [0, 0, 0, 0, 0, 0, 0, 0] {
+                if *tail_idx == 1 && (unsafe { *tail.get_unchecked(0) }) == 0xffff && (unsafe { head.get_unchecked(0..8) }) == [0, 0, 0, 0, 0, 0, 0, 0] {
                     // Open-coded for the reason given in the head arm above.
                     let pos = self.pos;
                     let parsed = if self.accept_char(b':').is_ok() {
@@ -252,8 +252,8 @@ impl<'a> Parser<'a> {
                     };
                     match parsed {
                         Ok((a, b)) => {
-                            tail[1] = a;
-                            tail[2] = b;
+                            unsafe { *tail.get_unchecked_mut(1) = a; }
+                            unsafe { *tail.get_unchecked_mut(2) = b; }
                             *tail_idx = 3;
                         }
                         Err(()) => self.pos = pos,
@@ -316,7 +316,7 @@ impl<'a> Parser<'a> {
 
         // We need to copy the tail portion (the portion following the "::") to the
         // end of the address.
-        addr[8 - tail_idx..].copy_from_slice(&tail[..tail_idx]);
+        (unsafe { addr.get_unchecked_mut(8 - tail_idx..) }).copy_from_slice((unsafe { tail.get_unchecked(..tail_idx) }));
 
         Ok(Ipv6Address::from(addr))
     }

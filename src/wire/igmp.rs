@@ -130,7 +130,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[inline]
     pub fn msg_type(&self) -> Message {
         let data = self.buffer.as_ref();
-        Message::from(data[0]) // field::TYPE
+        Message::from((unsafe { *data.get_unchecked(0) })) // field::TYPE
     }
 
     /// Return the maximum response time, using the encoding specified in
@@ -143,7 +143,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[inline]
     pub fn max_resp_code(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[1] // field::MAX_RESP_CODE
+        (unsafe { *data.get_unchecked(1) }) // field::MAX_RESP_CODE
     }
 
     /// Return the checksum field.
@@ -203,7 +203,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     #[inline]
     pub fn set_msg_type(&mut self, value: Message) {
         let data = self.buffer.as_mut();
-        data[0] = value.into() // field::TYPE
+        unsafe { *data.get_unchecked_mut(0) = value.into(); } // field::TYPE
     }
 
     /// Set the maximum response time, using the encoding specified in
@@ -214,7 +214,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     #[inline]
     pub fn set_max_resp_code(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[1] = value; // field::MAX_RESP_CODE
+        unsafe { *data.get_unchecked_mut(1) = value; } // field::MAX_RESP_CODE
     }
 
     /// Set the checksum field.

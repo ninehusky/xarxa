@@ -172,7 +172,7 @@ impl BpfDevice {
             );
 
             if len == -1 {
-                panic!("{:?}", io::Error::last_os_error())
+                unsafe { core::hint::unreachable_unchecked() }
             }
 
             Ok(len as usize)

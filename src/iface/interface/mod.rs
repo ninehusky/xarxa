@@ -812,7 +812,7 @@ impl Interface {
                         Packet::new_ipv6(ipv6_repr, IpPayload::Icmpv6(icmpv6_repr)),
                     ),
                     #[allow(unreachable_patterns)]
-                    _ => unreachable!(),
+                    _ => unsafe { core::hint::unreachable_unchecked() },
                 })
             }
             #[cfg(feature = "socket-udp")]
@@ -994,7 +994,7 @@ impl InterfaceInner {
     fn check_ip_addrs(addrs: &[IpCidr]) {
         for cidr in addrs {
             if !cidr.address().is_unicast() && !cidr.address().is_unspecified() {
-                panic!("IP address {} is not unicast", cidr.address())
+                unsafe { core::hint::unreachable_unchecked() }
             }
         }
     }
@@ -1173,7 +1173,7 @@ impl InterfaceInner {
                 #[cfg(feature = "medium-ieee802154")]
                 Medium::Ieee802154 => HardwareAddress::Ieee802154(Ieee802154Address::BROADCAST),
                 #[cfg(feature = "medium-ip")]
-                Medium::Ip => unreachable!(),
+                Medium::Ip => unsafe { core::hint::unreachable_unchecked() },
             };
 
             return Ok((hardware_addr, tx_token));
@@ -1190,15 +1190,15 @@ impl InterfaceInner {
                             0x01,
                             0x00,
                             0x5e,
-                            b[1] & 0x7F,
-                            b[2],
-                            b[3],
+                            (unsafe { *b.get_unchecked(1) }) & 0x7F,
+                            (unsafe { *b.get_unchecked(2) }),
+                            (unsafe { *b.get_unchecked(3) }),
                         ]))
                     }
                     #[cfg(feature = "medium-ieee802154")]
-                    Medium::Ieee802154 => unreachable!(),
+                    Medium::Ieee802154 => unsafe { core::hint::unreachable_unchecked() },
                     #[cfg(feature = "medium-ip")]
-                    Medium::Ip => unreachable!(),
+                    Medium::Ip => unsafe { core::hint::unreachable_unchecked() },
                 },
                 #[cfg(feature = "proto-ipv6")]
                 IpAddress::Ipv6(addr) => match self.medium {
@@ -1206,7 +1206,7 @@ impl InterfaceInner {
                     Medium::Ethernet => {
                         let b = addr.octets();
                         HardwareAddress::Ethernet(EthernetAddress::from_bytes(&[
-                            0x33, 0x33, b[12], b[13], b[14], b[15],
+                            0x33, 0x33, (unsafe { *b.get_unchecked(12) }), (unsafe { *b.get_unchecked(13) }), (unsafe { *b.get_unchecked(14) }), (unsafe { *b.get_unchecked(15) }),
                         ]))
                     }
                     #[cfg(feature = "medium-ieee802154")]
@@ -1215,7 +1215,7 @@ impl InterfaceInner {
                         HardwareAddress::Ieee802154(Ieee802154Address::BROADCAST)
                     }
                     #[cfg(feature = "medium-ip")]
-                    Medium::Ip => unreachable!(),
+                    Medium::Ip => unsafe { core::hint::unreachable_unchecked() },
                 },
             };
 
@@ -1456,7 +1456,7 @@ impl InterfaceInner {
             Medium::Ethernet => {
                 match self.lookup_hardware_addr(tx_token, &ip_repr.dst_addr(), frag)? {
                     (HardwareAddress::Ethernet(addr), tx_token) => (addr, tx_token),
-                    (_, _) => unreachable!(),
+                    (_, _) => unsafe { core::hint::unreachable_unchecked() },
                 }
             }
             _ => (EthernetAddress::from_octets([0; 6]), tx_token),

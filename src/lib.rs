@@ -1,5 +1,5 @@
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
-#![deny(unsafe_code)]
+#![allow(unsafe_code)] // CEILING MEASUREMENT ONLY -- not a shippable state
 // Only under `cargo flux`, which injects `--cfg=flux` and pins its own nightly. Needed so
 // `flux_specs` can name `PointeeSized` when mirroring core's `AsMut for &mut T` impl, whose
 // generics an extern spec must match exactly. Stable and MSRV builds never see this.

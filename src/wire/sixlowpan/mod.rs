@@ -74,8 +74,8 @@ impl<'a> UnresolvedAddress<'a> {
                 return Err(Error);
             }
 
-            let context = addr_context[index];
-            bytes[..ADDRESS_CONTEXT_LENGTH].copy_from_slice(&context.0);
+            let context = (unsafe { *addr_context.get_unchecked(index) });
+            (unsafe { bytes.get_unchecked_mut(..ADDRESS_CONTEXT_LENGTH) }).copy_from_slice(&context.0);
 
             Ok(())
         };
@@ -86,25 +86,25 @@ impl<'a> UnresolvedAddress<'a> {
                     Ok(ipv6::Address::from_octets(addr.try_into().unwrap()))
                 }
                 AddressMode::InLine64bits(inline) => {
-                    bytes[0..2].copy_from_slice(&LINK_LOCAL_PREFIX[..]);
-                    bytes[8..].copy_from_slice(inline);
+                    (unsafe { bytes.get_unchecked_mut(0..2) }).copy_from_slice(&LINK_LOCAL_PREFIX[..]);
+                    (unsafe { bytes.get_unchecked_mut(8..) }).copy_from_slice(inline);
                     Ok(ipv6::Address::from_octets(bytes))
                 }
                 AddressMode::InLine16bits(inline) => {
-                    bytes[0..2].copy_from_slice(&LINK_LOCAL_PREFIX[..]);
-                    bytes[11..13].copy_from_slice(&EUI64_MIDDLE_VALUE[..]);
-                    bytes[14..].copy_from_slice(inline);
+                    (unsafe { bytes.get_unchecked_mut(0..2) }).copy_from_slice(&LINK_LOCAL_PREFIX[..]);
+                    (unsafe { bytes.get_unchecked_mut(11..13) }).copy_from_slice(&EUI64_MIDDLE_VALUE[..]);
+                    (unsafe { bytes.get_unchecked_mut(14..) }).copy_from_slice(inline);
                     Ok(ipv6::Address::from_octets(bytes))
                 }
                 AddressMode::FullyElided => {
-                    bytes[0..2].copy_from_slice(&LINK_LOCAL_PREFIX[..]);
+                    (unsafe { bytes.get_unchecked_mut(0..2) }).copy_from_slice(&LINK_LOCAL_PREFIX[..]);
                     match ll_address {
                         Some(LlAddress::Short(ll)) => {
-                            bytes[11..13].copy_from_slice(&EUI64_MIDDLE_VALUE[..]);
-                            bytes[14..].copy_from_slice(&ll);
+                            (unsafe { bytes.get_unchecked_mut(11..13) }).copy_from_slice(&EUI64_MIDDLE_VALUE[..]);
+                            (unsafe { bytes.get_unchecked_mut(14..) }).copy_from_slice(&ll);
                         }
                         Some(addr @ LlAddress::Extended(_)) => match addr.as_eui_64() {
-                            Some(addr) => bytes[8..].copy_from_slice(&addr),
+                            Some(addr) => (unsafe { bytes.get_unchecked_mut(8..) }).copy_from_slice(&addr),
                             None => return Err(Error),
                         },
                         Some(LlAddress::Absent) => return Err(Error),
@@ -113,21 +113,21 @@ impl<'a> UnresolvedAddress<'a> {
                     Ok(ipv6::Address::from_octets(bytes))
                 }
                 AddressMode::Multicast48bits(inline) => {
-                    bytes[0] = 0xff;
-                    bytes[1] = inline[0];
-                    bytes[11..].copy_from_slice(&inline[1..][..5]);
+                    unsafe { *bytes.get_unchecked_mut(0) = 0xff; }
+                    unsafe { *bytes.get_unchecked_mut(1) = inline[0]; }
+                    (unsafe { bytes.get_unchecked_mut(11..) }).copy_from_slice((unsafe { inline.get_unchecked(1..) })[..5]);
                     Ok(ipv6::Address::from_octets(bytes))
                 }
                 AddressMode::Multicast32bits(inline) => {
-                    bytes[0] = 0xff;
-                    bytes[1] = inline[0];
-                    bytes[13..].copy_from_slice(&inline[1..][..3]);
+                    unsafe { *bytes.get_unchecked_mut(0) = 0xff; }
+                    unsafe { *bytes.get_unchecked_mut(1) = inline[0]; }
+                    (unsafe { bytes.get_unchecked_mut(13..) }).copy_from_slice((unsafe { inline.get_unchecked(1..) })[..3]);
                     Ok(ipv6::Address::from_octets(bytes))
                 }
                 AddressMode::Multicast8bits(inline) => {
-                    bytes[0] = 0xff;
-                    bytes[1] = 0x02;
-                    bytes[15] = inline[0];
+                    unsafe { *bytes.get_unchecked_mut(0) = 0xff; }
+                    unsafe { *bytes.get_unchecked_mut(1) = 0x02; }
+                    unsafe { *bytes.get_unchecked_mut(15) = inline[0]; }
                     Ok(ipv6::Address::from_octets(bytes))
                 }
                 _ => Err(Error),
@@ -135,30 +135,30 @@ impl<'a> UnresolvedAddress<'a> {
             UnresolvedAddress::WithContext(mode) => match mode {
                 (_, AddressMode::Unspecified) => Ok(ipv6::Address::UNSPECIFIED),
                 (index, AddressMode::InLine64bits(inline)) => {
-                    copy_context(index, &mut bytes[..])?;
-                    bytes[16 - inline.len()..].copy_from_slice(inline);
+                    copy_context(index, (unsafe { bytes.get_unchecked_mut(..) }))?;
+                    (unsafe { bytes.get_unchecked_mut(16 - inline.len()..) }).copy_from_slice(inline);
                     Ok(ipv6::Address::from_octets(bytes))
                 }
                 (index, AddressMode::InLine16bits(inline)) => {
-                    copy_context(index, &mut bytes[..])?;
-                    bytes[16 - inline.len()..].copy_from_slice(inline);
+                    copy_context(index, (unsafe { bytes.get_unchecked_mut(..) }))?;
+                    (unsafe { bytes.get_unchecked_mut(16 - inline.len()..) }).copy_from_slice(inline);
                     Ok(ipv6::Address::from_octets(bytes))
                 }
                 (index, AddressMode::FullyElided) => {
                     match ll_address {
                         Some(LlAddress::Short(ll)) => {
-                            bytes[11..13].copy_from_slice(&EUI64_MIDDLE_VALUE[..]);
-                            bytes[14..].copy_from_slice(&ll);
+                            (unsafe { bytes.get_unchecked_mut(11..13) }).copy_from_slice(&EUI64_MIDDLE_VALUE[..]);
+                            (unsafe { bytes.get_unchecked_mut(14..) }).copy_from_slice(&ll);
                         }
                         Some(addr @ LlAddress::Extended(_)) => match addr.as_eui_64() {
-                            Some(addr) => bytes[8..].copy_from_slice(&addr),
+                            Some(addr) => (unsafe { bytes.get_unchecked_mut(8..) }).copy_from_slice(&addr),
                             None => return Err(Error),
                         },
                         Some(LlAddress::Absent) => return Err(Error),
                         None => return Err(Error),
                     }
 
-                    copy_context(index, &mut bytes[..])?;
+                    copy_context(index, (unsafe { bytes.get_unchecked_mut(..) }))?;
 
                     Ok(ipv6::Address::from_octets(bytes))
                 }
@@ -196,10 +196,10 @@ impl SixlowpanPacket {
             return Err(Error);
         }
 
-        if raw[0] >> 3 == DISPATCH_FIRST_FRAGMENT_HEADER || raw[0] >> 3 == DISPATCH_FRAGMENT_HEADER
+        if (unsafe { *raw.get_unchecked(0) }) >> 3 == DISPATCH_FIRST_FRAGMENT_HEADER || (unsafe { *raw.get_unchecked(0) }) >> 3 == DISPATCH_FRAGMENT_HEADER
         {
             Ok(Self::FragmentHeader)
-        } else if raw[0] >> 5 == DISPATCH_IPHC_HEADER {
+        } else if (unsafe { *raw.get_unchecked(0) }) >> 5 == DISPATCH_IPHC_HEADER {
             Ok(Self::IphcHeader)
         } else {
             Err(Error)

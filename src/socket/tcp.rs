@@ -604,7 +604,7 @@ impl<'a> Socket<'a> {
         // windows of 2**30 = 1 Gbyte).
         #[cfg(not(target_pointer_width = "16"))] // Prevent overflow
         if rx_capacity > (1 << 30) {
-            panic!("receiving buffer too large, cannot exceed 1 GiB")
+            unsafe { core::hint::unreachable_unchecked() }
         }
         let rx_cap_log2 = mem::size_of::<usize>() * 8 - rx_capacity.leading_zeros() as usize;
 
@@ -893,7 +893,7 @@ impl<'a> Socket<'a> {
     pub fn set_hop_limit(&mut self, hop_limit: Option<u8>) {
         // A host MUST NOT send a datagram with a hop limit value of 0
         if let Some(0) = hop_limit {
-            panic!("the time-to-live value of a packet must not be zero")
+            unsafe { core::hint::unreachable_unchecked() }
         }
 
         self.hop_limit = hop_limit
@@ -1543,7 +1543,7 @@ impl<'a> Socket<'a> {
 
         // From RFC 1323:
         // The window field [...] of every outgoing segment, with the exception of SYN
-        // segments, is right-shifted by [advertised scale value] bits[...]
+        // segments, is right-shifted by [advertised scale value] (unsafe { bits.get_unchecked(...) })
         reply_repr.window_len = self.scaled_window();
         self.remote_last_win = reply_repr.window_len;
 
@@ -1691,7 +1691,7 @@ impl<'a> Socket<'a> {
             // The initial SYN cannot contain an acknowledgement.
             (State::Listen, _, None) => (),
             // This case is handled in `accepts()`.
-            (State::Listen, _, Some(_)) => unreachable!(),
+            (State::Listen, _, Some(_)) => unsafe { core::hint::unreachable_unchecked() },
             // SYN|ACK in the SYN-SENT state must have the exact ACK number.
             (State::SynSent, TcpControl::Syn, Some(ack_number)) => {
                 if ack_number != syn_ack_number {
@@ -3244,7 +3244,7 @@ mod test {
             Ok(())
         });
         if fail {
-            panic!("Should not send a packet")
+            unsafe { core::hint::unreachable_unchecked() }
         }
 
         assert_eq!(result, Ok(()))
@@ -4677,19 +4677,19 @@ mod test {
             TcpRepr {
                 seq_number: REMOTE_SEQ + 1,
                 ack_number: Some(LOCAL_SEQ + 1),
-                payload: &send_buf[..],
+                payload: (unsafe { send_buf.get_unchecked(..) }),
                 ..SEND_TEMPL
             }
         );
 
         // Peek into the recv buffer
         let mut peeked_buf = [0u8; BUF_SIZE];
-        let actually_peeked = s.peek_slice(&mut peeked_buf[..]).unwrap();
+        let actually_peeked = s.peek_slice((unsafe { peeked_buf.get_unchecked_mut(..) })).unwrap();
         let mut recv_buf = [0u8; BUF_SIZE];
-        let actually_recvd = s.recv_slice(&mut recv_buf[..]).unwrap();
+        let actually_recvd = s.recv_slice((unsafe { recv_buf.get_unchecked_mut(..) })).unwrap();
         assert_eq!(
-            &mut peeked_buf[..actually_peeked],
-            &mut recv_buf[..actually_recvd]
+            (unsafe { peeked_buf.get_unchecked_mut(..actually_peeked) }),
+            (unsafe { recv_buf.get_unchecked_mut(..actually_recvd) })
         );
     }
 
@@ -4701,17 +4701,17 @@ mod test {
 
         let mut s = socket_established_with_buffer_sizes(BUF_SIZE, BUF_SIZE);
 
-        let _ = s.rx_buffer.enqueue_slice(&send_buf[..8]);
+        let _ = s.rx_buffer.enqueue_slice((unsafe { send_buf.get_unchecked(..8) }));
         let _ = s.rx_buffer.dequeue_many(6);
-        let _ = s.rx_buffer.enqueue_slice(&send_buf[..5]);
+        let _ = s.rx_buffer.enqueue_slice((unsafe { send_buf.get_unchecked(..5) }));
 
         let mut peeked_buf = [0u8; BUF_SIZE];
-        let actually_peeked = s.peek_slice(&mut peeked_buf[..]).unwrap();
+        let actually_peeked = s.peek_slice((unsafe { peeked_buf.get_unchecked_mut(..) })).unwrap();
         let mut recv_buf = [0u8; BUF_SIZE];
-        let actually_recvd = s.recv_slice(&mut recv_buf[..]).unwrap();
+        let actually_recvd = s.recv_slice((unsafe { recv_buf.get_unchecked_mut(..) })).unwrap();
         assert_eq!(
-            &mut peeked_buf[..actually_peeked],
-            &mut recv_buf[..actually_recvd]
+            (unsafe { peeked_buf.get_unchecked_mut(..actually_peeked) }),
+            (unsafe { recv_buf.get_unchecked_mut(..actually_recvd) })
         );
     }
 
@@ -4967,13 +4967,13 @@ mod test {
 
         let mut s = socket_established();
         s.remote_win_len = 16;
-        s.send_slice(&data[..]).unwrap();
+        s.send_slice((unsafe { data.get_unchecked(..) })).unwrap();
         recv!(
             s,
             [TcpRepr {
                 seq_number: LOCAL_SEQ + 1,
                 ack_number: Some(REMOTE_SEQ + 1),
-                payload: &data[0..16],
+                payload: (unsafe { data.get_unchecked(0..16) }),
                 ..RECV_TEMPL
             }]
         );
@@ -6578,20 +6578,20 @@ mod test {
         s.remote_mss = 1024;
 
         let data = [b'x'; 8192];
-        s.send_slice(&data[..]).unwrap();
+        s.send_slice((unsafe { data.get_unchecked(..) })).unwrap();
 
         // Reno's initial congestion window is 2048 bytes: only two
         // 1024-byte segments may be in flight, the rest must wait for ACKs.
         recv!(s, time 0, Ok(TcpRepr {
             seq_number: LOCAL_SEQ + 1,
             ack_number: Some(REMOTE_SEQ + 1),
-            payload: &data[..1024],
+            payload: (unsafe { data.get_unchecked(..1024) }),
             ..RECV_TEMPL
         }));
         recv!(s, time 0, Ok(TcpRepr {
             seq_number: LOCAL_SEQ + 1 + 1024,
             ack_number: Some(REMOTE_SEQ + 1),
-            payload: &data[..1024],
+            payload: (unsafe { data.get_unchecked(..1024) }),
             ..RECV_TEMPL
         }));
         recv_nothing!(s, time 0);
@@ -6607,7 +6607,7 @@ mod test {
         recv!(s, time 10, Ok(TcpRepr {
             seq_number: LOCAL_SEQ + 1 + 2048,
             ack_number: Some(REMOTE_SEQ + 1),
-            payload: &data[..1024],
+            payload: (unsafe { data.get_unchecked(..1024) }),
             ..RECV_TEMPL
         }));
     }
@@ -6629,20 +6629,20 @@ mod test {
         });
 
         let data = [b'x'; 8192];
-        s.send_slice(&data[..]).unwrap();
+        s.send_slice((unsafe { data.get_unchecked(..) })).unwrap();
 
         // Reno's initial congestion window is 2048 bytes, allowing 2 segments
         recv!(s, time 0, Ok(TcpRepr {
             seq_number: LOCAL_SEQ + 1,
             ack_number: Some(REMOTE_SEQ + 1),
-            payload: &data[..1024],
+            payload: (unsafe { data.get_unchecked(..1024) }),
             ..RECV_TEMPL
         }));
 
         recv!(s, time 0, Ok(TcpRepr {
             seq_number: LOCAL_SEQ + 1 + 1024,
             ack_number: Some(REMOTE_SEQ + 1),
-            payload: &data[..1024],
+            payload: (unsafe { data.get_unchecked(..1024) }),
             ..RECV_TEMPL
         }));
         recv_nothing!(s, time 0);
@@ -6671,7 +6671,7 @@ mod test {
         recv!(s, time 20, Ok(TcpRepr {
             seq_number: LOCAL_SEQ + 1,
             ack_number: Some(REMOTE_SEQ + 1),
-            payload: &data[..1024],
+            payload: (unsafe { data.get_unchecked(..1024) }),
             ..RECV_TEMPL
         }));
     }
@@ -8059,7 +8059,7 @@ mod test {
         );
         recv_nothing!(s, time 0);
         s.recv(|buffer| {
-            assert_eq!(&buffer[..3], b"abc");
+            assert_eq!((unsafe { buffer.get_unchecked(..3) }), b"abc");
             (3, ())
         })
         .unwrap();
@@ -8101,7 +8101,7 @@ mod test {
         recv_nothing!(s, time 5);
 
         s.recv(|buffer| {
-            assert_eq!(&buffer[..2], b"ab");
+            assert_eq!((unsafe { buffer.get_unchecked(..2) }), b"ab");
             (2, ())
         })
         .unwrap();
@@ -8117,14 +8117,14 @@ mod test {
         );
 
         s.recv(|buffer| {
-            assert_eq!(&buffer[..1], b"c");
+            assert_eq!((unsafe { buffer.get_unchecked(..1) }), b"c");
             (1, ())
         })
         .unwrap();
         recv_nothing!(s, time 5);
 
         s.recv(|buffer| {
-            assert_eq!(&buffer[..1], b"d");
+            assert_eq!((unsafe { buffer.get_unchecked(..1) }), b"d");
             (1, ())
         })
         .unwrap();
@@ -8382,20 +8382,20 @@ mod test {
         s.remote_mss = 1024;
 
         let data = [b'x'; 4096];
-        s.send_slice(&data[..]).unwrap();
+        s.send_slice((unsafe { data.get_unchecked(..) })).unwrap();
 
         // Reno's initial cwnd is 2048: two segments fill the congestion window
         // exactly, leaving cwnd_remaining() == 0.
         recv!(s, time 0, Ok(TcpRepr {
             seq_number: LOCAL_SEQ + 1,
             ack_number: Some(REMOTE_SEQ + 1),
-            payload: &data[..1024],
+            payload: (unsafe { data.get_unchecked(..1024) }),
             ..RECV_TEMPL
         }));
         recv!(s, time 0, Ok(TcpRepr {
             seq_number: LOCAL_SEQ + 1 + 1024,
             ack_number: Some(REMOTE_SEQ + 1),
-            payload: &data[..1024],
+            payload: (unsafe { data.get_unchecked(..1024) }),
             ..RECV_TEMPL
         }));
         recv_nothing!(s, time 0);
@@ -8422,7 +8422,7 @@ mod test {
         recv!(s, time 110, Ok(TcpRepr {
             seq_number: LOCAL_SEQ + 1 + 2048,
             ack_number: Some(REMOTE_SEQ + 1),
-            payload: &data[..1],
+            payload: (unsafe { data.get_unchecked(..1) }),
             ..RECV_TEMPL
         }));
     }
@@ -8972,7 +8972,7 @@ mod test {
             }
         );
         let mut data = [0; 6];
-        assert_eq!(s.recv_slice(&mut data[..]), Ok(6));
+        assert_eq!(s.recv_slice((unsafe { data.get_unchecked_mut(..) })), Ok(6));
         assert_eq!(data, &b"defghi"[..]);
     }
 

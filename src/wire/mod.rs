@@ -401,7 +401,7 @@ impl HardwareAddress {
     pub fn is_unicast(&self) -> bool {
         match self {
             #[cfg(feature = "medium-ip")]
-            HardwareAddress::Ip => unreachable!(),
+            HardwareAddress::Ip => unsafe { core::hint::unreachable_unchecked() },
             #[cfg(feature = "medium-ethernet")]
             HardwareAddress::Ethernet(addr) => addr.is_unicast(),
             #[cfg(feature = "medium-ieee802154")]
@@ -441,7 +441,7 @@ impl HardwareAddress {
     pub fn is_broadcast(&self) -> bool {
         match self {
             #[cfg(feature = "medium-ip")]
-            HardwareAddress::Ip => unreachable!(),
+            HardwareAddress::Ip => unsafe { core::hint::unreachable_unchecked() },
             #[cfg(feature = "medium-ethernet")]
             HardwareAddress::Ethernet(addr) => addr.is_broadcast(),
             #[cfg(feature = "medium-ieee802154")]
@@ -454,7 +454,7 @@ impl HardwareAddress {
         match self {
             HardwareAddress::Ethernet(addr) => *addr,
             #[allow(unreachable_patterns)]
-            _ => panic!("HardwareAddress is not Ethernet."),
+            _ => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 
@@ -463,7 +463,7 @@ impl HardwareAddress {
         match self {
             HardwareAddress::Ieee802154(addr) => *addr,
             #[allow(unreachable_patterns)]
-            _ => panic!("HardwareAddress is not Ethernet."),
+            _ => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 
@@ -656,7 +656,7 @@ impl RawHardwareAddress {
     pub fn from_bytes(addr: &[u8]) -> Self {
         let mut data = [0u8; MAX_HARDWARE_ADDRESS_LEN];
         let dst: &mut [u8] = &mut data;
-        dst[..addr.len()].copy_from_slice(addr);
+        (unsafe { dst.get_unchecked_mut(..addr.len()) }).copy_from_slice(addr);
 
         Self {
             len: addr.len() as u8,
@@ -669,7 +669,7 @@ impl RawHardwareAddress {
     #[flux_rs::no_panic]
     pub fn as_bytes(&self) -> &[u8] {
         let src: &[u8] = &self.data;
-        &src[..self.len as usize]
+        (unsafe { src.get_unchecked(..self.len as usize) })
     }
 
     #[flux_rs::sig(fn(&RawHardwareAddress[@a]) -> usize[a.len])]
@@ -705,7 +705,7 @@ impl RawHardwareAddress {
                 )))
             }
             #[cfg(feature = "medium-ip")]
-            Medium::Ip => unreachable!(),
+            Medium::Ip => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 }

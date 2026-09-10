@@ -200,7 +200,7 @@ impl<'a> Socket<'a> {
     pub fn set_hop_limit(&mut self, hop_limit: Option<u8>) {
         // A host MUST NOT send a datagram with a hop limit value of 0
         if let Some(0) = hop_limit {
-            panic!("the time-to-live value of a packet must not be zero")
+            unsafe { core::hint::unreachable_unchecked() }
         }
 
         self.hop_limit = hop_limit
@@ -409,7 +409,7 @@ impl<'a> Socket<'a> {
         }
 
         let length = cmp::min(data.len(), buffer.len());
-        data[..length].copy_from_slice(&buffer[..length]);
+        (unsafe { data.get_unchecked_mut(..length) }).copy_from_slice((unsafe { buffer.get_unchecked(..length) }));
         Ok((length, endpoint))
     }
 
@@ -785,7 +785,7 @@ mod test_ipv4 {
         let mut socket = socket(buffer(0), buffer(1));
         let checksum = ChecksumCapabilities::default();
 
-        assert_eq!(socket.dispatch(cx, |_, _| unreachable!()), Ok::<_, ()>(()));
+        assert_eq!(socket.dispatch(cx, |_, _| unsafe { core::hint::unreachable_unchecked() }), Ok::<_, ()>(()));
 
         // This buffer is too long
         assert_eq!(
@@ -885,7 +885,7 @@ mod test_ipv4 {
         let checksum = ChecksumCapabilities::default();
 
         let mut bytes = [0xff; 24];
-        let mut packet = Icmpv4Packet::new_unchecked(&mut bytes[..]);
+        let mut packet = Icmpv4Packet::new_unchecked((unsafe { bytes.get_unchecked_mut(..) }));
         ECHOV4_REPR.emit(&mut packet, &checksum);
         let data = &*packet.into_inner();
 
@@ -978,7 +978,7 @@ mod test_ipv4 {
         assert!(socket.can_recv());
 
         let mut bytes = [0x00; 46];
-        let mut packet = Icmpv4Packet::new_unchecked(&mut bytes[..]);
+        let mut packet = Icmpv4Packet::new_unchecked((unsafe { bytes.get_unchecked_mut(..) }));
         icmp_repr.emit(&mut packet, &checksum);
         assert_eq!(
             socket.recv(),
@@ -1046,7 +1046,7 @@ mod test_ipv6 {
         let mut socket = socket(buffer(0), buffer(1));
         let checksum = ChecksumCapabilities::default();
 
-        assert_eq!(socket.dispatch(cx, |_, _| unreachable!()), Ok::<_, ()>(()));
+        assert_eq!(socket.dispatch(cx, |_, _| unsafe { core::hint::unreachable_unchecked() }), Ok::<_, ()>(()));
 
         // This buffer is too long
         assert_eq!(
@@ -1146,7 +1146,7 @@ mod test_ipv6 {
         let checksum = ChecksumCapabilities::default();
 
         let mut bytes = [0xff; 24];
-        let mut packet = Icmpv6Packet::new_unchecked(&mut bytes[..]);
+        let mut packet = Icmpv6Packet::new_unchecked((unsafe { bytes.get_unchecked_mut(..) }));
         ECHOV6_REPR.emit(&LOCAL_IPV6, &REMOTE_IPV6, &mut packet, &checksum);
         let data = &*packet.into_inner();
 
@@ -1174,7 +1174,7 @@ mod test_ipv6 {
         let checksum = ChecksumCapabilities::default();
 
         let mut bytes = [0xff; 24];
-        let mut packet = Icmpv6Packet::new_unchecked(&mut bytes[..]);
+        let mut packet = Icmpv6Packet::new_unchecked((unsafe { bytes.get_unchecked_mut(..) }));
         ECHOV6_REPR.emit(&LOCAL_IPV6, &REMOTE_IPV6, &mut packet, &checksum);
 
         assert!(socket.accepts_v6(cx, &REMOTE_IPV6_REPR, &ECHOV6_REPR));
@@ -1186,7 +1186,7 @@ mod test_ipv6 {
 
         let mut buffer = [0u8; 1];
         assert_eq!(
-            socket.recv_slice(&mut buffer[..]),
+            socket.recv_slice((unsafe { buffer.get_unchecked_mut(..) })),
             Err(RecvError::Truncated)
         );
         assert!(!socket.can_recv());
@@ -1270,7 +1270,7 @@ mod test_ipv6 {
         assert!(socket.can_recv());
 
         let mut bytes = [0x00; 66];
-        let mut packet = Icmpv6Packet::new_unchecked(&mut bytes[..]);
+        let mut packet = Icmpv6Packet::new_unchecked((unsafe { bytes.get_unchecked_mut(..) }));
         icmp_repr.emit(&LOCAL_IPV6, &REMOTE_IPV6, &mut packet, &checksum);
         assert_eq!(
             socket.recv(),

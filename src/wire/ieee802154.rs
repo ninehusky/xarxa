@@ -113,18 +113,18 @@ impl defmt::Format for Address {
     fn format(&self, f: defmt::Formatter) {
         match self {
             Self::Absent => defmt::write!(f, "not-present"),
-            Self::Short(bytes) => defmt::write!(f, "{:02x}:{:02x}", bytes[0], bytes[1]),
+            Self::Short(bytes) => defmt::write!(f, "{:02x}:{:02x}", (unsafe { *bytes.get_unchecked(0) }), (unsafe { *bytes.get_unchecked(1) })),
             Self::Extended(bytes) => defmt::write!(
                 f,
                 "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                bytes[0],
-                bytes[1],
-                bytes[2],
-                bytes[3],
-                bytes[4],
-                bytes[5],
-                bytes[6],
-                bytes[7]
+                (unsafe { *bytes.get_unchecked(0) }),
+                (unsafe { *bytes.get_unchecked(1) }),
+                (unsafe { *bytes.get_unchecked(2) }),
+                (unsafe { *bytes.get_unchecked(3) }),
+                (unsafe { *bytes.get_unchecked(4) }),
+                (unsafe { *bytes.get_unchecked(5) }),
+                (unsafe { *bytes.get_unchecked(6) }),
+                (unsafe { *bytes.get_unchecked(7) })
             ),
         }
     }
@@ -173,7 +173,7 @@ impl Address {
             b.copy_from_slice(a);
             Address::Extended(b)
         } else {
-            panic!("Not an IEEE802.15.4 address");
+            unsafe { core::hint::unreachable_unchecked() };
         }
     }
 
@@ -191,9 +191,9 @@ impl Address {
             Address::Absent | Address::Short(_) => None,
             Address::Extended(value) => {
                 let mut bytes = [0; 8];
-                bytes.copy_from_slice(&value[..]);
+                bytes.copy_from_slice((unsafe { value.get_unchecked(..) }));
 
-                bytes[0] ^= 1 << 1;
+                unsafe { *bytes.get_unchecked_mut(0) ^= 1 << 1; }
 
                 Some(bytes)
             }
@@ -204,9 +204,9 @@ impl Address {
     /// RFC2464.
     pub fn as_link_local_address(&self) -> Option<Ipv6Address> {
         let mut bytes = [0; 16];
-        bytes[0] = 0xfe;
-        bytes[1] = 0x80;
-        bytes[8..].copy_from_slice(&self.as_eui_64()?);
+        unsafe { *bytes.get_unchecked_mut(0) = 0xfe; }
+        unsafe { *bytes.get_unchecked_mut(1) = 0x80; }
+        (unsafe { bytes.get_unchecked_mut(8..) }).copy_from_slice(&self.as_eui_64()?);
 
         Some(Ipv6Address::from_octets(bytes))
     }
@@ -216,11 +216,11 @@ impl fmt::Display for Address {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::Absent => write!(f, "not-present"),
-            Self::Short(bytes) => write!(f, "{:02x}:{:02x}", bytes[0], bytes[1]),
+            Self::Short(bytes) => write!(f, "{:02x}:{:02x}", (unsafe { *bytes.get_unchecked(0) }), (unsafe { *bytes.get_unchecked(1) })),
             Self::Extended(bytes) => write!(
                 f,
                 "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]
+                (unsafe { *bytes.get_unchecked(0) }), (unsafe { *bytes.get_unchecked(1) }), (unsafe { *bytes.get_unchecked(2) }), (unsafe { *bytes.get_unchecked(3) }), (unsafe { *bytes.get_unchecked(4) }), (unsafe { *bytes.get_unchecked(5) }), (unsafe { *bytes.get_unchecked(6) }), (unsafe { *bytes.get_unchecked(7) })
             ),
         }
     }
@@ -418,7 +418,7 @@ impl<T: AsRef<[u8]>> Frame<T> {
             | FrameType::MacCommand
             | FrameType::Multipurpose => {
                 let data = self.buffer.as_ref();
-                let raw = data[field::SEQUENCE_NUMBER];
+                let raw = (unsafe { *data.get_unchecked(field::SEQUENCE_NUMBER) });
                 Some(raw)
             }
             FrameType::Extended | FrameType::FragmentOrFrak | FrameType::Unknown(_) => None,
@@ -498,7 +498,7 @@ impl<T: AsRef<[u8]>> Frame<T> {
     pub fn dst_pan_id(&self) -> Option<Pan> {
         if let Some((true, _, _, _)) = self.addr_present_flags() {
             let addressing_fields = self.addressing_fields()?;
-            Some(Pan(LittleEndian::read_u16(&addressing_fields[..2])))
+            Some(Pan(LittleEndian::read_u16((unsafe { addressing_fields.get_unchecked(..2) }))))
         } else {
             None
         }
@@ -515,13 +515,13 @@ impl<T: AsRef<[u8]>> Frame<T> {
                 AddressingMode::Absent => Some(Address::Absent),
                 AddressingMode::Short => {
                     let mut raw = [0u8; 2];
-                    raw.clone_from_slice(&addressing_fields[offset..offset + 2]);
+                    raw.clone_from_slice((unsafe { addressing_fields.get_unchecked(offset..offset + 2) }));
                     raw.reverse();
                     Some(Address::short_from_bytes(raw))
                 }
                 AddressingMode::Extended => {
                     let mut raw = [0u8; 8];
-                    raw.clone_from_slice(&addressing_fields[offset..offset + 8]);
+                    raw.clone_from_slice((unsafe { addressing_fields.get_unchecked(offset..offset + 8) }));
                     raw.reverse();
                     Some(Address::extended_from_bytes(raw))
                 }
@@ -540,7 +540,7 @@ impl<T: AsRef<[u8]>> Frame<T> {
             offset += dst_addr.size();
             let addressing_fields = self.addressing_fields()?;
             Some(Pan(LittleEndian::read_u16(
-                &addressing_fields[offset..][..2],
+                (unsafe { addressing_fields.get_unchecked(offset..) })[..2],
             )))
         } else {
             None
@@ -560,13 +560,13 @@ impl<T: AsRef<[u8]>> Frame<T> {
                 AddressingMode::Absent => Some(Address::Absent),
                 AddressingMode::Short => {
                     let mut raw = [0u8; 2];
-                    raw.clone_from_slice(&addressing_fields[offset..offset + 2]);
+                    raw.clone_from_slice((unsafe { addressing_fields.get_unchecked(offset..offset + 2) }));
                     raw.reverse();
                     Some(Address::short_from_bytes(raw))
                 }
                 AddressingMode::Extended => {
                     let mut raw = [0u8; 8];
-                    raw.clone_from_slice(&addressing_fields[offset..offset + 8]);
+                    raw.clone_from_slice((unsafe { addressing_fields.get_unchecked(offset..offset + 8) }));
                     raw.reverse();
                     Some(Address::extended_from_bytes(raw))
                 }
@@ -655,7 +655,7 @@ impl<T: AsRef<[u8]>> Frame<T> {
         } else {
             let index = self.aux_security_header_start();
             let b = &self.buffer.as_ref()[index..];
-            Some(LittleEndian::read_u32(&b[1..1 + 4]))
+            Some(LittleEndian::read_u32((unsafe { b.get_unchecked(1..1 + 4) })))
         }
     }
 
@@ -668,14 +668,14 @@ impl<T: AsRef<[u8]>> Frame<T> {
         } else {
             0
         };
-        &b[5..][..length]
+        (unsafe { b.get_unchecked(5..) })[..length]
     }
 
     /// Return the Key Source field.
     pub fn key_source(&self) -> Option<&[u8]> {
         let ki = self.key_identifier();
         let len = ki.len();
-        if len > 1 { Some(&ki[..len - 1]) } else { None }
+        if len > 1 { Some((unsafe { ki.get_unchecked(..len - 1) })) } else { None }
     }
 
     /// Return the Key Index field.
@@ -683,7 +683,7 @@ impl<T: AsRef<[u8]>> Frame<T> {
         let ki = self.key_identifier();
         let len = ki.len();
 
-        if len > 0 { Some(ki[len - 1]) } else { None }
+        if len > 0 { Some((unsafe { *ki.get_unchecked(len - 1) })) } else { None }
     }
 
     /// Return the Message Integrity Code (MIC).
@@ -693,19 +693,19 @@ impl<T: AsRef<[u8]>> Frame<T> {
             1 | 5 => 4,
             2 | 6 => 8,
             3 | 7 => 16,
-            _ => panic!(),
+            _ => unsafe { core::hint::unreachable_unchecked() },
         };
 
         let data = &self.buffer.as_ref();
         let len = data.len();
 
-        Some(&data[len - mic_len..])
+        Some((unsafe { data.get_unchecked(len - mic_len..) }))
     }
 
     /// Return the MAC header.
     pub fn mac_header(&self) -> &[u8] {
         let data = &self.buffer.as_ref();
-        &data[..self.payload_start()]
+        (unsafe { data.get_unchecked(..self.payload_start()) })
     }
 }
 
@@ -718,7 +718,7 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Frame<&'a T> {
                 let index = self.payload_start();
                 let data = &self.buffer.as_ref();
 
-                Some(&data[index..])
+                Some((unsafe { data.get_unchecked(index..) }))
             }
             _ => None,
         }
@@ -755,7 +755,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
     #[inline]
     pub fn set_sequence_number(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::SEQUENCE_NUMBER] = value;
+        unsafe { *data.get_unchecked_mut(field::SEQUENCE_NUMBER) = value; }
     }
 
     /// Set the destination PAN ID.
@@ -766,7 +766,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
         self.set_dst_addressing_mode(AddressingMode::Extended);
 
         let data = self.buffer.as_mut();
-        data[field::ADDRESSING][..2].copy_from_slice(&value.as_bytes());
+        (unsafe { *data.get_unchecked(field::ADDRESSING) })[..2].copy_from_slice(&value.as_bytes());
     }
 
     /// Set the destination address.
@@ -778,14 +778,14 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
                 value.reverse();
                 self.set_dst_addressing_mode(AddressingMode::Short);
                 let data = self.buffer.as_mut();
-                data[field::ADDRESSING][2..2 + 2].copy_from_slice(&value);
+                (unsafe { *data.get_unchecked(field::ADDRESSING) })[2..2 + 2].copy_from_slice(&value);
                 value.reverse();
             }
             Address::Extended(mut value) => {
                 value.reverse();
                 self.set_dst_addressing_mode(AddressingMode::Extended);
                 let data = &mut self.buffer.as_mut()[field::ADDRESSING];
-                data[2..2 + 8].copy_from_slice(&value);
+                (unsafe { data.get_unchecked_mut(2..2 + 8) }).copy_from_slice(&value);
                 value.reverse();
             }
         }
@@ -808,11 +808,11 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
             AddressingMode::Absent => 0,
             AddressingMode::Short => 2,
             AddressingMode::Extended => 8,
-            _ => unreachable!(),
+            _ => unsafe { core::hint::unreachable_unchecked() },
         } + 2;
 
         let data = &mut self.buffer.as_mut()[field::ADDRESSING];
-        data[offset..offset + 2].copy_from_slice(&value.as_bytes());
+        (unsafe { data.get_unchecked_mut(offset..offset + 2) }).copy_from_slice(&value.as_bytes());
     }
 
     /// Set the source address.
@@ -822,7 +822,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
             AddressingMode::Absent => 0,
             AddressingMode::Short => 2,
             AddressingMode::Extended => 8,
-            _ => unreachable!(),
+            _ => unsafe { core::hint::unreachable_unchecked() },
         } + 2;
 
         let offset = offset + if self.pan_id_compression() { 0 } else { 2 };
@@ -833,14 +833,14 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
                 value.reverse();
                 self.set_src_addressing_mode(AddressingMode::Short);
                 let data = &mut self.buffer.as_mut()[field::ADDRESSING];
-                data[offset..offset + 2].copy_from_slice(&value);
+                (unsafe { data.get_unchecked_mut(offset..offset + 2) }).copy_from_slice(&value);
                 value.reverse();
             }
             Address::Extended(mut value) => {
                 value.reverse();
                 self.set_src_addressing_mode(AddressingMode::Extended);
                 let data = &mut self.buffer.as_mut()[field::ADDRESSING];
-                data[offset..offset + 8].copy_from_slice(&value);
+                (unsafe { data.get_unchecked_mut(offset..offset + 8) }).copy_from_slice(&value);
                 value.reverse();
             }
         }
@@ -863,7 +863,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
             FrameType::Data => {
                 let index = self.payload_start();
                 let data = self.buffer.as_mut();
-                Some(&mut data[index..])
+                Some((unsafe { data.get_unchecked_mut(index..) }))
             }
             _ => None,
         }

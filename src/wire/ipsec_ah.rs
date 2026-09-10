@@ -72,7 +72,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
         }
 
         // payload_len == 0 makes ICV a reversed range (12..8); reject it.
-        let icv = field::ICV(data[field::PAYLOAD_LEN]);
+        let icv = field::ICV((unsafe { *data.get_unchecked(field::PAYLOAD_LEN) }));
         if icv.end < icv.start || len < icv.end {
             Err(Error)
         } else {
@@ -89,13 +89,13 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// The value is taken from the list of IP protocol numbers.
     pub fn next_header(&self) -> IpProtocol {
         let data = self.buffer.as_ref();
-        IpProtocol::from(data[field::NEXT_HEADER])
+        IpProtocol::from((unsafe { *data.get_unchecked(field::NEXT_HEADER) }))
     }
 
     /// Return the length of this Authentication Header in 4-octet units, minus 2
     pub fn payload_len(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[field::PAYLOAD_LEN]
+        (unsafe { *data.get_unchecked(field::PAYLOAD_LEN) })
     }
 
     /// Return the security parameters index
@@ -116,7 +116,7 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
     #[inline]
     pub fn integrity_check_value(&self) -> &'a [u8] {
         let data = self.buffer.as_ref();
-        &data[field::ICV(data[field::PAYLOAD_LEN])]
+        &data[field::ICV((unsafe { *data.get_unchecked(field::PAYLOAD_LEN) }))]
     }
 }
 
@@ -130,13 +130,13 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     /// Set next header protocol field
     fn set_next_header(&mut self, value: IpProtocol) {
         let data = self.buffer.as_mut();
-        data[field::NEXT_HEADER] = value.into()
+        unsafe { *data.get_unchecked_mut(field::NEXT_HEADER) = value.into(); }
     }
 
     /// Set payload length field
     fn set_payload_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::PAYLOAD_LEN] = value
+        unsafe { *data.get_unchecked_mut(field::PAYLOAD_LEN) = value; }
     }
 
     /// Clear reserved field
@@ -161,7 +161,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     #[inline]
     pub fn integrity_check_value_mut(&mut self) -> &mut [u8] {
         let data = self.buffer.as_mut();
-        let range = field::ICV(data[field::PAYLOAD_LEN]);
+        let range = field::ICV((unsafe { *data.get_unchecked(field::PAYLOAD_LEN) }));
         &mut data[range]
     }
 }

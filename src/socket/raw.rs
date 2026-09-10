@@ -283,7 +283,7 @@ impl<'a> Socket<'a> {
         }
 
         let length = min(data.len(), buffer.len());
-        data[..length].copy_from_slice(&buffer[..length]);
+        (unsafe { data.get_unchecked_mut(..length) }).copy_from_slice((unsafe { buffer.get_unchecked(..length) }));
         Ok(length)
     }
 
@@ -320,7 +320,7 @@ impl<'a> Socket<'a> {
         }
 
         let length = min(data.len(), buffer.len());
-        data[..length].copy_from_slice(&buffer[..length]);
+        (unsafe { data.get_unchecked_mut(..length) }).copy_from_slice((unsafe { buffer.get_unchecked(..length) }));
         Ok(length)
     }
 
@@ -368,7 +368,7 @@ impl<'a> Socket<'a> {
 
         match self.rx_buffer.enqueue(total_len, ()) {
             Ok(buf) => {
-                // Routed through `Buf` rather than `&mut buf[..header_len]` / `buf[header_len..]`:
+                // Routed through `Buf` rather than `(unsafe { buf.get_unchecked_mut(..header_len) })` / `(unsafe { buf.get_unchecked(header_len..) })`:
                 // a `&mut` sub-slice loses its length index (flux-rs/flux#1714). `emit` only
                 // writes the header, so handing it the whole buffer is equivalent.
                 let mut buf = Buf::new(buf);

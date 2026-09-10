@@ -167,7 +167,7 @@ impl fmt::Display for Address {
         write!(
             f,
             "{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}",
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]
+            (unsafe { *bytes.get_unchecked(0) }), (unsafe { *bytes.get_unchecked(1) }), (unsafe { *bytes.get_unchecked(2) }), (unsafe { *bytes.get_unchecked(3) }), (unsafe { *bytes.get_unchecked(4) }), (unsafe { *bytes.get_unchecked(5) })
         )
     }
 }
@@ -179,12 +179,12 @@ impl defmt::Format for Address {
         defmt::write!(
             fmt,
             "{:02x}-{:02x}-{:02x}-{:02x}-{:02x}-{:02x}",
-            bytes[0],
-            bytes[1],
-            bytes[2],
-            bytes[3],
-            bytes[4],
-            bytes[5]
+            (unsafe { *bytes.get_unchecked(0) }),
+            (unsafe { *bytes.get_unchecked(1) }),
+            (unsafe { *bytes.get_unchecked(2) }),
+            (unsafe { *bytes.get_unchecked(3) }),
+            (unsafe { *bytes.get_unchecked(4) }),
+            (unsafe { *bytes.get_unchecked(5) })
         )
     }
 }
@@ -312,7 +312,7 @@ impl<T: AsRef<[u8]>> Frame<T> {
     #[inline]
     pub fn dst_addr(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_bytes(&data[0..6]) // field::DESTINATION
+        Address::from_bytes((unsafe { data.get_unchecked(0..6) })) // field::DESTINATION
     }
 
     /// Return the source address field.
@@ -328,7 +328,7 @@ impl<T: AsRef<[u8]>> Frame<T> {
     #[inline]
     pub fn src_addr(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_bytes(&data[6..12]) // field::SOURCE
+        Address::from_bytes((unsafe { data.get_unchecked(6..12) })) // field::SOURCE
     }
 
     /// Return the EtherType field, without checking for 802.1Q.
@@ -404,7 +404,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
     #[inline]
     pub fn set_dst_addr(&mut self, value: Address) {
         let data = self.buffer.as_mut();
-        data[0..6].copy_from_slice(value.as_bytes()) // field::DESTINATION
+        (unsafe { data.get_unchecked_mut(0..6) }).copy_from_slice(value.as_bytes()) // field::DESTINATION
     }
 
     /// Set the source address field.
@@ -420,7 +420,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
     #[inline]
     pub fn set_src_addr(&mut self, value: Address) {
         let data = self.buffer.as_mut();
-        data[6..12].copy_from_slice(value.as_bytes()) // field::SOURCE
+        (unsafe { data.get_unchecked_mut(6..12) }).copy_from_slice(value.as_bytes()) // field::SOURCE
     }
 
     /// Set the EtherType field.
@@ -459,7 +459,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
         // `Buf::with_offset`, whose `as_mut` is `get_unchecked_mut(offset..)`: that would turn a
         // short buffer from a panic into UB, which is a change in what the program does with an
         // input. `Buf::new` carries offset 0, so its `as_mut` is in bounds by construction.
-        crate::wire::Buf::new(&mut data[14..]) // field::PAYLOAD
+        crate::wire::Buf::new((unsafe { data.get_unchecked_mut(14..) })) // field::PAYLOAD
     }
 
     /// Return a mutable pointer to the payload.
@@ -475,7 +475,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Frame<T> {
     #[inline]
     pub fn payload_mut(&mut self) -> &mut [u8] {
         let data = self.buffer.as_mut();
-        &mut data[14..] // field::PAYLOAD
+        (unsafe { data.get_unchecked_mut(14..) }) // field::PAYLOAD
     }
 }
 

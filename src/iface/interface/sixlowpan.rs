@@ -264,7 +264,7 @@ impl InterfaceInner {
                             if data.len() > buffer.len() {
                                 return Err(Error);
                             }
-                            buffer[..data.len()].copy_from_slice(data);
+                            (unsafe { buffer.get_unchecked_mut(..data.len()) }).copy_from_slice(data);
                             payload_len += data.len();
                             decompressed_len += data.len();
                             break;
@@ -300,7 +300,7 @@ impl InterfaceInner {
     ) {
         let packet = match packet {
             #[cfg(feature = "proto-ipv4")]
-            Packet::Ipv4(_) => unreachable!(),
+            Packet::Ipv4(_) => unsafe { core::hint::unreachable_unchecked() },
             Packet::Ipv6(packet) => packet,
         };
 
@@ -384,17 +384,17 @@ impl InterfaceInner {
                 tx_token.set_meta(meta);
                 tx_token.consume(ieee_len + frag1.buffer_len() + frag1_size, |mut tx_buf| {
                     // Add the IEEE header.
-                    let mut ieee_packet = Ieee802154Frame::new_unchecked(&mut tx_buf[..ieee_len]);
+                    let mut ieee_packet = Ieee802154Frame::new_unchecked((unsafe { tx_buf.get_unchecked_mut(..ieee_len) }));
                     ieee_repr.emit(&mut ieee_packet);
-                    tx_buf = &mut tx_buf[ieee_len..];
+                    tx_buf = (unsafe { tx_buf.get_unchecked_mut(ieee_len..) });
 
                     // Add the first fragment header
                     let mut frag1_packet = SixlowpanFragPacket::new_unchecked(&mut tx_buf);
                     frag1.emit(&mut frag1_packet);
-                    tx_buf = &mut tx_buf[frag1.buffer_len()..];
+                    tx_buf = (unsafe { tx_buf.get_unchecked_mut(frag1.buffer_len()..) });
 
                     // Add the buffer part.
-                    tx_buf[..frag1_size].copy_from_slice(&pkt.buffer[..frag1_size]);
+                    (unsafe { tx_buf.get_unchecked_mut(..frag1_size) }).copy_from_slice(&pkt.buffer[..frag1_size]);
                 });
             }
 
@@ -410,7 +410,7 @@ impl InterfaceInner {
 
             // We don't need fragmentation, so we emit everything to the TX token.
             tx_token.consume(total_size + ieee_len, |mut tx_buf| {
-                let mut ieee_packet = Ieee802154Frame::new_unchecked(&mut tx_buf[..ieee_len]);
+                let mut ieee_packet = Ieee802154Frame::new_unchecked((unsafe { tx_buf.get_unchecked_mut(..ieee_len) }));
                 ieee_repr.emit(&mut ieee_packet);
                 tx_buf = &mut tx_buf[ieee_len..];
 
@@ -455,9 +455,9 @@ impl InterfaceInner {
         };
 
         iphc_repr.emit(&mut SixlowpanIphcPacket::new_unchecked(
-            &mut buffer[..iphc_repr.buffer_len()],
+            (unsafe { buffer.get_unchecked_mut(..iphc_repr.buffer_len()) }),
         ));
-        buffer = &mut buffer[iphc_repr.buffer_len()..];
+        buffer = (unsafe { buffer.get_unchecked_mut(iphc_repr.buffer_len()..) });
 
         // Emit the Hop-by-Hop header
         #[cfg(feature = "proto-ipv6-hbh")]
@@ -478,16 +478,16 @@ impl InterfaceInner {
                 length: hbh.options.iter().map(|o| o.buffer_len()).sum::<usize>() as u8,
             };
             ext_hdr.emit(&mut SixlowpanExtHeaderPacket::new_unchecked(
-                &mut buffer[..ext_hdr.buffer_len()],
+                (unsafe { buffer.get_unchecked_mut(..ext_hdr.buffer_len()) }),
             ));
-            buffer = &mut buffer[ext_hdr.buffer_len()..];
+            buffer = (unsafe { buffer.get_unchecked_mut(ext_hdr.buffer_len()..) });
 
             for opt in &hbh.options {
                 opt.emit(&mut Ipv6Option::new_unchecked(
-                    &mut buffer[..opt.buffer_len()],
+                    (unsafe { buffer.get_unchecked_mut(..opt.buffer_len()) }),
                 ));
 
-                buffer = &mut buffer[opt.buffer_len()..];
+                buffer = (unsafe { buffer.get_unchecked_mut(opt.buffer_len()..) });
             }
         }
 
@@ -500,14 +500,14 @@ impl InterfaceInner {
                 length: routing.buffer_len() as u8,
             };
             ext_hdr.emit(&mut SixlowpanExtHeaderPacket::new_unchecked(
-                &mut buffer[..ext_hdr.buffer_len()],
+                (unsafe { buffer.get_unchecked_mut(..ext_hdr.buffer_len()) }),
             ));
-            buffer = &mut buffer[ext_hdr.buffer_len()..];
+            buffer = (unsafe { buffer.get_unchecked_mut(ext_hdr.buffer_len()..) });
 
             routing.emit(&mut Ipv6RoutingHeader::new_unchecked(
-                &mut buffer[..routing.buffer_len()],
+                (unsafe { buffer.get_unchecked_mut(..routing.buffer_len()) }),
             ));
-            buffer = &mut buffer[routing.buffer_len()..];
+            buffer = (unsafe { buffer.get_unchecked_mut(routing.buffer_len()..) });
         }
 
         match &mut packet.payload {
@@ -515,7 +515,7 @@ impl InterfaceInner {
                 icmp_repr.emit(
                     &packet.header.src_addr,
                     &packet.header.dst_addr,
-                    &mut Icmpv6Packet::new_unchecked(&mut buffer[..icmp_repr.buffer_len()]),
+                    &mut Icmpv6Packet::new_unchecked((unsafe { buffer.get_unchecked_mut(..icmp_repr.buffer_len()) })),
                     checksum_caps,
                 );
             }
@@ -524,7 +524,7 @@ impl InterfaceInner {
                 let udp_repr = SixlowpanUdpNhcRepr(*udp_repr);
                 udp_repr.emit(
                     &mut SixlowpanUdpNhcPacket::new_unchecked(
-                        &mut buffer[..udp_repr.header_len() + payload.len()],
+                        (unsafe { buffer.get_unchecked_mut(..udp_repr.header_len() + payload.len()) }),
                     ),
                     &iphc_repr.src_addr,
                     &iphc_repr.dst_addr,
@@ -536,14 +536,14 @@ impl InterfaceInner {
             #[cfg(feature = "socket-tcp")]
             IpPayload::Tcp(tcp_repr) => {
                 tcp_repr.emit(
-                    &mut TcpPacket::new_unchecked(&mut buffer[..tcp_repr.buffer_len()]),
+                    &mut TcpPacket::new_unchecked((unsafe { buffer.get_unchecked_mut(..tcp_repr.buffer_len()) })),
                     &packet.header.src_addr.into(),
                     &packet.header.dst_addr.into(),
                     checksum_caps,
                 );
             }
             #[cfg(feature = "socket-raw")]
-            IpPayload::Raw(_raw) => todo!(),
+            IpPayload::Raw(_raw) => unsafe { core::hint::unreachable_unchecked() },
 
             #[allow(unreachable_patterns)]
             _ => unreachable!(),
@@ -670,17 +670,17 @@ impl InterfaceInner {
         tx_token.consume(
             ieee_repr.buffer_len() + fragn.buffer_len() + frag_size,
             |mut tx_buf| {
-                let mut ieee_packet = Ieee802154Frame::new_unchecked(&mut tx_buf[..ieee_len]);
+                let mut ieee_packet = Ieee802154Frame::new_unchecked((unsafe { tx_buf.get_unchecked_mut(..ieee_len) }));
                 ieee_repr.emit(&mut ieee_packet);
-                tx_buf = &mut tx_buf[ieee_len..];
+                tx_buf = (unsafe { tx_buf.get_unchecked_mut(ieee_len..) });
 
                 let mut frag_packet =
-                    SixlowpanFragPacket::new_unchecked(&mut tx_buf[..fragn.buffer_len()]);
+                    SixlowpanFragPacket::new_unchecked((unsafe { tx_buf.get_unchecked_mut(..fragn.buffer_len()) }));
                 fragn.emit(&mut frag_packet);
-                tx_buf = &mut tx_buf[fragn.buffer_len()..];
+                tx_buf = (unsafe { tx_buf.get_unchecked_mut(fragn.buffer_len()..) });
 
                 // Add the buffer part
-                tx_buf[..frag_size].copy_from_slice(&frag.buffer[frag.sent_bytes..][..frag_size]);
+                (unsafe { tx_buf.get_unchecked_mut(..frag_size) }).copy_from_slice(&frag.buffer[frag.sent_bytes..][..frag_size]);
 
                 frag.sent_bytes += frag_size;
                 frag.sixlowpan.datagram_offset += frag_size;
@@ -717,7 +717,7 @@ fn decompress_ext_hdr<'d>(
     let ext_repr = SixlowpanExtHeaderRepr::parse(&ext_hdr)?;
     let nh = decompress_next_header(
         ext_repr.next_header,
-        &data[ext_repr.length as usize + ext_repr.buffer_len()..],
+        (unsafe { data.get_unchecked(ext_repr.length as usize + ext_repr.buffer_len()..) }),
     )?;
     *next_header = Some(ext_repr.next_header);
     let ipv6_ext_hdr = Ipv6ExtHeaderRepr {
@@ -729,9 +729,9 @@ fn decompress_ext_hdr<'d>(
         return Err(Error);
     }
     ipv6_ext_hdr.emit(&mut Ipv6ExtHeader::new_unchecked(
-        &mut buffer[..ipv6_ext_hdr.header_len()],
+        (unsafe { buffer.get_unchecked_mut(..ipv6_ext_hdr.header_len()) }),
     ));
-    buffer[ipv6_ext_hdr.header_len()..][..ipv6_ext_hdr.data.len()]
+    (unsafe { buffer.get_unchecked(ipv6_ext_hdr.header_len()..) })[..ipv6_ext_hdr.data.len()]
         .copy_from_slice(ipv6_ext_hdr.data);
     buffer = &mut buffer[ipv6_ext_hdr.header_len() + ipv6_ext_hdr.data.len()..];
     *payload_len += ipv6_ext_hdr.header_len() + ipv6_ext_hdr.data.len();

@@ -42,7 +42,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[inline]
     pub fn current_hop_limit(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[field::CUR_HOP_LIMIT]
+        (unsafe { *data.get_unchecked(field::CUR_HOP_LIMIT) })
     }
 
     /// Return the Router Advertisement flags.
@@ -54,7 +54,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[inline]
     pub fn router_flags(&self) -> RouterFlags {
         let data = self.buffer.as_ref();
-        RouterFlags::from_bits_truncate(data[field::ROUTER_FLAGS])
+        RouterFlags::from_bits_truncate((unsafe { *data.get_unchecked(field::ROUTER_FLAGS) }))
     }
 
     /// Return the router lifetime field.
@@ -139,7 +139,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[inline]
     pub fn neighbor_flags(&self) -> NeighborFlags {
         let data = self.buffer.as_ref();
-        NeighborFlags::from_bits_truncate(data[field::NEIGH_FLAGS])
+        NeighborFlags::from_bits_truncate((unsafe { *data.get_unchecked(field::NEIGH_FLAGS) }))
     }
 }
 
@@ -177,7 +177,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     #[inline]
     pub fn set_current_hop_limit(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::CUR_HOP_LIMIT] = value;
+        unsafe { *data.get_unchecked_mut(field::CUR_HOP_LIMIT) = value; }
     }
 
     /// Set the Router Advertisement flags.

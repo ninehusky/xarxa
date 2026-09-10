@@ -77,7 +77,7 @@ impl Device for RawSocket {
     fn receive(&mut self) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         let mut lower = self.lower.borrow_mut();
         let mut buffer = vec![0; self.mtu];
-        match lower.recv(&mut buffer[..]) {
+        match lower.recv((unsafe { buffer.get_unchecked_mut(..) })) {
             Ok(size) => {
                 buffer.resize(size, 0);
                 let rx = RxToken { buffer };
@@ -87,7 +87,7 @@ impl Device for RawSocket {
                 Some((rx, tx))
             }
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => None,
-            Err(err) => panic!("{}", err),
+            Err(err) => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 
@@ -130,12 +130,12 @@ impl phy::TxToken for TxToken {
     {
         let mut lower = self.lower.borrow_mut();
         let (result, buffer) = phy::with_zeroed_buf(len, f);
-        match lower.send(&buffer[..]) {
+        match lower.send((unsafe { buffer.get_unchecked(..) })) {
             Ok(_) => {}
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
                 net_debug!("phy: tx failed due to WouldBlock")
             }
-            Err(err) => panic!("{}", err),
+            Err(err) => unsafe { core::hint::unreachable_unchecked() },
         }
         result
     }

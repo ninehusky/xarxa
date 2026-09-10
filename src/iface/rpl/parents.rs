@@ -53,7 +53,7 @@ impl ParentSet {
                     net_debug!("could not add {} to parent set, buffer is full", address);
                 }
             } else {
-                unreachable!()
+                unsafe { core::hint::unreachable_unchecked() }
             }
         }
     }

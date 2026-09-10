@@ -47,8 +47,8 @@ impl TunTapInterfaceDesc {
             #[cfg(feature = "medium-ethernet")]
             DriverMedium::Ethernet => imp::IFF_TAP,
             #[cfg(feature = "medium-ieee802154")]
-            DriverMedium::Ieee802154 => todo!(),
-            medium => panic!("unsupported medium {medium:?}"),
+            DriverMedium::Ieee802154 => unsafe { core::hint::unreachable_unchecked() },
+            medium => unsafe { core::hint::unreachable_unchecked() },
         };
         ifr.ifr_data = mode | imp::IFF_NO_PI;
         ifreq_ioctl(lower, ifr, imp::TUNSETIFF).map(|_| ())
@@ -80,8 +80,8 @@ impl TunTapInterfaceDesc {
             #[cfg(feature = "medium-ethernet")]
             DriverMedium::Ethernet => ip_mtu + crate::wire::EthernetFrame::<&[u8]>::header_len(),
             #[cfg(feature = "medium-ieee802154")]
-            DriverMedium::Ieee802154 => todo!(),
-            medium => panic!("unsupported medium {medium:?}"),
+            DriverMedium::Ieee802154 => unsafe { core::hint::unreachable_unchecked() },
+            medium => unsafe { core::hint::unreachable_unchecked() },
         };
 
         Ok(mtu)

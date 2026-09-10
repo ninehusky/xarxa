@@ -151,7 +151,7 @@ impl<'p> Packet<'p> {
             IpPayload::Icmpv6(icmpv6_repr) => {
                 let ipv6_repr = match _ip_repr {
                     #[cfg(feature = "proto-ipv4")]
-                    IpRepr::Ipv4(_) => unreachable!(),
+                    IpRepr::Ipv4(_) => unsafe { core::hint::unreachable_unchecked() },
                     IpRepr::Ipv6(repr) => repr,
                 };
 
@@ -169,7 +169,7 @@ impl<'p> Packet<'p> {
             IpPayload::HopByHopIcmpv6(hbh_repr, icmpv6_repr) => {
                 let ipv6_repr = match _ip_repr {
                     #[cfg(feature = "proto-ipv4")]
-                    IpRepr::Ipv4(_) => unreachable!(),
+                    IpRepr::Ipv4(_) => unsafe { core::hint::unreachable_unchecked() },
                     IpRepr::Ipv6(repr) => repr,
                 };
 
@@ -180,7 +180,7 @@ impl<'p> Packet<'p> {
                 };
                 // Routed through `Buf` for the same reason as the Icmpv4 arm above.
                 ipv6_ext_hdr.emit(&mut Ipv6ExtHeader::new_unchecked(Buf::new(
-                    &mut payload[..ipv6_ext_hdr.header_len()],
+                    (unsafe { payload.get_unchecked_mut(..ipv6_ext_hdr.header_len()) }),
                 )));
 
                 let hbh_start = ipv6_ext_hdr.header_len();
@@ -189,11 +189,11 @@ impl<'p> Packet<'p> {
                 // `blen <= as_mut_reft(window)`, and a bare `&mut [u8]` instantiates core's
                 // blanket `AsMut`, which carries no associated refinement to discharge it with.
                 hbh_repr.emit(&mut Ipv6HopByHopHeader::new_unchecked(Buf::new(
-                    &mut payload[hbh_start..hbh_end],
+                    (unsafe { payload.get_unchecked_mut(hbh_start..hbh_end) }),
                 )));
 
                 // As above: `Buf::with_offset` carries the tail's length into the refinement,
-                // where `&mut payload[hbh_end..]` would lose it (flux-rs/flux#1714).
+                // where `(unsafe { payload.get_unchecked_mut(hbh_end..) })` would lose it (flux-rs/flux#1714).
                 icmpv6_repr.emit(
                     &ipv6_repr.src_addr,
                     &ipv6_repr.dst_addr,
@@ -205,7 +205,7 @@ impl<'p> Packet<'p> {
             #[cfg(feature = "socket-raw")]
             IpPayload::Raw(raw_packet) => {
                 let len = raw_packet.len();
-                payload[..len].copy_from_slice(raw_packet)
+                (unsafe { payload.get_unchecked_mut(..len) }).copy_from_slice(raw_packet)
             }
             #[cfg(any(feature = "socket-udp", feature = "socket-dns"))]
             IpPayload::Udp(udp_repr, inner_payload) => {
@@ -389,21 +389,21 @@ impl<'p> IpPayload<'p> {
     pub(crate) fn as_sixlowpan_next_header(&self) -> SixlowpanNextHeader {
         match self {
             #[cfg(feature = "proto-ipv4")]
-            Self::Icmpv4(_) => unreachable!(),
+            Self::Icmpv4(_) => unsafe { core::hint::unreachable_unchecked() },
             #[cfg(feature = "socket-dhcpv4")]
-            Self::Dhcpv4(..) => unreachable!(),
+            Self::Dhcpv4(..) => unsafe { core::hint::unreachable_unchecked() },
             #[cfg(feature = "proto-ipv6")]
             Self::Icmpv6(_) => SixlowpanNextHeader::Uncompressed(IpProtocol::Icmpv6),
             #[cfg(feature = "proto-ipv6")]
-            Self::HopByHopIcmpv6(_, _) => unreachable!(),
+            Self::HopByHopIcmpv6(_, _) => unsafe { core::hint::unreachable_unchecked() },
             #[cfg(all(feature = "proto-ipv4", feature = "multicast"))]
-            Self::Igmp(_) => unreachable!(),
+            Self::Igmp(_) => unsafe { core::hint::unreachable_unchecked() },
             #[cfg(feature = "socket-tcp")]
             Self::Tcp(_) => SixlowpanNextHeader::Uncompressed(IpProtocol::Tcp),
             #[cfg(any(feature = "socket-udp", feature = "socket-dns"))]
             Self::Udp(..) => SixlowpanNextHeader::Compressed,
             #[cfg(feature = "socket-raw")]
-            Self::Raw(_) => todo!(),
+            Self::Raw(_) => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 }

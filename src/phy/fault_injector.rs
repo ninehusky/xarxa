@@ -52,7 +52,7 @@ impl State {
         // We introduce a single bitflip, as the most likely, and the hardest to detect, error.
         let index = (xorshift32(&mut self.rng_seed) as usize) % buffer.len();
         let bit = 1 << (xorshift32(&mut self.rng_seed) % 8) as u8;
-        buffer[index] ^= bit;
+        unsafe { *buffer.get_unchecked_mut(index) ^= bit; }
     }
 
     fn refill(&mut self, config: &Config, timestamp: Instant) {
@@ -167,7 +167,7 @@ impl<D: Device> FaultInjector<D> {
     /// This function panics if the probability is not between 0% and 100%.
     pub fn set_corrupt_chance(&mut self, pct: u8) {
         if pct > 100 {
-            panic!("percentage out of range")
+            unsafe { core::hint::unreachable_unchecked() }
         }
         self.config.corrupt_pct = pct
     }
@@ -178,7 +178,7 @@ impl<D: Device> FaultInjector<D> {
     /// This function panics if the probability is not between 0% and 100%.
     pub fn set_drop_chance(&mut self, pct: u8) {
         if pct > 100 {
-            panic!("percentage out of range")
+            unsafe { core::hint::unreachable_unchecked() }
         }
         self.config.drop_pct = pct
     }
@@ -257,7 +257,7 @@ impl<D: Device> Device for FaultInjector<D> {
 
         if self.state.maybe(self.config.corrupt_pct) {
             net_trace!("rx: randomly corrupting a packet");
-            self.state.corrupt(&mut buf[..]);
+            self.state.corrupt((unsafe { buf.get_unchecked_mut(..) }));
         }
 
         let rx = RxToken { buf, meta: rx_meta };

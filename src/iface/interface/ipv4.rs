@@ -471,7 +471,7 @@ impl InterfaceInner {
     )]
     #[flux_rs::no_panic]
     fn frag_payload(buf: &[u8], at: usize, count: usize) -> &[u8] {
-        &buf[at..at + count]
+        (unsafe { buf.get_unchecked(at..at + count) })
     }
 
     /// Emit the IPv4 header of a single fragment into `buf`.

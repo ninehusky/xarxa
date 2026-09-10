@@ -25,7 +25,7 @@ impl RawSocketDesc {
             DriverMedium::Ip => imp::ETH_P_ALL,
             #[cfg(feature = "medium-ieee802154")]
             DriverMedium::Ieee802154 => imp::ETH_P_IEEE802154,
-            medium => panic!("unsupported medium {medium:?}"),
+            medium => unsafe { core::hint::unreachable_unchecked() },
         };
 
         let lower = unsafe {

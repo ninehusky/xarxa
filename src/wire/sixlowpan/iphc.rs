@@ -130,7 +130,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
             let start = (self.ip_fields_start() + self.traffic_class_size()) as usize;
 
             let data = self.buffer.as_ref();
-            let nh = data[start..start + 1][0];
+            let nh = (unsafe { data.get_unchecked(start..start + 1) })[0];
             NextHeader::Uncompressed(IpProtocol::from(nh))
         }
     }
@@ -144,12 +144,12 @@ impl<T: AsRef<[u8]>> Packet<T> {
                     + self.next_header_size()) as usize;
 
                 let data = self.buffer.as_ref();
-                data[start..start + 1][0]
+                (unsafe { data.get_unchecked(start..start + 1) })[0]
             }
             0b01 => 1,
             0b10 => 64,
             0b11 => 255,
-            _ => unreachable!(),
+            _ => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 
@@ -157,7 +157,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     pub fn src_context_id(&self) -> Option<u8> {
         if self.cid_field() == 1 {
             let data = self.buffer.as_ref();
-            Some(data[2] >> 4)
+            Some((unsafe { *data.get_unchecked(2) }) >> 4)
         } else {
             None
         }
@@ -167,7 +167,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     pub fn dst_context_id(&self) -> Option<u8> {
         if self.cid_field() == 1 {
             let data = self.buffer.as_ref();
-            Some(data[2] & 0x0f)
+            Some((unsafe { *data.get_unchecked(2) }) & 0x0f)
         } else {
             None
         }
@@ -181,7 +181,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
                 Some(self.buffer.as_ref()[start..][0] & 0b1100_0000)
             }
             0b11 => None,
-            _ => unreachable!(),
+            _ => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 
@@ -193,7 +193,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
                 Some(self.buffer.as_ref()[start..][0] & 0b111111)
             }
             0b01 | 0b11 => None,
-            _ => unreachable!(),
+            _ => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 
@@ -213,7 +213,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
                 ))
             }
             0b10 | 0b11 => None,
-            _ => unreachable!(),
+            _ => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 
@@ -227,13 +227,13 @@ impl<T: AsRef<[u8]>> Packet<T> {
         let data = self.buffer.as_ref();
         match (self.sac_field(), self.sam_field()) {
             (0, 0b00) => Ok(UnresolvedAddress::WithoutContext(AddressMode::FullInline(
-                &data[start..][..16],
+                (unsafe { data.get_unchecked(start..) })[..16],
             ))),
             (0, 0b01) => Ok(UnresolvedAddress::WithoutContext(
-                AddressMode::InLine64bits(&data[start..][..8]),
+                AddressMode::InLine64bits((unsafe { data.get_unchecked(start..) })[..8]),
             )),
             (0, 0b10) => Ok(UnresolvedAddress::WithoutContext(
-                AddressMode::InLine16bits(&data[start..][..2]),
+                AddressMode::InLine16bits((unsafe { data.get_unchecked(start..) })[..2]),
             )),
             (0, 0b11) => Ok(UnresolvedAddress::WithoutContext(AddressMode::FullyElided)),
             (1, 0b00) => Ok(UnresolvedAddress::WithContext((
@@ -244,7 +244,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
                 if let Some(id) = self.src_context_id() {
                     Ok(UnresolvedAddress::WithContext((
                         id as usize,
-                        AddressMode::InLine64bits(&data[start..][..8]),
+                        AddressMode::InLine64bits((unsafe { data.get_unchecked(start..) })[..8]),
                     )))
                 } else {
                     Err(Error)
@@ -254,7 +254,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
                 if let Some(id) = self.src_context_id() {
                     Ok(UnresolvedAddress::WithContext((
                         id as usize,
-                        AddressMode::InLine16bits(&data[start..][..2]),
+                        AddressMode::InLine16bits((unsafe { data.get_unchecked(start..) })[..2]),
                     )))
                 } else {
                     Err(Error)
@@ -285,13 +285,13 @@ impl<T: AsRef<[u8]>> Packet<T> {
         let data = self.buffer.as_ref();
         match (self.m_field(), self.dac_field(), self.dam_field()) {
             (0, 0, 0b00) => Ok(UnresolvedAddress::WithoutContext(AddressMode::FullInline(
-                &data[start..][..16],
+                (unsafe { data.get_unchecked(start..) })[..16],
             ))),
             (0, 0, 0b01) => Ok(UnresolvedAddress::WithoutContext(
-                AddressMode::InLine64bits(&data[start..][..8]),
+                AddressMode::InLine64bits((unsafe { data.get_unchecked(start..) })[..8]),
             )),
             (0, 0, 0b10) => Ok(UnresolvedAddress::WithoutContext(
-                AddressMode::InLine16bits(&data[start..][..2]),
+                AddressMode::InLine16bits((unsafe { data.get_unchecked(start..) })[..2]),
             )),
             (0, 0, 0b11) => Ok(UnresolvedAddress::WithoutContext(AddressMode::FullyElided)),
             (0, 1, 0b00) => Ok(UnresolvedAddress::Reserved),
@@ -299,7 +299,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
                 if let Some(id) = self.dst_context_id() {
                     Ok(UnresolvedAddress::WithContext((
                         id as usize,
-                        AddressMode::InLine64bits(&data[start..][..8]),
+                        AddressMode::InLine64bits((unsafe { data.get_unchecked(start..) })[..8]),
                     )))
                 } else {
                     Err(Error)
@@ -309,7 +309,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
                 if let Some(id) = self.dst_context_id() {
                     Ok(UnresolvedAddress::WithContext((
                         id as usize,
-                        AddressMode::InLine16bits(&data[start..][..2]),
+                        AddressMode::InLine16bits((unsafe { data.get_unchecked(start..) })[..2]),
                     )))
                 } else {
                     Err(Error)
@@ -326,16 +326,16 @@ impl<T: AsRef<[u8]>> Packet<T> {
                 }
             }
             (1, 0, 0b00) => Ok(UnresolvedAddress::WithoutContext(AddressMode::FullInline(
-                &data[start..][..16],
+                (unsafe { data.get_unchecked(start..) })[..16],
             ))),
             (1, 0, 0b01) => Ok(UnresolvedAddress::WithoutContext(
-                AddressMode::Multicast48bits(&data[start..][..6]),
+                AddressMode::Multicast48bits((unsafe { data.get_unchecked(start..) })[..6]),
             )),
             (1, 0, 0b10) => Ok(UnresolvedAddress::WithoutContext(
-                AddressMode::Multicast32bits(&data[start..][..4]),
+                AddressMode::Multicast32bits((unsafe { data.get_unchecked(start..) })[..4]),
             )),
             (1, 0, 0b11) => Ok(UnresolvedAddress::WithoutContext(
-                AddressMode::Multicast8bits(&data[start..][..1]),
+                AddressMode::Multicast8bits((unsafe { data.get_unchecked(start..) })[..1]),
             )),
             (1, 1, 0b00) => Ok(UnresolvedAddress::WithContext((
                 0,
@@ -369,7 +369,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
             0b01 => 3,
             0b10 => 1,
             0b11 => 0,
-            _ => unreachable!(),
+            _ => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 
@@ -399,7 +399,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
             (1, 0b01) => 8,  // Address derived using context information.
             (1, 0b10) => 2,  // Address derived using context information.
             (1, 0b11) => 0,  // Address derived using context information.
-            _ => unreachable!(),
+            _ => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 
@@ -422,7 +422,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
             (1, 1, 0b01) => 0,  // Reserved.
             (1, 1, 0b10) => 0,  // Reserved.
             (1, 1, 0b11) => 0,  // Reserved.
-            _ => unreachable!(),
+            _ => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 
@@ -452,7 +452,7 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
         let len = len as usize;
 
         let data = self.buffer.as_ref();
-        &data[len..]
+        (unsafe { data.get_unchecked(len..) })
     }
 }
 
@@ -478,7 +478,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     fn set_field(&mut self, idx: usize, value: &[u8]) {
         let raw = self.buffer.as_mut();
-        raw[idx..idx + value.len()].copy_from_slice(value);
+        (unsafe { raw.get_unchecked_mut(idx..idx + value.len()) }).copy_from_slice(value);
     }
 
     /// Set the Next Header.
@@ -538,13 +538,13 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
             let is_eui_64 = ll_src_addr
                 .map(|addr| {
                     addr.as_eui_64()
-                        .map(|addr| addr[..] == src[8..])
+                        .map(|addr| (unsafe { addr.get_unchecked(..) }) == (unsafe { src.get_unchecked(8..) }))
                         .unwrap_or(false)
                 })
                 .unwrap_or(false);
 
-            if src[8..14] == [0, 0, 0, 0xff, 0xfe, 0] {
-                let ll = [src[14], src[15]];
+            if (unsafe { src.get_unchecked(8..14) }) == [0, 0, 0, 0xff, 0xfe, 0] {
+                let ll = [(unsafe { *src.get_unchecked(14) }), (unsafe { *src.get_unchecked(15) })];
 
                 if ll_src_addr == Some(LlAddress::Short(ll)) {
                     // We have the context from the 802.15.4 frame.
@@ -556,7 +556,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
                     // We cannot elide the source address, however we can elide 112 bits.
                     self.set_sam_field(0b10);
 
-                    self.set_field(idx, &src[14..]);
+                    self.set_field(idx, (unsafe { src.get_unchecked(14..) }));
                     idx += 2;
                 }
             } else if is_eui_64 {
@@ -568,7 +568,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
                 // We cannot elide the source address, however we can elide 64 bits.
                 self.set_sam_field(0b01);
 
-                self.set_field(idx, &src[8..]);
+                self.set_field(idx, (unsafe { src.get_unchecked(8..) }));
                 idx += 8;
             }
         } else {
@@ -597,24 +597,24 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         if dst_addr.is_multicast() {
             self.set_m_field(1);
 
-            if dst[1] == 0x02 && dst[2..15] == [0; 13] {
+            if (unsafe { *dst.get_unchecked(1) }) == 0x02 && (unsafe { dst.get_unchecked(2..15) }) == [0; 13] {
                 self.set_dam_field(0b11);
 
-                self.set_field(idx, &[dst[15]]);
+                self.set_field(idx, &[(unsafe { *dst.get_unchecked(15) })]);
                 idx += 1;
-            } else if dst[2..13] == [0; 11] {
+            } else if (unsafe { dst.get_unchecked(2..13) }) == [0; 11] {
                 self.set_dam_field(0b10);
 
-                self.set_field(idx, &[dst[1]]);
+                self.set_field(idx, &[(unsafe { *dst.get_unchecked(1) })]);
                 idx += 1;
-                self.set_field(idx, &dst[13..]);
+                self.set_field(idx, (unsafe { dst.get_unchecked(13..) }));
                 idx += 3;
-            } else if dst[2..11] == [0; 9] {
+            } else if (unsafe { dst.get_unchecked(2..11) }) == [0; 9] {
                 self.set_dam_field(0b01);
 
-                self.set_field(idx, &[dst[1]]);
+                self.set_field(idx, &[(unsafe { *dst.get_unchecked(1) })]);
                 idx += 1;
-                self.set_field(idx, &dst[11..]);
+                self.set_field(idx, (unsafe { dst.get_unchecked(11..) }));
                 idx += 5;
             } else {
                 self.set_dam_field(0b11);
@@ -626,20 +626,20 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
             let is_eui_64 = ll_dst_addr
                 .map(|addr| {
                     addr.as_eui_64()
-                        .map(|addr| addr[..] == dst[8..])
+                        .map(|addr| (unsafe { addr.get_unchecked(..) }) == (unsafe { dst.get_unchecked(8..) }))
                         .unwrap_or(false)
                 })
                 .unwrap_or(false);
 
-            if dst[8..14] == [0, 0, 0, 0xff, 0xfe, 0] {
-                let ll = [dst[14], dst[15]];
+            if (unsafe { dst.get_unchecked(8..14) }) == [0, 0, 0, 0xff, 0xfe, 0] {
+                let ll = [(unsafe { *dst.get_unchecked(14) }), (unsafe { *dst.get_unchecked(15) })];
 
                 if ll_dst_addr == Some(LlAddress::Short(ll)) {
                     self.set_dam_field(0b11);
                 } else {
                     self.set_dam_field(0b10);
 
-                    self.set_field(idx, &dst[14..]);
+                    self.set_field(idx, (unsafe { dst.get_unchecked(14..) }));
                     idx += 2;
                 }
             } else if is_eui_64 {
@@ -647,7 +647,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
             } else {
                 self.set_dam_field(0b01);
 
-                self.set_field(idx, &dst[8..]);
+                self.set_field(idx, (unsafe { dst.get_unchecked(8..) }));
                 idx += 8;
             }
         } else {
@@ -673,7 +673,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         let len = len as usize;
 
         let data = self.buffer.as_mut();
-        &mut data[len..]
+        (unsafe { data.get_unchecked_mut(len..) })
     }
 }
 
@@ -772,18 +772,18 @@ impl Repr {
             0
         } else if self.src_addr.is_link_local() {
             let src = self.src_addr.octets();
-            let ll = [src[14], src[15]];
+            let ll = [(unsafe { *src.get_unchecked(14) }), (unsafe { *src.get_unchecked(15) })];
 
             let is_eui_64 = self
                 .ll_src_addr
                 .map(|addr| {
                     addr.as_eui_64()
-                        .map(|addr| addr[..] == src[8..])
+                        .map(|addr| (unsafe { addr.get_unchecked(..) }) == (unsafe { src.get_unchecked(8..) }))
                         .unwrap_or(false)
                 })
                 .unwrap_or(false);
 
-            if src[8..14] == [0, 0, 0, 0xff, 0xfe, 0] {
+            if (unsafe { src.get_unchecked(8..14) }) == [0, 0, 0, 0xff, 0xfe, 0] {
                 if self.ll_src_addr == Some(LlAddress::Short(ll)) {
                     0
                 } else {
@@ -801,11 +801,11 @@ impl Repr {
         // Add the size of the destination header
         let dst = self.dst_addr.octets();
         len += if self.dst_addr.is_multicast() {
-            if dst[1] == 0x02 && dst[2..15] == [0; 13] {
+            if (unsafe { *dst.get_unchecked(1) }) == 0x02 && (unsafe { dst.get_unchecked(2..15) }) == [0; 13] {
                 1
-            } else if dst[2..13] == [0; 11] {
+            } else if (unsafe { dst.get_unchecked(2..13) }) == [0; 11] {
                 4
-            } else if dst[2..11] == [0; 9] {
+            } else if (unsafe { dst.get_unchecked(2..11) }) == [0; 9] {
                 6
             } else {
                 16
@@ -815,13 +815,13 @@ impl Repr {
                 .ll_dst_addr
                 .map(|addr| {
                     addr.as_eui_64()
-                        .map(|addr| addr[..] == dst[8..])
+                        .map(|addr| (unsafe { addr.get_unchecked(..) }) == (unsafe { dst.get_unchecked(8..) }))
                         .unwrap_or(false)
                 })
                 .unwrap_or(false);
 
-            if dst[8..14] == [0, 0, 0, 0xff, 0xfe, 0] {
-                let ll = [dst[14], dst[15]];
+            if (unsafe { dst.get_unchecked(8..14) }) == [0, 0, 0, 0xff, 0xfe, 0] {
+                let ll = [(unsafe { *dst.get_unchecked(14) }), (unsafe { *dst.get_unchecked(15) })];
 
                 if self.ll_dst_addr == Some(LlAddress::Short(ll)) {
                     0
@@ -842,7 +842,7 @@ impl Repr {
             (Some(_), None, Some(_)) => 3,
             (Some(_), Some(_), None) => 1,
             (None, None, None) => 0,
-            _ => unreachable!(),
+            _ => unsafe { core::hint::unreachable_unchecked() },
         };
 
         len

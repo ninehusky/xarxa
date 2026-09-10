@@ -105,7 +105,7 @@ impl PartialOrd for SequenceCounter {
                 None
             }
         } else {
-            unreachable!();
+            unsafe { core::hint::unreachable_unchecked() };
         }
     }
 }

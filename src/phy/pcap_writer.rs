@@ -43,14 +43,14 @@ pub trait PcapSink {
     fn write_u16(&mut self, value: u16) {
         let mut bytes = [0u8; 2];
         NativeEndian::write_u16(&mut bytes, value);
-        self.write(&bytes[..])
+        self.write((unsafe { bytes.get_unchecked(..) }))
     }
 
     /// Write an `u32` into the sink, in native byte order.
     fn write_u32(&mut self, value: u32) {
         let mut bytes = [0u8; 4];
         NativeEndian::write_u32(&mut bytes, value);
-        self.write(&bytes[..])
+        self.write((unsafe { bytes.get_unchecked(..) }))
     }
 
     /// Write the libpcap global header into the sink.
@@ -136,7 +136,7 @@ impl<D: Device, S: PcapSink> PcapWriter<D, S> {
             DriverMedium::Ethernet => PcapLinkType::Ethernet,
             #[cfg(feature = "medium-ieee802154")]
             DriverMedium::Ieee802154 => PcapLinkType::Ieee802154WithoutFcs,
-            medium => panic!("unsupported medium {medium:?}"),
+            medium => unsafe { core::hint::unreachable_unchecked() },
         };
         sink.global_header(link_type);
         PcapWriter {

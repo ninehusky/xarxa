@@ -112,7 +112,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     /// Return the dispatch field.
     pub fn dispatch(&self) -> u8 {
         let raw = self.buffer.as_ref();
-        raw[field::DISPATCH] >> 3
+        (unsafe { *raw.get_unchecked(field::DISPATCH) }) >> 3
     }
 
     /// Return the total datagram size.
@@ -133,9 +133,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
             DISPATCH_FIRST_FRAGMENT_HEADER => 0,
             DISPATCH_FRAGMENT_HEADER => {
                 let raw = self.buffer.as_ref();
-                raw[field::DATAGRAM_OFFSET]
+                (unsafe { *raw.get_unchecked(field::DATAGRAM_OFFSET) })
             }
-            _ => unreachable!(),
+            _ => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 
@@ -167,7 +167,7 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
                 let raw = self.buffer.as_ref();
                 &raw[field::NEXT_FRAGMENT_REST]
             }
-            _ => unreachable!(),
+            _ => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 }
@@ -175,7 +175,7 @@ impl<'a, T: AsRef<[u8]> + ?Sized> Packet<&'a T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     fn set_dispatch_field(&mut self, value: u8) {
         let raw = self.buffer.as_mut();
-        raw[field::DISPATCH] = (raw[field::DISPATCH] & !(0b11111 << 3)) | (value << 3);
+        unsafe { *raw.get_unchecked_mut(field::DISPATCH) = (raw[field::DISPATCH] & !(0b11111 << 3)) | (value << 3); }
     }
 
     fn set_datagram_size(&mut self, size: u16) {
@@ -193,7 +193,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
 
     fn set_datagram_offset(&mut self, offset: u8) {
         let raw = self.buffer.as_mut();
-        raw[field::DATAGRAM_OFFSET] = offset;
+        unsafe { *raw.get_unchecked_mut(field::DATAGRAM_OFFSET) = offset; }
     }
 }
 

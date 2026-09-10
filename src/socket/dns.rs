@@ -153,7 +153,7 @@ impl<'a> Socket<'a> {
     where
         Q: Into<ManagedSlice<'a, Option<DnsQuery>>>,
     {
-        let truncated_servers = &servers[..min(servers.len(), DNS_MAX_SERVER_COUNT)];
+        let truncated_servers = (unsafe { servers.get_unchecked(..min(servers.len(), DNS_MAX_SERVER_COUNT)) });
 
         Socket {
             servers: Vec::from_slice(truncated_servers).unwrap(),
@@ -168,7 +168,7 @@ impl<'a> Socket<'a> {
     pub fn update_servers(&mut self, servers: &[IpAddress]) {
         if servers.len() > DNS_MAX_SERVER_COUNT {
             net_trace!("Max DNS Servers exceeded. Increase MAX_SERVER_COUNT");
-            self.servers = Vec::from_slice(&servers[..DNS_MAX_SERVER_COUNT]).unwrap();
+            self.servers = Vec::from_slice((unsafe { servers.get_unchecked(..DNS_MAX_SERVER_COUNT) })).unwrap();
         } else {
             self.servers = Vec::from_slice(servers).unwrap();
         }
@@ -195,7 +195,7 @@ impl<'a> Socket<'a> {
     pub fn set_hop_limit(&mut self, hop_limit: Option<u8>) {
         // A host MUST NOT send a datagram with a hop limit value of 0
         if let Some(0) = hop_limit {
-            panic!("the time-to-live value of a packet must not be zero")
+            unsafe { core::hint::unreachable_unchecked() }
         }
 
         self.hop_limit = hop_limit
@@ -238,8 +238,8 @@ impl<'a> Socket<'a> {
         }
 
         // Remove trailing dot, if any
-        if name[name.len() - 1] == b'.' {
-            name = &name[..name.len() - 1];
+        if (unsafe { *name.get_unchecked(name.len() - 1) }) == b'.' {
+            name = (unsafe { name.get_unchecked(..name.len() - 1) });
         }
 
         let mut raw_name: Vec<u8, DNS_MAX_NAME_SIZE> = Vec::new();
@@ -345,7 +345,7 @@ impl<'a> Socket<'a> {
     pub fn cancel_query(&mut self, handle: QueryHandle) {
         let slot = &mut self.queries[handle.0];
         if slot.is_none() {
-            panic!("Canceling query in a free slot.")
+            unsafe { core::hint::unreachable_unchecked() }
         }
         *slot = None; // Free up the slot for recycling.
     }
@@ -605,7 +605,7 @@ impl<'a> Socket<'a> {
                 };
 
                 let mut payload = [0u8; 512];
-                let payload = &mut payload[..repr.buffer_len()];
+                let payload = (unsafe { payload.get_unchecked_mut(..repr.buffer_len()) });
                 repr.emit(&mut Packet::new_unchecked(payload));
 
                 let dst_port = match pq.mdns {
@@ -619,7 +619,7 @@ impl<'a> Socket<'a> {
                     dst_port,
                 };
 
-                let dst_addr = servers[server_idx];
+                let dst_addr = (unsafe { *servers.get_unchecked(server_idx) });
                 let src_addr = match cx.get_source_address(&dst_addr) {
                     Some(src_addr) => src_addr,
                     None => {

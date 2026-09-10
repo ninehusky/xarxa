@@ -199,26 +199,26 @@ impl<'p, T: AsRef<[u8]> + ?Sized> Packet<&'p T> {
 
         let buffer = &self.buffer.as_ref();
         Ok(match RplControlMessage::from(self.msg_code()) {
-            RplControlMessage::DodagInformationSolicitation => &buffer[field::DIS_RESERVED + 1..],
-            RplControlMessage::DodagInformationObject => &buffer[field::DIO_DODAG_ID.end..],
+            RplControlMessage::DodagInformationSolicitation => (unsafe { buffer.get_unchecked(field::DIS_RESERVED + 1..) }),
+            RplControlMessage::DodagInformationObject => (unsafe { buffer.get_unchecked(field::DIO_DODAG_ID.end..) }),
             RplControlMessage::DestinationAdvertisementObject if self.dao_dodag_id_present() => {
-                &buffer[field::DAO_DODAG_ID.end..]
+                (unsafe { buffer.get_unchecked(field::DAO_DODAG_ID.end..) })
             }
-            RplControlMessage::DestinationAdvertisementObject => &buffer[field::DAO_SEQUENCE + 1..],
+            RplControlMessage::DestinationAdvertisementObject => (unsafe { buffer.get_unchecked(field::DAO_SEQUENCE + 1..) }),
             RplControlMessage::DestinationAdvertisementObjectAck
                 if self.dao_ack_dodag_id_present() =>
             {
-                &buffer[field::DAO_ACK_DODAG_ID.end..]
+                (unsafe { buffer.get_unchecked(field::DAO_ACK_DODAG_ID.end..) })
             }
             RplControlMessage::DestinationAdvertisementObjectAck => {
-                &buffer[field::DAO_ACK_STATUS + 1..]
+                (unsafe { buffer.get_unchecked(field::DAO_ACK_STATUS + 1..) })
             }
             RplControlMessage::SecureDodagInformationSolicitation
             | RplControlMessage::SecureDodagInformationObject
             | RplControlMessage::SecureDestinationAdvertisementObject
             | RplControlMessage::SecureDestinationAdvertisementObjectAck
-            | RplControlMessage::ConsistencyCheck => unreachable!(),
-            RplControlMessage::Unknown(_) => unreachable!(),
+            | RplControlMessage::ConsistencyCheck => unsafe { core::hint::unreachable_unchecked() },
+            RplControlMessage::Unknown(_) => unsafe { core::hint::unreachable_unchecked() },
         })
     }
 }
@@ -259,8 +259,8 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
             | RplControlMessage::SecureDodagInformationObject
             | RplControlMessage::SecureDestinationAdvertisementObject
             | RplControlMessage::SecureDestinationAdvertisementObjectAck
-            | RplControlMessage::ConsistencyCheck => todo!("Secure messages not supported"),
-            RplControlMessage::Unknown(_) => todo!(),
+            | RplControlMessage::ConsistencyCheck => unsafe { core::hint::unreachable_unchecked() },
+            RplControlMessage::Unknown(_) => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 }
@@ -713,7 +713,7 @@ impl<'p> Repr<'p> {
             Repr::DodagInformationSolicitation { options } => options,
             Repr::DodagInformationObject { options, .. } => options,
             Repr::DestinationAdvertisementObject { options, .. } => options,
-            Repr::DestinationAdvertisementObjectAck { .. } => unreachable!(),
+            Repr::DestinationAdvertisementObjectAck { .. } => unsafe { core::hint::unreachable_unchecked() },
         };
 
         *opts = options;
@@ -785,9 +785,9 @@ impl<'p> Repr<'p> {
         };
 
         let opts = match self {
-            Repr::DodagInformationSolicitation { options } => &options[..],
-            Repr::DodagInformationObject { options, .. } => &options[..],
-            Repr::DestinationAdvertisementObject { options, .. } => &options[..],
+            Repr::DodagInformationSolicitation { options } => (unsafe { options.get_unchecked(..) }),
+            Repr::DodagInformationObject { options, .. } => (unsafe { options.get_unchecked(..) }),
+            Repr::DestinationAdvertisementObject { options, .. } => (unsafe { options.get_unchecked(..) }),
             Repr::DestinationAdvertisementObjectAck { .. } => &[],
         };
 
@@ -855,9 +855,9 @@ impl<'p> Repr<'p> {
         }
 
         let options = match self {
-            Repr::DodagInformationSolicitation { options } => &options[..],
-            Repr::DodagInformationObject { options, .. } => &options[..],
-            Repr::DestinationAdvertisementObject { options, .. } => &options[..],
+            Repr::DodagInformationSolicitation { options } => (unsafe { options.get_unchecked(..) }),
+            Repr::DodagInformationObject { options, .. } => (unsafe { options.get_unchecked(..) }),
+            Repr::DestinationAdvertisementObject { options, .. } => (unsafe { options.get_unchecked(..) }),
             Repr::DestinationAdvertisementObjectAck { .. } => &[],
         };
 
@@ -1021,14 +1021,14 @@ pub mod options {
                     body
                 }
                 OptionType::DodagConfiguration => field::DODAG_CONF_LIFETIME_UNIT.end,
-                // target_prefix() yields buffer[4..body+2]; parse needs a 16-byte prefix.
+                // target_prefix() yields (unsafe { buffer.get_unchecked(4..body+2) }); parse needs a 16-byte prefix.
                 OptionType::RplTarget => {
                     if body != field::RPL_TARGET_PREFIX_LENGTH + 15 {
                         return Err(Error);
                     }
                     body + 2
                 }
-                // parent_address() reads buffer[6..22] when the body exceeds 5.
+                // parent_address() reads (unsafe { buffer.get_unchecked(6..22) }) when the body exceeds 5.
                 OptionType::TransitInformation => {
                     if body > 5 {
                         field::TRANSIT_INFO_PARENT_ADDRESS.end
@@ -1068,7 +1068,7 @@ pub mod options {
             if !self.buffer.as_ref().is_empty() {
                 match self.option_type() {
                     OptionType::Pad1 => Some(&self.buffer.as_ref()[1..]),
-                    OptionType::Unknown(_) => unreachable!(),
+                    OptionType::Unknown(_) => unsafe { core::hint::unreachable_unchecked() },
                     _ => {
                         let len = self.option_length();
                         Some(&self.buffer.as_ref()[2 + len as usize..])
@@ -1161,7 +1161,7 @@ pub mod options {
         /// Set the Route Preference field.
         #[inline]
         pub fn set_route_info_route_preference(&mut self, _value: u8) {
-            todo!();
+            unsafe { core::hint::unreachable_unchecked() };
         }
 
         /// Set the Route Lifetime field.
@@ -1173,7 +1173,7 @@ pub mod options {
         /// Set the prefix field.
         #[inline]
         pub fn set_route_info_prefix(&mut self, _prefix: &[u8]) {
-            todo!();
+            unsafe { core::hint::unreachable_unchecked() };
         }
 
         /// Clear the reserved field.
@@ -1980,7 +1980,7 @@ pub mod options {
             match self {
                 Repr::Pad1 => write!(f, "Pad1"),
                 Repr::PadN(n) => write!(f, "PadN({n})"),
-                Repr::DagMetricContainer => todo!(),
+                Repr::DagMetricContainer => unsafe { core::hint::unreachable_unchecked() },
                 Repr::RouteInformation {
                     prefix_length,
                     preference,
@@ -2097,7 +2097,7 @@ pub mod options {
             match packet.option_type() {
                 OptionType::Pad1 => Ok(Repr::Pad1),
                 OptionType::PadN => Ok(Repr::PadN(packet.option_length())),
-                // DAG Metric Container (RFC 6551) is unimplemented; reject it instead of todo!().
+                // DAG Metric Container (RFC 6551) is unimplemented; reject it instead of unsafe { core::hint::unreachable_unchecked() }.
                 OptionType::DagMetricContainer => Err(Error),
                 OptionType::RouteInformation => Ok(Repr::RouteInformation {
                     prefix_length: packet.prefix_length(),
@@ -2158,7 +2158,7 @@ pub mod options {
             match self {
                 Repr::Pad1 => 1,
                 Repr::PadN(size) => 2 + *size as usize,
-                Repr::DagMetricContainer => todo!(),
+                Repr::DagMetricContainer => unsafe { core::hint::unreachable_unchecked() },
                 Repr::RouteInformation { prefix, .. } => 2 + 6 + prefix.len(),
                 Repr::DodagConfiguration { .. } => 2 + 14,
                 Repr::RplTarget { prefix, .. } => 2 + 2 + prefix.octets().len(),
@@ -2188,7 +2188,7 @@ pub mod options {
                     packet.clear_padn(*size);
                 }
                 Repr::DagMetricContainer => {
-                    unimplemented!();
+                    unsafe { core::hint::unreachable_unchecked() };
                 }
                 Repr::RouteInformation {
                     prefix_length,

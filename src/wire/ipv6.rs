@@ -187,8 +187,8 @@ impl AddressExt for Address {
         assert!(self.x_is_unicast());
         let o = self.octets();
         Address::from([
-            0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xFF, o[13],
-            o[14], o[15],
+            0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xFF, (unsafe { *o.get_unchecked(13) }),
+            (unsafe { *o.get_unchecked(14) }), (unsafe { *o.get_unchecked(15) }),
         ])
     }
 
@@ -549,7 +549,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[flux_rs::no_panic]
     pub fn version(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[0] >> 4 // field::VER_TC_FLOW.start
+        (unsafe { *data.get_unchecked(0) }) >> 4 // field::VER_TC_FLOW.start
     }
 
     /// Return the traffic class.
@@ -615,7 +615,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[flux_rs::no_panic]
     pub fn next_header(&self) -> Protocol {
         let data = self.buffer.as_ref();
-        Protocol::from(data[6]) // field::NXT_HDR
+        Protocol::from((unsafe { *data.get_unchecked(6) })) // field::NXT_HDR
     }
 
     /// Return the hop limit field.
@@ -628,7 +628,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[flux_rs::no_panic]
     pub fn hop_limit(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[7] // field::HOP_LIMIT
+        (unsafe { *data.get_unchecked(7) }) // field::HOP_LIMIT
     }
 
     /// Return the source address field.
@@ -709,7 +709,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         let data = self.buffer.as_mut();
         // Make sure to retain the lower order bits which contain
         // the higher order bits of the traffic class
-        data[0] = (data[0] & 0x0f) | ((value & 0x0f) << 4);
+        unsafe { *data.get_unchecked_mut(0) = (data[0] & 0x0f) | ((value & 0x0f) << 4); }
     }
 
     /// Set the traffic class field.
@@ -725,10 +725,10 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         let data = self.buffer.as_mut();
         // Put the higher order 4-bits of value in the lower order
         // 4-bits of the first byte
-        data[0] = (data[0] & 0xf0) | ((value & 0xf0) >> 4);
+        unsafe { *data.get_unchecked_mut(0) = (data[0] & 0xf0) | ((value & 0xf0) >> 4); }
         // Put the lower order 4-bits of value in the higher order
         // 4-bits of the second byte
-        data[1] = (data[1] & 0x0f) | ((value & 0x0f) << 4);
+        unsafe { *data.get_unchecked_mut(1) = (data[1] & 0x0f) | ((value & 0x0f) << 4); }
     }
 
     /// Set the flow label field.
@@ -743,7 +743,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     pub fn set_flow_label(&mut self, value: u32) {
         let data = self.buffer.as_mut();
         // Retain the lower order 4-bits of the traffic class
-        let raw = (((data[1] & 0xf0) as u32) << 16) | (value & 0x0fffff);
+        let raw = ((((unsafe { *data.get_unchecked(1) }) & 0xf0) as u32) << 16) | (value & 0x0fffff);
         crate::wire::write_u24_at(data, 1, raw);
     }
 
@@ -772,7 +772,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     #[flux_rs::no_panic]
     pub fn set_next_header(&mut self, value: Protocol) {
         let data = self.buffer.as_mut();
-        data[field::NXT_HDR] = value.into();
+        unsafe { *data.get_unchecked_mut(field::NXT_HDR) = value.into(); }
     }
 
     /// Set the hop limit field.
@@ -786,7 +786,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     #[flux_rs::no_panic]
     pub fn set_hop_limit(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::HOP_LIMIT] = value;
+        unsafe { *data.get_unchecked_mut(field::HOP_LIMIT) = value; }
     }
 
     /// Set the source address field.
@@ -833,7 +833,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     pub fn payload_mut(&mut self) -> &mut [u8] {
         let total = self.total_len();
         let data = self.buffer.as_mut();
-        &mut data[40..total]
+        (unsafe { data.get_unchecked_mut(40..total) })
     }
 }
 

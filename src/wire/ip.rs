@@ -726,7 +726,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[flux_rs::no_panic]
     pub fn version(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[0] >> 4
+        (unsafe { *data.get_unchecked(0) }) >> 4
     }
 }
 
@@ -1007,7 +1007,7 @@ pub mod checksum {
         if rem.len() >= 2 {
             let val = u16::from_ne_bytes(rem[..2].try_into().unwrap());
             accum += val as u32;
-            rem = &rem[2..];
+            rem = (unsafe { rem.get_unchecked(2..) });
         }
 
         // Add the last remaining odd byte, if any.
@@ -1036,8 +1036,8 @@ pub mod checksum {
         length: u32,
     ) -> u16 {
         let mut proto_len = [0u8; 4];
-        proto_len[1] = next_header.into();
-        NetworkEndian::write_u16(&mut proto_len[2..4], length as u16);
+        unsafe { *proto_len.get_unchecked_mut(1) = next_header.into(); }
+        NetworkEndian::write_u16((unsafe { proto_len.get_unchecked_mut(2..4) }), length as u16);
 
         combine(&[
             data(&src_addr.octets()),
@@ -1054,8 +1054,8 @@ pub mod checksum {
         length: u32,
     ) -> u16 {
         let mut proto_len = [0u8; 4];
-        proto_len[1] = next_header.into();
-        NetworkEndian::write_u16(&mut proto_len[2..4], length as u16);
+        unsafe { *proto_len.get_unchecked_mut(1) = next_header.into(); }
+        NetworkEndian::write_u16((unsafe { proto_len.get_unchecked_mut(2..4) }), length as u16);
 
         combine(&[
             data(&src_addr.octets()),

@@ -169,22 +169,22 @@ impl<T: AsRef<[u8]>> Packet<T> {
                 if bytes.is_empty() {
                     return Some(Err(Error));
                 }
-                match bytes[0] {
+                match (unsafe { *bytes.get_unchecked(0) }) {
                     0x00 => return None,
                     x if x & 0xC0 == 0x00 => {
                         let len = (x & 0x3F) as usize;
                         if bytes.len() < 1 + len {
                             return Some(Err(Error));
                         }
-                        let label = &bytes[1..1 + len];
-                        bytes = &bytes[1 + len..];
+                        let label = (unsafe { bytes.get_unchecked(1..1 + len) });
+                        bytes = (unsafe { bytes.get_unchecked(1 + len..) });
                         return Some(Ok(label));
                     }
                     x if x & 0xC0 == 0xC0 => {
                         if bytes.len() < 2 {
                             return Some(Err(Error));
                         }
-                        let y = bytes[1];
+                        let y = (unsafe { *bytes.get_unchecked(1) });
                         let ptr = ((x & 0x3F) as usize) << 8 | (y as usize);
                         if packet.len() <= ptr {
                             return Some(Err(Error));
@@ -202,8 +202,8 @@ impl<T: AsRef<[u8]>> Packet<T> {
                         // parse the part after, keep only the part before in `packet`. This ensure we never
                         // parse the same byte twice, therefore eliminating pointer loops.
 
-                        bytes = &packet[ptr..];
-                        packet = &packet[..ptr];
+                        bytes = (unsafe { packet.get_unchecked(ptr..) });
+                        packet = (unsafe { packet.get_unchecked(..ptr) });
                     }
                     _ => return Some(Err(Error)),
                 }
@@ -215,7 +215,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
 impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     pub fn payload_mut(&mut self) -> &mut [u8] {
         let data = self.buffer.as_mut();
-        &mut data[field::HEADER_END..]
+        (unsafe { data.get_unchecked_mut(field::HEADER_END..) })
     }
 
     pub fn set_transaction_id(&mut self, val: u16) {
@@ -265,18 +265,18 @@ fn parse_name_part<'a>(
 ) -> Result<(&'a [u8], Option<usize>)> {
     loop {
         let x = *bytes.first().ok_or(Error)?;
-        bytes = &bytes[1..];
+        bytes = (unsafe { bytes.get_unchecked(1..) });
         match x {
             0x00 => return Ok((bytes, None)),
             x if x & 0xC0 == 0x00 => {
                 let len = (x & 0x3F) as usize;
                 let label = bytes.get(..len).ok_or(Error)?;
-                bytes = &bytes[len..];
+                bytes = (unsafe { bytes.get_unchecked(len..) });
                 f(label);
             }
             x if x & 0xC0 == 0xC0 => {
                 let y = *bytes.first().ok_or(Error)?;
-                bytes = &bytes[1..];
+                bytes = (unsafe { bytes.get_unchecked(1..) });
 
                 let ptr = ((x & 0x3F) as usize) << 8 | (y as usize);
                 return Ok((bytes, Some(ptr)));
@@ -296,14 +296,14 @@ pub struct Question<'a> {
 impl<'a> Question<'a> {
     pub fn parse(buffer: &'a [u8]) -> Result<(&'a [u8], Question<'a>)> {
         let (rest, _) = parse_name_part(buffer, |_| ())?;
-        let name = &buffer[..buffer.len() - rest.len()];
+        let name = (unsafe { buffer.get_unchecked(..buffer.len() - rest.len()) });
 
         if rest.len() < 4 {
             return Err(Error);
         }
-        let type_ = NetworkEndian::read_u16(&rest[0..2]).into();
-        let class = NetworkEndian::read_u16(&rest[2..4]);
-        let rest = &rest[4..];
+        let type_ = NetworkEndian::read_u16((unsafe { rest.get_unchecked(0..2) })).into();
+        let class = NetworkEndian::read_u16((unsafe { rest.get_unchecked(2..4) }));
+        let rest = (unsafe { rest.get_unchecked(4..) });
 
         if class != CLASS_IN {
             return Err(Error);
@@ -319,10 +319,10 @@ impl<'a> Question<'a> {
 
     /// Emit a high-level representation into a DNS packet.
     pub fn emit(&self, packet: &mut [u8]) {
-        packet[..self.name.len()].copy_from_slice(self.name);
-        let rest = &mut packet[self.name.len()..];
-        NetworkEndian::write_u16(&mut rest[0..2], self.type_.into());
-        NetworkEndian::write_u16(&mut rest[2..4], CLASS_IN);
+        (unsafe { packet.get_unchecked_mut(..self.name.len()) }).copy_from_slice(self.name);
+        let rest = (unsafe { packet.get_unchecked_mut(self.name.len()..) });
+        NetworkEndian::write_u16((unsafe { rest.get_unchecked_mut(0..2) }), self.type_.into());
+        NetworkEndian::write_u16((unsafe { rest.get_unchecked_mut(2..4) }), CLASS_IN);
     }
 }
 
@@ -365,23 +365,23 @@ pub enum RecordData<'a> {
 impl<'a> Record<'a> {
     pub fn parse(buffer: &'a [u8]) -> Result<(&'a [u8], Record<'a>)> {
         let (rest, _) = parse_name_part(buffer, |_| ())?;
-        let name = &buffer[..buffer.len() - rest.len()];
+        let name = (unsafe { buffer.get_unchecked(..buffer.len() - rest.len()) });
 
         if rest.len() < 10 {
             return Err(Error);
         }
-        let type_ = NetworkEndian::read_u16(&rest[0..2]).into();
-        let class = NetworkEndian::read_u16(&rest[2..4]);
-        let ttl = NetworkEndian::read_u32(&rest[4..8]);
-        let len = NetworkEndian::read_u16(&rest[8..10]) as usize;
-        let rest = &rest[10..];
+        let type_ = NetworkEndian::read_u16((unsafe { rest.get_unchecked(0..2) })).into();
+        let class = NetworkEndian::read_u16((unsafe { rest.get_unchecked(2..4) }));
+        let ttl = NetworkEndian::read_u32((unsafe { rest.get_unchecked(4..8) }));
+        let len = NetworkEndian::read_u16((unsafe { rest.get_unchecked(8..10) })) as usize;
+        let rest = (unsafe { rest.get_unchecked(10..) });
 
         if class != CLASS_IN {
             return Err(Error);
         }
 
         let data = rest.get(..len).ok_or(Error)?;
-        let rest = &rest[len..];
+        let rest = (unsafe { rest.get_unchecked(len..) });
 
         Ok((
             rest,

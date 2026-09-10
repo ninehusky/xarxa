@@ -67,10 +67,10 @@ impl NhcPacket {
             return Err(Error);
         }
 
-        if raw[0] >> 4 == DISPATCH_EXT_HEADER {
+        if (unsafe { *raw.get_unchecked(0) }) >> 4 == DISPATCH_EXT_HEADER {
             // We have a compressed IPv6 Extension Header.
             Ok(Self::ExtHeader)
-        } else if raw[0] >> 3 == DISPATCH_UDP_HEADER {
+        } else if (unsafe { *raw.get_unchecked(0) }) >> 3 == DISPATCH_UDP_HEADER {
             // We have a compressed UDP header.
             Ok(Self::UdpHeader)
         } else {
@@ -171,7 +171,7 @@ impl<T: AsRef<[u8]>> ExtHeaderPacket<T> {
             4 => ExtHeaderId::MobilityHeader,
             5 | 6 => ExtHeaderId::Reserved,
             7 => ExtHeaderId::Header,
-            _ => unreachable!(),
+            _ => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 
@@ -196,7 +196,7 @@ impl<T: AsRef<[u8]>> ExtHeaderPacket<T> {
         match self.nh_field() {
             0 => 1,
             1 => 0,
-            _ => unreachable!(),
+            _ => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 }
@@ -221,7 +221,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> ExtHeaderPacket<T> {
     /// Set the dispatch field to `0b1110`.
     fn set_dispatch_field(&mut self) {
         let data = self.buffer.as_mut();
-        data[0] = (data[0] & !(0b1111 << 4)) | (DISPATCH_EXT_HEADER << 4);
+        unsafe { *data.get_unchecked_mut(0) = (data[0] & !(0b1111 << 4)) | (DISPATCH_EXT_HEADER << 4); }
     }
 
     set_field!(set_eid_field, 0b111, 1);
@@ -251,7 +251,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> ExtHeaderPacket<T> {
 
                 let start = 1;
                 let data = self.buffer.as_mut();
-                data[start] = nh.into();
+                unsafe { *data.get_unchecked_mut(start) = nh.into(); }
             }
         }
     }
@@ -261,7 +261,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> ExtHeaderPacket<T> {
         let start = 1 + self.next_header_size();
 
         let data = self.buffer.as_mut();
-        data[start] = length;
+        unsafe { *data.get_unchecked_mut(start) = length; }
     }
 }
 
@@ -524,23 +524,23 @@ impl<T: AsRef<[u8]>> UdpNhcPacket<T> {
                 let data = self.buffer.as_ref();
                 let start = self.nhc_fields_start();
 
-                NetworkEndian::read_u16(&data[start..start + 2])
+                NetworkEndian::read_u16((unsafe { data.get_unchecked(start..start + 2) }))
             }
             0b10 => {
                 // The first 8 bits are elided.
                 let data = self.buffer.as_ref();
                 let start = self.nhc_fields_start();
 
-                0xf000 + data[start] as u16
+                0xf000 + (unsafe { *data.get_unchecked(start) }) as u16
             }
             0b11 => {
                 // The first 12 bits are elided.
                 let data = self.buffer.as_ref();
                 let start = self.nhc_fields_start();
 
-                0xf0b0 + (data[start] >> 4) as u16
+                0xf0b0 + ((unsafe { *data.get_unchecked(start) }) >> 4) as u16
             }
-            _ => unreachable!(),
+            _ => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 
@@ -552,30 +552,30 @@ impl<T: AsRef<[u8]>> UdpNhcPacket<T> {
                 let data = self.buffer.as_ref();
                 let idx = self.nhc_fields_start();
 
-                NetworkEndian::read_u16(&data[idx + 2..idx + 4])
+                NetworkEndian::read_u16((unsafe { data.get_unchecked(idx + 2..idx + 4) }))
             }
             0b01 => {
                 // The first 8 bits are elided.
                 let data = self.buffer.as_ref();
                 let idx = self.nhc_fields_start();
 
-                0xf000 + data[idx] as u16
+                0xf000 + (unsafe { *data.get_unchecked(idx) }) as u16
             }
             0b10 => {
                 // The full 16 bits are carried in-line.
                 let data = self.buffer.as_ref();
                 let idx = self.nhc_fields_start();
 
-                NetworkEndian::read_u16(&data[idx + 1..idx + 1 + 2])
+                NetworkEndian::read_u16((unsafe { data.get_unchecked(idx + 1..idx + 1 + 2) }))
             }
             0b11 => {
                 // The first 12 bits are elided.
                 let data = self.buffer.as_ref();
                 let start = self.nhc_fields_start();
 
-                0xf0b0 + (data[start] & 0xff) as u16
+                0xf0b0 + ((unsafe { *data.get_unchecked(start) }) & 0xff) as u16
             }
-            _ => unreachable!(),
+            _ => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 
@@ -585,7 +585,7 @@ impl<T: AsRef<[u8]>> UdpNhcPacket<T> {
             // The first 12 bits are elided.
             let data = self.buffer.as_ref();
             let start = self.nhc_fields_start() + self.ports_size();
-            Some(NetworkEndian::read_u16(&data[start..start + 2]))
+            Some(NetworkEndian::read_u16((unsafe { data.get_unchecked(start..start + 2) })))
         } else {
             // The checksum is elided and needs to be recomputed on the 6LoWPAN termination point.
             None
@@ -597,7 +597,7 @@ impl<T: AsRef<[u8]>> UdpNhcPacket<T> {
         match self.checksum_field() {
             0b0 => 2,
             0b1 => 0,
-            _ => unreachable!(),
+            _ => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 
@@ -608,7 +608,7 @@ impl<T: AsRef<[u8]>> UdpNhcPacket<T> {
             0b01 => 3, // 16 bits + 8 bits
             0b10 => 3, // 8 bits + 16 bits
             0b11 => 1, // 4 bits + 4 bits
-            _ => unreachable!(),
+            _ => unsafe { core::hint::unreachable_unchecked() },
         }
     }
 }
@@ -631,7 +631,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> UdpNhcPacket<T> {
     /// Set the dispatch field to `0b11110`.
     fn set_dispatch_field(&mut self) {
         let data = self.buffer.as_mut();
-        data[0] = (data[0] & !(0b11111 << 3)) | (DISPATCH_UDP_HEADER << 3);
+        unsafe { *data.get_unchecked_mut(0) = (data[0] & !(0b11111 << 3)) | (DISPATCH_UDP_HEADER << 3); }
     }
 
     set_field!(set_checksum_field, 0b1, 2);
@@ -647,32 +647,32 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> UdpNhcPacket<T> {
                 // We can compress both the source and destination ports.
                 self.set_ports_field(0b11);
                 let data = self.buffer.as_mut();
-                data[idx] = (((src_port - 0xf0b0) as u8) << 4) & ((dst_port - 0xf0b0) as u8);
+                unsafe { *data.get_unchecked_mut(idx) = (((src_port - 0xf0b0) as u8) << 4) & ((dst_port - 0xf0b0) as u8); }
             }
             (0xf000..=0xf0ff, _) => {
                 // We can compress the source port, but not the destination port.
                 self.set_ports_field(0b10);
                 let data = self.buffer.as_mut();
-                data[idx] = (src_port - 0xf000) as u8;
+                unsafe { *data.get_unchecked_mut(idx) = (src_port - 0xf000) as u8; }
                 idx += 1;
 
-                NetworkEndian::write_u16(&mut data[idx..idx + 2], dst_port);
+                NetworkEndian::write_u16((unsafe { data.get_unchecked_mut(idx..idx + 2) }), dst_port);
             }
             (_, 0xf000..=0xf0ff) => {
                 // We can compress the destination port, but not the source port.
                 self.set_ports_field(0b01);
                 let data = self.buffer.as_mut();
-                NetworkEndian::write_u16(&mut data[idx..idx + 2], src_port);
+                NetworkEndian::write_u16((unsafe { data.get_unchecked_mut(idx..idx + 2) }), src_port);
                 idx += 2;
-                data[idx] = (dst_port - 0xf000) as u8;
+                unsafe { *data.get_unchecked_mut(idx) = (dst_port - 0xf000) as u8; }
             }
             (_, _) => {
                 // We cannot compress any port.
                 self.set_ports_field(0b00);
                 let data = self.buffer.as_mut();
-                NetworkEndian::write_u16(&mut data[idx..idx + 2], src_port);
+                NetworkEndian::write_u16((unsafe { data.get_unchecked_mut(idx..idx + 2) }), src_port);
                 idx += 2;
-                NetworkEndian::write_u16(&mut data[idx..idx + 2], dst_port);
+                NetworkEndian::write_u16((unsafe { data.get_unchecked_mut(idx..idx + 2) }), dst_port);
             }
         };
     }
@@ -681,7 +681,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> UdpNhcPacket<T> {
         self.set_checksum_field(0b0);
         let idx = 1 + self.ports_size();
         let data = self.buffer.as_mut();
-        NetworkEndian::write_u16(&mut data[idx..idx + 2], checksum);
+        NetworkEndian::write_u16((unsafe { data.get_unchecked_mut(idx..idx + 2) }), checksum);
     }
 }
 

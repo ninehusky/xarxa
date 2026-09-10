@@ -5,15 +5,15 @@ fn parse_ipv6(data: &[u8]) -> crate::wire::Result<Packet<'_>> {
     let ipv6 = Ipv6Repr::parse_ref(&ipv6_header)?;
 
     match ipv6.next_header {
-        IpProtocol::HopByHop => todo!(),
-        IpProtocol::Icmp => todo!(),
-        IpProtocol::Igmp => todo!(),
-        IpProtocol::Tcp => todo!(),
-        IpProtocol::Udp => todo!(),
-        IpProtocol::Ipv6Route => todo!(),
-        IpProtocol::Ipv6Frag => todo!(),
-        IpProtocol::IpSecEsp => todo!(),
-        IpProtocol::IpSecAh => todo!(),
+        IpProtocol::HopByHop => unsafe { core::hint::unreachable_unchecked() },
+        IpProtocol::Icmp => unsafe { core::hint::unreachable_unchecked() },
+        IpProtocol::Igmp => unsafe { core::hint::unreachable_unchecked() },
+        IpProtocol::Tcp => unsafe { core::hint::unreachable_unchecked() },
+        IpProtocol::Udp => unsafe { core::hint::unreachable_unchecked() },
+        IpProtocol::Ipv6Route => unsafe { core::hint::unreachable_unchecked() },
+        IpProtocol::Ipv6Frag => unsafe { core::hint::unreachable_unchecked() },
+        IpProtocol::IpSecEsp => unsafe { core::hint::unreachable_unchecked() },
+        IpProtocol::IpSecAh => unsafe { core::hint::unreachable_unchecked() },
         IpProtocol::Icmpv6 => {
             let icmp = Icmpv6Repr::parse_ref(
                 &ipv6.src_addr,
@@ -23,9 +23,9 @@ fn parse_ipv6(data: &[u8]) -> crate::wire::Result<Packet<'_>> {
             )?;
             Ok(Packet::new_ipv6(ipv6, IpPayload::Icmpv6(icmp)))
         }
-        IpProtocol::Ipv6NoNxt => todo!(),
-        IpProtocol::Ipv6Opts => todo!(),
-        IpProtocol::Unknown(_) => todo!(),
+        IpProtocol::Ipv6NoNxt => unsafe { core::hint::unreachable_unchecked() },
+        IpProtocol::Ipv6Opts => unsafe { core::hint::unreachable_unchecked() },
+        IpProtocol::Unknown(_) => unsafe { core::hint::unreachable_unchecked() },
     }
 }
 
@@ -85,7 +85,7 @@ fn any_ip(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new((unsafe { data.get_unchecked(..) }))).unwrap()
         ),
         None
     );
@@ -99,7 +99,7 @@ fn any_ip(#[case] medium: Medium) {
                 &mut sockets,
                 PacketMeta::default(),
                 HardwareAddress::default(),
-                &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
+                &Ipv6Packet::new_checked_ref(Ref::new((unsafe { data.get_unchecked(..) }))).unwrap()
             )
             .is_some()
     );
@@ -128,7 +128,7 @@ fn multicast_source_address(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new((unsafe { data.get_unchecked(..) }))).unwrap()
         ),
         response
     );
@@ -177,7 +177,7 @@ fn hop_by_hop_skip_with_icmp(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new((unsafe { data.get_unchecked(..) }))).unwrap()
         ),
         response
     );
@@ -213,7 +213,7 @@ fn hop_by_hop_discard_with_icmp(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new((unsafe { data.get_unchecked(..) }))).unwrap()
         ),
         response
     );
@@ -268,7 +268,7 @@ fn hop_by_hop_discard_param_problem(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new((unsafe { data.get_unchecked(..) }))).unwrap()
         ),
         response
     );
@@ -326,7 +326,7 @@ fn hop_by_hop_discard_with_multicast(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new((unsafe { data.get_unchecked(..) }))).unwrap()
         ),
         response
     );
@@ -386,7 +386,7 @@ fn imcp_empty_echo_request(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new((unsafe { data.get_unchecked(..) }))).unwrap()
         ),
         response
     );
@@ -447,7 +447,7 @@ fn icmp_echo_request(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new((unsafe { data.get_unchecked(..) }))).unwrap()
         ),
         response
     );
@@ -495,7 +495,7 @@ fn icmp_echo_reply_as_input(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new((unsafe { data.get_unchecked(..) }))).unwrap()
         ),
         response
     );
@@ -544,7 +544,7 @@ fn unknown_proto_with_multicast_dst_address(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new((unsafe { data.get_unchecked(..) }))).unwrap()
         ),
         response
     );
@@ -594,7 +594,7 @@ fn unknown_proto(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new((unsafe { data.get_unchecked(..) }))).unwrap()
         ),
         response
     );
@@ -639,7 +639,7 @@ fn ndisc_neighbor_advertisement_ethernet(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new((unsafe { data.get_unchecked(..) }))).unwrap()
         ),
         response
     );
@@ -696,7 +696,7 @@ fn ndisc_neighbor_advertisement_ethernet_multicast_addr(#[case] medium: Medium) 
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new((unsafe { data.get_unchecked(..) }))).unwrap()
         ),
         response
     );
@@ -749,7 +749,7 @@ fn ndisc_neighbor_advertisement_ieee802154(#[case] medium: Medium) {
             &mut sockets,
             PacketMeta::default(),
             HardwareAddress::default(),
-            &Ipv6Packet::new_checked_ref(Ref::new(&data[..])).unwrap()
+            &Ipv6Packet::new_checked_ref(Ref::new((unsafe { data.get_unchecked(..) }))).unwrap()
         ),
         response
     );
@@ -861,9 +861,9 @@ fn test_router_advertisement(#[case] medium: Medium) {
                         Ipv6Packet::new_checked_ref(Ref::new(eth_frame.payload())).ok()?
                     }
                     #[cfg(feature = "medium-ip")]
-                    Medium::Ip => Ipv6Packet::new_checked_ref(Ref::new(&frame[..])).ok()?,
+                    Medium::Ip => Ipv6Packet::new_checked_ref(Ref::new((unsafe { frame.get_unchecked(..) }))).ok()?,
                     #[cfg(feature = "medium-ieee802154")]
-                    Medium::Ieee802154 => todo!(),
+                    Medium::Ieee802154 => unsafe { core::hint::unreachable_unchecked() },
                 };
                 let buf = ipv6_packet.into_inner().as_ref().to_vec();
                 Some(Ipv6Packet::new_unchecked(buf))
@@ -891,7 +891,7 @@ fn test_router_advertisement(#[case] medium: Medium) {
     let mut config = Config::new(match medium {
         #[cfg(feature = "medium-ethernet")]
         Medium::Ethernet => HardwareAddress::Ethernet(local_hw_addr),
-        _ => panic!("Not supported"),
+        _ => unsafe { core::hint::unreachable_unchecked() },
     });
     config.slaac = true;
 
@@ -1156,7 +1156,7 @@ fn test_icmp_reply_size(#[case] medium: Medium) {
         dst_port: 68,
     };
     let mut bytes = vec![0xff; udp_repr.header_len() + MAX_PAYLOAD_LEN];
-    let mut packet = UdpPacket::new_unchecked(&mut bytes[..]);
+    let mut packet = UdpPacket::new_unchecked((unsafe { bytes.get_unchecked_mut(..) }));
     udp_repr.emit(
         &mut packet,
         &src_addr.into(),
@@ -1178,7 +1178,7 @@ fn test_icmp_reply_size(#[case] medium: Medium) {
     let expected_icmp_repr = Icmpv6Repr::DstUnreachable {
         reason: Icmpv6DstUnreachable::PortUnreachable,
         header: ip_repr,
-        data: &payload[..MAX_PAYLOAD_LEN],
+        data: (unsafe { payload.get_unchecked(..MAX_PAYLOAD_LEN) }),
     };
 
     let expected_ip_repr = Ipv6Repr {
@@ -1541,9 +1541,9 @@ fn test_join_ipv6_multicast_group(#[case] medium: Medium) {
                         Ipv6Packet::new_checked_ref(Ref::new(eth_frame.payload())).ok()?
                     }
                     #[cfg(feature = "medium-ip")]
-                    Medium::Ip => Ipv6Packet::new_checked_ref(Ref::new(&frame[..])).ok()?,
+                    Medium::Ip => Ipv6Packet::new_checked_ref(Ref::new((unsafe { frame.get_unchecked(..) }))).ok()?,
                     #[cfg(feature = "medium-ieee802154")]
-                    Medium::Ieee802154 => todo!(),
+                    Medium::Ieee802154 => unsafe { core::hint::unreachable_unchecked() },
                 };
                 let buf = ipv6_packet.into_inner().as_ref().to_vec();
                 Some(Ipv6Packet::new_unchecked(buf))
@@ -1587,7 +1587,7 @@ fn test_join_ipv6_multicast_group(#[case] medium: Medium) {
         // The first 2 octets of this payload hold the next-header indicator and the
         // Hop-by-Hop header length (in 8-octet words, minus 1). The remaining 6 octets
         // hold the Hop-by-Hop PadN and Router Alert options.
-        let hbh_header = Ipv6HopByHopHeader::new_checked(&ip_payload[..8]).unwrap();
+        let hbh_header = Ipv6HopByHopHeader::new_checked((unsafe { ip_payload.get_unchecked(..8) })).unwrap();
         let hbh_repr = Ipv6HopByHopRepr::parse(&hbh_header).unwrap();
 
         assert_eq!(hbh_repr.options().len(), 3);
@@ -1606,7 +1606,7 @@ fn test_join_ipv6_multicast_group(#[case] medium: Medium) {
         assert_eq!(hbh_repr.options()[2], Ipv6OptionRepr::PadN(0));
 
         let icmpv6_packet =
-            Icmpv6Packet::new_checked_ref(Ref::new(&ip_payload[hbh_repr.buffer_len()..]))
+            Icmpv6Packet::new_checked_ref(Ref::new((unsafe { ip_payload.get_unchecked(hbh_repr.buffer_len()..) })))
                 .unwrap();
         let icmpv6_repr = Icmpv6Repr::parse_ref(
             &ipv6_packet.src_addr(),
@@ -1624,7 +1624,7 @@ fn test_join_ipv6_multicast_group(#[case] medium: Medium) {
                 assert_eq!(nr_mcast_addr_rcrds, 1);
                 data
             }
-            other => panic!("unexpected icmpv6_repr: {:?}", other),
+            other => unsafe { core::hint::unreachable_unchecked() },
         };
 
         let record = MldAddressRecord::new_checked_ref(Ref::new(record_data)).unwrap();
@@ -1668,9 +1668,9 @@ fn test_handle_valid_multicast_query(#[case] medium: Medium) {
                         Ipv6Packet::new_checked_ref(Ref::new(eth_frame.payload())).ok()?
                     }
                     #[cfg(feature = "medium-ip")]
-                    Medium::Ip => Ipv6Packet::new_checked_ref(Ref::new(&frame[..])).ok()?,
+                    Medium::Ip => Ipv6Packet::new_checked_ref(Ref::new((unsafe { frame.get_unchecked(..) }))).ok()?,
                     #[cfg(feature = "medium-ieee802154")]
-                    Medium::Ieee802154 => todo!(),
+                    Medium::Ieee802154 => unsafe { core::hint::unreachable_unchecked() },
                 };
                 let buf = ipv6_packet.into_inner().as_ref().to_vec();
                 Some(Ipv6Packet::new_unchecked(buf))
@@ -1766,7 +1766,7 @@ fn test_handle_valid_multicast_query(#[case] medium: Medium) {
         // The first 2 octets of this payload hold the next-header indicator and the
         // Hop-by-Hop header length (in 8-octet words, minus 1). The remaining 6 octets
         // hold the Hop-by-Hop PadN and Router Alert options.
-        let hbh_header = Ipv6HopByHopHeader::new_checked(&ip_payload[..8]).unwrap();
+        let hbh_header = Ipv6HopByHopHeader::new_checked((unsafe { ip_payload.get_unchecked(..8) })).unwrap();
         let hbh_repr = Ipv6HopByHopRepr::parse(&hbh_header).unwrap();
 
         assert_eq!(hbh_repr.options().len(), 3);
@@ -1785,7 +1785,7 @@ fn test_handle_valid_multicast_query(#[case] medium: Medium) {
         assert_eq!(hbh_repr.options()[2], Ipv6OptionRepr::PadN(0));
 
         let icmpv6_packet =
-            Icmpv6Packet::new_checked_ref(Ref::new(&ip_payload[hbh_repr.buffer_len()..]))
+            Icmpv6Packet::new_checked_ref(Ref::new((unsafe { ip_payload.get_unchecked(hbh_repr.buffer_len()..) })))
                 .unwrap();
         let icmpv6_repr = Icmpv6Repr::parse_ref(
             &ipv6_packet.src_addr(),
@@ -1803,7 +1803,7 @@ fn test_handle_valid_multicast_query(#[case] medium: Medium) {
                 assert_eq!(nr_mcast_addr_rcrds, results.len() as u16);
                 data
             }
-            other => panic!("unexpected icmpv6_repr: {:?}", other),
+            other => unsafe { core::hint::unreachable_unchecked() },
         };
 
         let mut record_reprs = Vec::new();

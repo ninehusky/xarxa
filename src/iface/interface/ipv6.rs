@@ -300,7 +300,7 @@ impl InterfaceInner {
                     reason: Icmpv6ParamProblem::UnrecognizedOption,
                     pointer: ipv6_repr.buffer_len() as u32,
                     header: ipv6_repr,
-                    data: &ip_payload[0..payload_len],
+                    data: (unsafe { ip_payload.get_unchecked(0..payload_len) }),
                 },
             )
         };

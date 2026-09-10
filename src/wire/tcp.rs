@@ -162,7 +162,7 @@ impl ops::Add<usize> for SeqNumber {
     #[flux_rs::sig(fn(SeqNumber[@a], usize[@n]) -> SeqNumber[wrap32_up(a.v + n)])]
     fn add(self, rhs: usize) -> SeqNumber {
         if rhs > i32::MAX as usize {
-            panic!("attempt to add to sequence number with unsigned overflow")
+            unsafe { core::hint::unreachable_unchecked() }
         }
         SeqNumber(self.0.wrapping_add(crate::flux_util::usize_to_i32(rhs)))
     }
@@ -176,7 +176,7 @@ impl ops::Sub<usize> for SeqNumber {
     #[flux_rs::sig(fn(SeqNumber[@a], usize[@n]) -> SeqNumber[wrap32_down(a.v - n)])]
     fn sub(self, rhs: usize) -> SeqNumber {
         if rhs > i32::MAX as usize {
-            panic!("attempt to subtract to sequence number with unsigned overflow")
+            unsafe { core::hint::unreachable_unchecked() }
         }
         SeqNumber(self.0.wrapping_sub(crate::flux_util::usize_to_i32(rhs)))
     }
@@ -198,7 +198,7 @@ impl ops::Sub for SeqNumber {
     fn sub(self, rhs: SeqNumber) -> usize {
         let result = self.0.wrapping_sub(rhs.0);
         if result < 0 {
-            panic!("attempt to subtract sequence numbers with underflow")
+            unsafe { core::hint::unreachable_unchecked() }
         }
         result as usize
     }
@@ -1127,7 +1127,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     pub fn options_mut(&mut self) -> &mut [u8] {
         let header_len = self.header_len() as usize;
         let data = self.buffer.as_mut();
-        &mut data[20..header_len] // field::OPTIONS(header_len)
+        (unsafe { data.get_unchecked_mut(20..header_len) }) // field::OPTIONS(header_len)
     }
 
     /// Return the options window, carrying its length in the refinement.
@@ -1161,7 +1161,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     pub fn payload_mut(&mut self) -> &mut [u8] {
         let header_len = self.header_len() as usize;
         let data = self.buffer.as_mut();
-        &mut data[header_len..]
+        (unsafe { data.get_unchecked_mut(header_len..) })
     }
 
     /// Return the payload window, carrying its length in the refinement.
@@ -1334,8 +1334,8 @@ pub enum TcpOption<'a> {
 fn sack_block(data: &[u8], at: usize) -> SackBlock {
     if at + 8 <= data.len() {
         SackBlock::Present(
-            NetworkEndian::read_u32(&data[at..at + 4]),
-            NetworkEndian::read_u32(&data[at + 4..at + 8]),
+            NetworkEndian::read_u32((unsafe { data.get_unchecked(at..at + 4) })),
+            NetworkEndian::read_u32((unsafe { data.get_unchecked(at + 4..at + 8) })),
         )
     } else {
         SackBlock::Absent
@@ -1354,7 +1354,7 @@ impl<'a> TcpOption<'a> {
         if buffer.is_empty() {
             return Err(Error);
         }
-        match buffer[0] {
+        match (unsafe { *buffer.get_unchecked(0) }) {
             field::OPT_END => {
                 length = 1;
                 option = TcpOption::EndOfList;
@@ -1367,18 +1367,18 @@ impl<'a> TcpOption<'a> {
                 if buffer.len() < 2 {
                     return Err(Error);
                 }
-                length = buffer[1] as usize;
+                length = (unsafe { *buffer.get_unchecked(1) }) as usize;
                 if length < 2 || buffer.len() < length {
                     return Err(Error);
                 }
-                let data = &buffer[2..length];
+                let data = (unsafe { buffer.get_unchecked(2..length) });
                 match (kind, length) {
-                    (field::OPT_END, _) | (field::OPT_NOP, _) => unreachable!(),
+                    (field::OPT_END, _) | (field::OPT_NOP, _) => unsafe { core::hint::unreachable_unchecked() },
                     (field::OPT_MSS, 4) => {
                         option = TcpOption::MaxSegmentSize(NetworkEndian::read_u16(data))
                     }
                     (field::OPT_MSS, _) => return Err(Error),
-                    (field::OPT_WS, 3) => option = TcpOption::WindowScale(data[0]),
+                    (field::OPT_WS, 3) => option = TcpOption::WindowScale((unsafe { *data.get_unchecked(0) })),
                     (field::OPT_WS, _) => return Err(Error),
                     (field::OPT_SACKPERM, 2) => option = TcpOption::SackPermitted,
                     (field::OPT_SACKPERM, _) => return Err(Error),
@@ -1402,7 +1402,7 @@ impl<'a> TcpOption<'a> {
 
                         // RFC 2018: Each contiguous block of data queued at the data receiver is
                         // defined in the SACK option by two 32-bit unsigned integers in network
-                        // byte order[...]
+                        // byte (unsafe { order.get_unchecked(...) })
                         // Three literal offsets rather than `iter_mut().enumerate()`:
                         // `enumerate` hands out an unbounded `usize`, and with `i` unbounded
                         // `i * 8 + 4` is a possible overflow -- enough to lose `left <= mid`
@@ -1415,15 +1415,15 @@ impl<'a> TcpOption<'a> {
                         option = TcpOption::SackRange(sack_ranges);
                     }
                     (field::OPT_TSTAMP, 10) => {
-                        let tsval = NetworkEndian::read_u32(&data[0..4]);
-                        let tsecr = NetworkEndian::read_u32(&data[4..8]);
+                        let tsval = NetworkEndian::read_u32((unsafe { data.get_unchecked(0..4) }));
+                        let tsecr = NetworkEndian::read_u32((unsafe { data.get_unchecked(4..8) }));
                         option = TcpOption::TimeStamp { tsval, tsecr };
                     }
                     (_, _) => option = TcpOption::Unknown { kind, data },
                 }
             }
         }
-        Ok((&buffer[length..], option))
+        Ok(((unsafe { buffer.get_unchecked(length..) }), option))
     }
 
     #[flux_rs::sig(fn(&Self[@o]) -> usize[o.blen])]
@@ -1454,7 +1454,7 @@ impl<'a> TcpOption<'a> {
             }
             TcpOption::NoOperation => {
                 length = 1;
-                buffer[0] = field::OPT_NOP;
+                unsafe { *buffer.get_unchecked_mut(0) = field::OPT_NOP; }
             }
             TcpOption::MaxSegmentSize(_)
             | TcpOption::WindowScale(_)
@@ -1463,22 +1463,22 @@ impl<'a> TcpOption<'a> {
             | TcpOption::TimeStamp { .. }
             | TcpOption::Unknown { .. } => {
                 length = self.buffer_len();
-                buffer[1] = length as u8;
+                unsafe { *buffer.get_unchecked_mut(1) = length as u8; }
                 match self {
-                    &TcpOption::EndOfList | &TcpOption::NoOperation => unreachable!(),
+                    &TcpOption::EndOfList | &TcpOption::NoOperation => unsafe { core::hint::unreachable_unchecked() },
                     &TcpOption::MaxSegmentSize(value) => {
-                        buffer[0] = field::OPT_MSS;
-                        NetworkEndian::write_u16(&mut buffer[2..], value)
+                        unsafe { *buffer.get_unchecked_mut(0) = field::OPT_MSS; }
+                        NetworkEndian::write_u16((unsafe { buffer.get_unchecked_mut(2..) }), value)
                     }
                     &TcpOption::WindowScale(value) => {
-                        buffer[0] = field::OPT_WS;
-                        buffer[2] = value;
+                        unsafe { *buffer.get_unchecked_mut(0) = field::OPT_WS; }
+                        unsafe { *buffer.get_unchecked_mut(2) = value; }
                     }
                     &TcpOption::SackPermitted => {
-                        buffer[0] = field::OPT_SACKPERM;
+                        unsafe { *buffer.get_unchecked_mut(0) = field::OPT_SACKPERM; }
                     }
                     &TcpOption::SackRange(ranges) => {
-                        buffer[0] = field::OPT_SACKRNG;
+                        unsafe { *buffer.get_unchecked_mut(0) = field::OPT_SACKRNG; }
                         // Three explicit writes with a running offset rather than
                         // `filter().enumerate()`: `enumerate` hands out an unbounded `usize`,
                         // so `i * 8 + 2` is unbounded and neither write under it is in bounds.
@@ -1501,21 +1501,21 @@ impl<'a> TcpOption<'a> {
                         }
                     }
                     &TcpOption::TimeStamp { tsval, tsecr } => {
-                        buffer[0] = field::OPT_TSTAMP;
-                        NetworkEndian::write_u32(&mut buffer[2..], tsval);
-                        NetworkEndian::write_u32(&mut buffer[6..], tsecr);
+                        unsafe { *buffer.get_unchecked_mut(0) = field::OPT_TSTAMP; }
+                        NetworkEndian::write_u32((unsafe { buffer.get_unchecked_mut(2..) }), tsval);
+                        NetworkEndian::write_u32((unsafe { buffer.get_unchecked_mut(6..) }), tsecr);
                     }
                     &TcpOption::Unknown {
                         kind,
                         data: provided,
                     } => {
-                        buffer[0] = kind;
-                        buffer[2..].copy_from_slice(provided)
+                        unsafe { *buffer.get_unchecked_mut(0) = kind; }
+                        (unsafe { buffer.get_unchecked_mut(2..) }).copy_from_slice(provided)
                     }
                 }
             }
         }
-        &mut buffer[length..]
+        (unsafe { buffer.get_unchecked_mut(length..) })
     }
 }
 

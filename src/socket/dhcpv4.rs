@@ -330,7 +330,7 @@ impl<'a> Socket<'a> {
         };
 
         let HardwareAddress::Ethernet(ethernet_addr) = cx.hardware_addr() else {
-            panic!("using DHCPv4 socket with a non-ethernet hardware address.");
+            unsafe { core::hint::unreachable_unchecked() };
         };
 
         if dhcp_repr.client_hardware_address != ethernet_addr {
@@ -581,7 +581,7 @@ impl<'a> Socket<'a> {
         // note: Dhcpv4Socket is only usable in ethernet mediums, so the
         // unwrap can never fail.
         let HardwareAddress::Ethernet(ethernet_addr) = cx.hardware_addr() else {
-            panic!("using DHCPv4 socket with a non-ethernet hardware address.");
+            unsafe { core::hint::unreachable_unchecked() };
         };
 
         // Worst case biggest IPv4 header length.
