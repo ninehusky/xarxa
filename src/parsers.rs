@@ -324,7 +324,7 @@ impl<'a> Parser<'a> {
 
         // We need to copy the tail portion (the portion following the "::") to the
         // end of the address.
-        addr[8 - tail_idx..].copy_from_slice(&tail[..tail_idx]);
+        (unsafe { addr.get_unchecked_mut(8 - tail_idx..) }).copy_from_slice((unsafe { tail.get_unchecked(..tail_idx) }));
 
         Ok(Ipv6Address::from(addr))
     }

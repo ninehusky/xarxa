@@ -95,7 +95,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[inline]
     pub fn s_flag(&self) -> bool {
         let data = self.buffer.as_ref();
-        (data[field::SQRV] & 0x08) != 0
+        ((unsafe { *data.get_unchecked(field::SQRV) }) & 0x08) != 0
     }
 
     /// Return the Querier's Robustness Variable.
@@ -111,7 +111,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[inline]
     pub fn qrv(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[field::SQRV] % 8
+        (unsafe { *data.get_unchecked(field::SQRV) }) % 8
     }
 
     /// Return the Querier's Query Interval Code.
@@ -124,7 +124,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[inline]
     pub fn qqic(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[field::QQIC]
+        (unsafe { *data.get_unchecked(field::QQIC) })
     }
 
     /// Return number of sources.
@@ -201,8 +201,8 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     #[inline]
     pub fn set_s_flag(&mut self) {
         let data = self.buffer.as_mut();
-        let current = data[field::SQRV];
-        data[field::SQRV] = 0x8 | (current & 0x7);
+        let current = (unsafe { *data.get_unchecked(field::SQRV) });
+        unsafe { *data.get_unchecked_mut(field::SQRV) = 0x8 | (current & 0x7); }
     }
 
     /// Clear the Suppress Router-Side Processing flag.
@@ -215,7 +215,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     #[inline]
     pub fn clear_s_flag(&mut self) {
         let data = self.buffer.as_mut();
-        data[field::SQRV] &= 0x7;
+        unsafe { *data.get_unchecked_mut(field::SQRV) &= 0x7; }
     }
 
     /// Set the Querier's Robustness Variable.
@@ -233,7 +233,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     pub fn set_qrv(&mut self, value: u8) {
         assert!(value < 8);
         let data = self.buffer.as_mut();
-        data[field::SQRV] = (data[field::SQRV] & 0x8) | value & 0x7;
+        unsafe { *data.get_unchecked_mut(field::SQRV) = ((unsafe { *data.get_unchecked(field::SQRV) }) & 0x8) | value & 0x7; }
     }
 
     /// Set the Querier's Query Interval Code.
@@ -246,7 +246,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     #[inline]
     pub fn set_qqic(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::QQIC] = value;
+        unsafe { *data.get_unchecked_mut(field::QQIC) = value; }
     }
 
     /// Set number of sources.
@@ -366,7 +366,7 @@ impl<T: AsRef<[u8]>> AddressRecord<T> {
     #[inline]
     pub fn record_type(&self) -> RecordType {
         let data = self.buffer.as_ref();
-        RecordType::from(data[field::RECORD_TYPE])
+        RecordType::from((unsafe { *data.get_unchecked(field::RECORD_TYPE) }))
     }
 
     /// Return the length of the auxiliary data.
@@ -379,7 +379,7 @@ impl<T: AsRef<[u8]>> AddressRecord<T> {
     #[inline]
     pub fn aux_data_len(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[field::AUX_DATA_LEN]
+        (unsafe { *data.get_unchecked(field::AUX_DATA_LEN) })
     }
 
     /// Return the number of sources field.
@@ -453,7 +453,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> AddressRecord<T> {
     #[inline]
     pub fn set_record_type(&mut self, rty: RecordType) {
         let data = self.buffer.as_mut();
-        data[field::RECORD_TYPE] = rty.into();
+        unsafe { *data.get_unchecked_mut(field::RECORD_TYPE) = rty.into(); }
     }
 
     /// Return the length of the auxiliary data.
@@ -466,7 +466,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> AddressRecord<T> {
     #[inline]
     pub fn set_aux_data_len(&mut self, len: u8) {
         let data = self.buffer.as_mut();
-        data[field::AUX_DATA_LEN] = len;
+        unsafe { *data.get_unchecked_mut(field::AUX_DATA_LEN) = len; }
     }
 
     /// Return the number of sources field.
@@ -537,7 +537,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> AddressRecord<T> {
         let data = self.buffer.as_mut();
         // 20 rather than `field::RECORD_MCAST_ADDR.end`: flux cannot see through a `Range`
         // const, and the `requires` above is stated at the literal.
-        &mut data[20..]
+        (unsafe { data.get_unchecked_mut(20..) })
     }
 }
 
@@ -771,7 +771,7 @@ impl<'a> Repr<'a> {
                 // lengths are equal. `Buf` carries the window's length, and `emit`'s
                 // `r.blen == as_mut_reft` makes it exactly `data`'s.
                 let mut window = packet.payload_buf();
-                window.as_mut().copy_from_slice(&data[..]);
+                window.as_mut().copy_from_slice((unsafe { data.get_unchecked(..) }));
             }
             Repr::Report {
                 nr_mcast_addr_rcrds,
@@ -786,7 +786,7 @@ impl<'a> Repr<'a> {
                 // lengths are equal. `Buf` carries the window's length, and `emit`'s
                 // `r.blen == as_mut_reft` makes it exactly `data`'s.
                 let mut window = packet.payload_buf();
-                window.as_mut().copy_from_slice(&data[..]);
+                window.as_mut().copy_from_slice((unsafe { data.get_unchecked(..) }));
             }
             Repr::ReportRecordReprs(records) => {
                 packet.set_msg_type(Message::MldReport);
@@ -794,7 +794,7 @@ impl<'a> Repr<'a> {
                 packet.clear_reserved();
                 packet.set_nr_mcast_addr_rcrds(records.len() as u16);
                 // Was: `let mut payload = packet.payload_mut();` followed by
-                // `payload = &mut payload[record.buffer_len()..]` each iteration. Same bytes at
+                // `payload = (unsafe { payload.get_unchecked_mut(record.buffer_len()..) })` each iteration. Same bytes at
                 // the same offsets -- after `set_msg_type(MldReport)` the header is 8 octets, so
                 // the walk is 8, 28, 48, ... -- but expressed as an offset into the packet
                 // buffer rather than a chain of reborrowed sub-slices. Two reasons:

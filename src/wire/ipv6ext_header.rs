@@ -205,7 +205,7 @@ impl<T: AsRef<[u8]>> Header<T> {
     #[flux_rs::no_panic]
     pub fn next_header(&self) -> IpProtocol {
         let data = self.buffer.as_ref();
-        IpProtocol::from(data[field::NXT_HDR])
+        IpProtocol::from((unsafe { *data.get_unchecked(field::NXT_HDR) }))
     }
 
     /// Return the header length field.
@@ -289,7 +289,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     #[inline]
     pub fn set_next_header(&mut self, value: IpProtocol) {
         let data = self.buffer.as_mut();
-        data[field::NXT_HDR] = value.into();
+        unsafe { *data.get_unchecked_mut(field::NXT_HDR) = value.into(); }
     }
 
     /// Set the extension header data length. The length of the header is
@@ -311,7 +311,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     #[inline]
     pub fn set_header_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::LENGTH] = value;
+        unsafe { *data.get_unchecked_mut(field::LENGTH) = value; }
         self.ghlen = Ghost::new(value);
     }
 
@@ -340,7 +340,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
         // (`Range`) const, so the window has to be written out. Same value.
         let len = self.header_len() as usize;
         let data = self.buffer.as_mut();
-        &mut data[2..(len * 8 + 8)] // field::PAYLOAD(len)
+        (unsafe { data.get_unchecked_mut(2..(len * 8 + 8)) }) // field::PAYLOAD(len)
     }
 }
 

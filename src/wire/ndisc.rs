@@ -42,7 +42,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[inline]
     pub fn current_hop_limit(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[field::CUR_HOP_LIMIT]
+        (unsafe { *data.get_unchecked(field::CUR_HOP_LIMIT) })
     }
 
     /// Return the Router Advertisement flags.
@@ -54,7 +54,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[inline]
     pub fn router_flags(&self) -> RouterFlags {
         let data = self.buffer.as_ref();
-        RouterFlags::from_bits_truncate(data[field::ROUTER_FLAGS])
+        RouterFlags::from_bits_truncate((unsafe { *data.get_unchecked(field::ROUTER_FLAGS) }))
     }
 
     /// Return the router lifetime field.
@@ -139,7 +139,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[inline]
     pub fn neighbor_flags(&self) -> NeighborFlags {
         let data = self.buffer.as_ref();
-        NeighborFlags::from_bits_truncate(data[field::NEIGH_FLAGS])
+        NeighborFlags::from_bits_truncate((unsafe { *data.get_unchecked(field::NEIGH_FLAGS) }))
     }
 }
 
@@ -177,7 +177,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     #[inline]
     pub fn set_current_hop_limit(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::CUR_HOP_LIMIT] = value;
+        unsafe { *data.get_unchecked_mut(field::CUR_HOP_LIMIT) = value; }
     }
 
     /// Set the Router Advertisement flags.
@@ -188,7 +188,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     )]
     #[inline]
     pub fn set_router_flags(&mut self, flags: RouterFlags) {
-        self.buffer.as_mut()[field::ROUTER_FLAGS] = flags.bits();
+        unsafe { *self.buffer.as_mut().get_unchecked_mut(field::ROUTER_FLAGS) = flags.bits(); }
     }
 
     /// Set the router lifetime field.
@@ -271,7 +271,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     )]
     #[inline]
     pub fn set_neighbor_flags(&mut self, flags: NeighborFlags) {
-        self.buffer.as_mut()[field::NEIGH_FLAGS] = flags.bits();
+        unsafe { *self.buffer.as_mut().get_unchecked_mut(field::NEIGH_FLAGS) = flags.bits(); }
     }
 }
 
@@ -452,7 +452,7 @@ impl<'a> Repr<'a> {
 
         let mut offset = 0;
         while packet.payload().len() > offset {
-            let pkt = NdiscOption::new_checked_ref(Ref::new(&packet.payload()[offset..]))?;
+            let pkt = NdiscOption::new_checked_ref(Ref::new(unsafe { packet.payload().get_unchecked(offset..) }))?;
 
             // If an option doesn't parse, ignore it and still parse the others.
             if let Ok(opt) = NdiscOptionRepr::parse(&pkt) {
@@ -719,7 +719,7 @@ where
     // length, since `Buf::new` has offset 0.
     let mut window = packet.payload_buf();
     let data = window.as_mut();
-    let mut opt_pkt = NdiscOption::new_unchecked(crate::wire::Buf::new(&mut data[offset..]));
+    let mut opt_pkt = NdiscOption::new_unchecked(crate::wire::Buf::new(unsafe { data.get_unchecked_mut(offset..) }));
     opt.emit(&mut opt_pkt);
 }
 

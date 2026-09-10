@@ -203,8 +203,8 @@ impl AddressExt for Address {
         assert!(self.x_is_unicast());
         let o = self.octets();
         Address::from([
-            0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xFF, o[13],
-            o[14], o[15],
+            0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xFF, (unsafe { *o.get_unchecked(13) }),
+            (unsafe { *o.get_unchecked(14) }), (unsafe { *o.get_unchecked(15) }),
         ])
     }
 
@@ -582,7 +582,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[flux_rs::no_panic]
     pub fn version(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[0] >> 4 // field::VER_TC_FLOW.start
+        (unsafe { *data.get_unchecked(0) }) >> 4 // field::VER_TC_FLOW.start
     }
 
     /// Return the traffic class.
@@ -648,7 +648,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[flux_rs::no_panic]
     pub fn next_header(&self) -> Protocol {
         let data = self.buffer.as_ref();
-        Protocol::from(data[6]) // field::NXT_HDR
+        Protocol::from((unsafe { *data.get_unchecked(6) })) // field::NXT_HDR
     }
 
     /// Return the hop limit field.
@@ -661,7 +661,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[flux_rs::no_panic]
     pub fn hop_limit(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[7] // field::HOP_LIMIT
+        (unsafe { *data.get_unchecked(7) }) // field::HOP_LIMIT
     }
 
     /// Return the source address field.

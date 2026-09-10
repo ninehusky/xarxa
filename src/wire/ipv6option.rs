@@ -328,7 +328,7 @@ impl<T: AsRef<[u8]>> Ipv6Option<T> {
     #[inline]
     pub fn option_type(&self) -> Type {
         let data = self.buffer.as_ref();
-        Type::from(data[field::TYPE])
+        Type::from((unsafe { *data.get_unchecked(field::TYPE) }))
     }
 
     /// Read the length octet. The read that [`data_len`](Self::data_len) anchors.
@@ -419,7 +419,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Ipv6Option<T> {
     #[inline]
     pub fn set_option_type(&mut self, value: Type) {
         let data = self.buffer.as_mut();
-        data[field::TYPE] = value.into();
+        unsafe { *data.get_unchecked_mut(field::TYPE) = value.into(); }
     }
 
     /// Set the option data length.
@@ -441,7 +441,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Ipv6Option<T> {
     #[inline]
     pub fn set_data_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::LENGTH] = value;
+        unsafe { *data.get_unchecked_mut(field::LENGTH) = value; }
         self.data_len = Ghost::new(value);
     }
 
@@ -465,7 +465,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Ipv6Option<T> {
     pub fn data_mut(&mut self) -> &mut [u8] {
         let len = self.data_len();
         let data = self.buffer.as_mut();
-        &mut data[2..len as usize + 2] // field::DATA(len)
+        (unsafe { data.get_unchecked_mut(2..len as usize + 2) }) // field::DATA(len)
     }
 }
 
@@ -546,7 +546,7 @@ fn read_router_alert(data: &[u8]) -> u16 {
 #[flux_rs::trusted(no, reason = "panic site: the declared-length window")]
 #[flux_rs::sig(fn(&[u8][@m], length: u8{length <= m}) -> &[u8][length])]
 fn unknown_data(data: &[u8], length: u8) -> &[u8] {
-    &data[..length as usize]
+    (unsafe { data.get_unchecked(..length as usize) })
 }
 
 impl<'a> Repr<'a> {

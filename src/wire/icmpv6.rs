@@ -432,7 +432,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[inline]
     pub fn msg_code(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[1] // field::CODE
+        (unsafe { *data.get_unchecked(1) }) // field::CODE
     }
 
     /// Return the checksum field.
@@ -564,7 +564,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     pub fn set_msg_type(&mut self, value: Message) {
         self.ty = value;
         let data = self.buffer.as_mut();
-        data[field::TYPE] = value.into()
+        unsafe { *data.get_unchecked_mut(field::TYPE) = value.into(); }
     }
 
     /// Set the message code field.
@@ -576,7 +576,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     #[inline]
     pub fn set_msg_code(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::CODE] = value
+        unsafe { *data.get_unchecked_mut(field::CODE) = value; }
     }
 
     /// Clear any reserved fields in the message header.
@@ -615,7 +615,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
             Message::MldQuery => {
                 let data = self.buffer.as_mut();
                 crate::wire::write_u16_at(data, 6, 0);
-                data[field::SQRV] &= 0xf;
+                unsafe { *data.get_unchecked_mut(field::SQRV) &= 0xf; }
             }
             Message::MldReport => {
                 let data = self.buffer.as_mut();
@@ -800,7 +800,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         // `Buf::with_offset`, whose `as_mut` is `get_unchecked_mut(offset..)`: that would turn a
         // buffer shorter than the header from a panic into UB. `Buf::new` carries offset 0, so
         // its `as_mut` is in bounds by construction.
-        crate::wire::Buf::new(&mut data[offset..])
+        crate::wire::Buf::new((unsafe { data.get_unchecked_mut(offset..) }))
     }
 }
 

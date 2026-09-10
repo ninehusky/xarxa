@@ -122,8 +122,8 @@ impl<'a> DhcpOptionWriter<'a> {
         }
 
         let buf = self.buffer.as_mut();
-        buf[0] = option.kind;
-        buf[1] = option.data.len() as _;
+        unsafe { *buf.get_unchecked_mut(0) = option.kind; }
+        unsafe { *buf.get_unchecked_mut(1) = option.data.len() as _; }
         self.buffer.copy_at(2, option.data);
         self.buffer.advance(total_len);
 
@@ -189,7 +189,7 @@ impl<'a> Iterator for OptionIter<'a> {
                 return None;
             }
 
-            match buf[0] {
+            match (unsafe { *buf.get_unchecked(0) }) {
                 field::OPT_END => return None,
 
                 // Skip padding.
@@ -199,13 +199,13 @@ impl<'a> Iterator for OptionIter<'a> {
                         return None;
                     }
 
-                    let len = buf[1] as usize;
+                    let len = (unsafe { *buf.get_unchecked(1) }) as usize;
 
                     if buf.len() < 2 + len {
                         return None;
                     }
 
-                    let opt = DhcpOption { kind, data: &buf[2..2 + len] };
+                    let opt = DhcpOption { kind, data: unsafe { buf.get_unchecked(2..2 + len) } };
 
                     self.cur = OptionCursor { buf: tail(buf, 2 + len) };
                     return Some(opt);

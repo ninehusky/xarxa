@@ -773,7 +773,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[flux_rs::no_panic]
     pub fn version(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[0] >> 4
+        (unsafe { *data.get_unchecked(0) }) >> 4
     }
 }
 

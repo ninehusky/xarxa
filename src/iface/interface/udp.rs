@@ -61,7 +61,7 @@ impl InterfaceInner {
                 let icmpv4_reply_repr = Icmpv4Repr::DstUnreachable {
                     reason: Icmpv4DstUnreachable::PortUnreachable,
                     header: ipv4_repr,
-                    data: &ip_payload[0..payload_len],
+                    data: (unsafe { ip_payload.get_unchecked(0..payload_len) }),
                 };
                 self.icmpv4_reply(ipv4_repr, icmpv4_reply_repr)
             }

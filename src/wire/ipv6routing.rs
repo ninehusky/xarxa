@@ -454,15 +454,15 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
         // arms into a match's catch-all, so the final arm reads as reachable however tightly
         // `rtype` is constrained. Spelled this way the guards are ordinary path conditions.
         if routing_type == Type::Type2 {
-            data[2] = 0;
-            data[3] = 0;
-            data[4] = 0;
-            data[5] = 0;
+            unsafe { *data.get_unchecked_mut(2) = 0; }
+            unsafe { *data.get_unchecked_mut(3) = 0; }
+            unsafe { *data.get_unchecked_mut(4) = 0; }
+            unsafe { *data.get_unchecked_mut(5) = 0; }
         } else if routing_type == Type::Rpl {
             // Retain the higher order 4 bits of the padding field
-            data[3] &= 0xF0; // field::PAD
-            data[4] = 0;
-            data[5] = 0;
+            unsafe { *data.get_unchecked_mut(3) &= 0xF0; } // field::PAD
+            unsafe { *data.get_unchecked_mut(4) = 0; }
+            unsafe { *data.get_unchecked_mut(5) = 0; }
         } else {
             panic!("Unrecognized routing type when clearing reserved fields.")
         }

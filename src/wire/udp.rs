@@ -424,7 +424,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     pub fn payload_mut(&mut self) -> &mut [u8] {
         let length = self.len() as usize;
         let data = self.buffer.as_mut();
-        &mut data[8..length] // field::PAYLOAD(length)
+        (unsafe { data.get_unchecked_mut(8..length) }) // field::PAYLOAD(length)
     }
 
     /// The payload window, as a [`Buf`] so its length survives the return.
@@ -450,7 +450,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
         // for `length < 8`, and the `8 <= p.len` that rules it out is not discharged -- it rests
         // on `emit_ports_and_len`'s `8 + payload_len <= 65535`, whose body truncates.
         // `Buf::new` carries offset 0, so its `as_mut` is in bounds by construction.
-        Buf::new(&mut data[8..length]) // field::PAYLOAD(length)
+        Buf::new((unsafe { data.get_unchecked_mut(8..length) })) // field::PAYLOAD(length)
     }
 }
 
