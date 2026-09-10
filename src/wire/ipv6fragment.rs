@@ -125,7 +125,7 @@ impl<T: AsRef<[u8]>> Header<T> {
     #[inline]
     pub fn more_frags(&self) -> bool {
         let data = self.buffer.as_ref();
-        (data[1] & 0x1) == 1 // field::M
+        ((unsafe { *data.get_unchecked(1) }) & 0x1) == 1 // field::M
     }
 
     /// Return the fragment identification value field.
@@ -157,7 +157,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     pub fn clear_reserved(&mut self) {
         let data = self.buffer.as_mut();
         // Retain the higher order 5 bits and lower order 1 bit
-        data[1] &= 0xf9; // field::M
+        unsafe { *data.get_unchecked_mut(1) &= 0xf9; } // field::M
     }
 
     /// Set the fragment offset field.
@@ -171,7 +171,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     pub fn set_frag_offset(&mut self, value: u16) {
         let data = self.buffer.as_mut();
         // Retain the lower order 3 bits
-        let raw = ((value & 0x1fff) << 3) | ((data[1] & 0x7) as u16); // field::M
+        let raw = ((value & 0x1fff) << 3) | (((unsafe { *data.get_unchecked(1) }) & 0x7) as u16); // field::M
         write_u16_at(data, 0, raw); // field::FR_OF_M
     }
 
@@ -186,8 +186,8 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     pub fn set_more_frags(&mut self, value: bool) {
         let data = self.buffer.as_mut();
         // Retain the high order 7 bits
-        let raw = (data[1] & 0xfe) | (value as u8 & 0x1); // field::M
-        data[1] = raw;
+        let raw = ((unsafe { *data.get_unchecked(1) }) & 0xfe) | (value as u8 & 0x1); // field::M
+        unsafe { *data.get_unchecked_mut(1) = raw; }
     }
 
     /// Set the fragmentation identification field.

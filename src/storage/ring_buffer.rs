@@ -409,7 +409,7 @@ impl<'a, T: 'a + NonZst> RingBuffer<'a, T> {
     pub fn dequeue_many(&mut self, size: usize) -> &mut [T] {
         self.dequeue_many_with(|buf| {
             let size = cmp::min(size, buf.len());
-            (size, &mut buf[..size])
+            (size, (unsafe { buf.get_unchecked_mut(..size) }))
         })
         .1
     }
@@ -423,12 +423,12 @@ impl<'a, T: 'a + NonZst> RingBuffer<'a, T> {
     {
         let (size_1, data) = self.dequeue_many_with(|buf| {
             let size = cmp::min(buf.len(), data.len());
-            data[..size].copy_from_slice(&buf[..size]);
-            (size, &mut data[size..])
+            (unsafe { data.get_unchecked_mut(..size) }).copy_from_slice((unsafe { buf.get_unchecked(..size) }));
+            (size, (unsafe { data.get_unchecked_mut(size..) }))
         });
         let (size_2, ()) = self.dequeue_many_with(|buf| {
             let size = cmp::min(buf.len(), data.len());
-            data[..size].copy_from_slice(&buf[..size]);
+            (unsafe { data.get_unchecked_mut(..size) }).copy_from_slice((unsafe { buf.get_unchecked(..size) }));
             (size, ())
         });
         size_1 + size_2
@@ -475,7 +475,7 @@ impl<'a, T: 'a + NonZst> RingBuffer<'a, T> {
             let slice = self.get_unallocated(offset, data.len());
             let slice_len = slice.len();
             crate::flux_util::copy_prefix(slice, data, slice_len);
-            (slice_len, offset + slice_len, &data[slice_len..])
+            (slice_len, offset + slice_len, (unsafe { data.get_unchecked(slice_len..) }))
         };
         let size_2 = {
             let slice = self.get_unallocated(offset, data.len());
@@ -535,7 +535,7 @@ impl<'a, T: 'a + NonZst> RingBuffer<'a, T> {
             let slice = self.get_allocated(offset, data.len());
             let slice_len = slice.len();
             crate::flux_util::copy_prefix(data, slice, slice_len);
-            (slice_len, offset + slice_len, &mut data[slice_len..])
+            (slice_len, offset + slice_len, (unsafe { data.get_unchecked_mut(slice_len..) }))
         };
         let size_2 = {
             let slice = self.get_allocated(offset, data.len());

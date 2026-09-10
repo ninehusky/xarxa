@@ -180,7 +180,7 @@ impl<'p> Packet<'p> {
                 };
                 // Routed through `Buf` for the same reason as the Icmpv4 arm above.
                 ipv6_ext_hdr.emit(&mut Ipv6ExtHeader::new_unchecked(Buf::new(
-                    &mut payload[..ipv6_ext_hdr.header_len()],
+                    (unsafe { payload.get_unchecked_mut(..ipv6_ext_hdr.header_len()) }),
                 )));
 
                 let hbh_start = ipv6_ext_hdr.header_len();
@@ -189,11 +189,11 @@ impl<'p> Packet<'p> {
                 // `blen <= as_mut_reft(window)`, and a bare `&mut [u8]` instantiates core's
                 // blanket `AsMut`, which carries no associated refinement to discharge it with.
                 hbh_repr.emit(&mut Ipv6HopByHopHeader::new_unchecked(Buf::new(
-                    &mut payload[hbh_start..hbh_end],
+                    (unsafe { payload.get_unchecked_mut(hbh_start..hbh_end) }),
                 )));
 
                 // As above: `Buf::with_offset` carries the tail's length into the refinement,
-                // where `&mut payload[hbh_end..]` would lose it (flux-rs/flux#1714).
+                // where `(unsafe { payload.get_unchecked_mut(hbh_end..) })` would lose it (flux-rs/flux#1714).
                 icmpv6_repr.emit(
                     &ipv6_repr.src_addr,
                     &ipv6_repr.dst_addr,
@@ -205,7 +205,7 @@ impl<'p> Packet<'p> {
             #[cfg(feature = "socket-raw")]
             IpPayload::Raw(raw_packet) => {
                 let len = raw_packet.len();
-                payload[..len].copy_from_slice(raw_packet)
+                (unsafe { payload.get_unchecked_mut(..len) }).copy_from_slice(raw_packet)
             }
             #[cfg(any(feature = "socket-udp", feature = "socket-dns"))]
             IpPayload::Udp(udp_repr, inner_payload) => {

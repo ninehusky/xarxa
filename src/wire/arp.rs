@@ -422,7 +422,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     #[inline]
     pub fn set_hardware_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::HLEN] = value;
+        unsafe { *data.get_unchecked_mut(field::HLEN) = value; }
         self.hlen = Ghost::new(value);
     }
 
@@ -439,7 +439,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     #[inline]
     pub fn set_protocol_len(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[field::PLEN] = value;
+        unsafe { *data.get_unchecked_mut(field::PLEN) = value; }
         self.plen = Ghost::new(value);
     }
 

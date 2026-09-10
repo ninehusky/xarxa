@@ -303,7 +303,7 @@ impl<T: AsRef<[u8]>> Header<T> {
     #[inline]
     pub fn segments_left(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[1] // field::SEG_LEFT
+        (unsafe { *data.get_unchecked(1) }) // field::SEG_LEFT
     }
 }
 
@@ -339,7 +339,7 @@ impl<T: AsRef<[u8]>> Header<T> {
     #[flux_rs::no_panic]
     pub fn cmpr_i(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[2] >> 4 // field::CMPR
+        (unsafe { *data.get_unchecked(2) }) >> 4 // field::CMPR
     }
 
     /// Return the number of prefix octets elided from the last address (`addresses[n]`).
@@ -354,7 +354,7 @@ impl<T: AsRef<[u8]>> Header<T> {
     #[flux_rs::no_panic]
     pub fn cmpr_e(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[2] & 0xf // field::CMPR
+        (unsafe { *data.get_unchecked(2) }) & 0xf // field::CMPR
     }
 
     /// Return the number of octets used for padding after `addresses[n]`.
@@ -369,7 +369,7 @@ impl<T: AsRef<[u8]>> Header<T> {
     #[flux_rs::no_panic]
     pub fn pad(&self) -> u8 {
         let data = self.buffer.as_ref();
-        data[3] >> 4 // field::PAD
+        (unsafe { *data.get_unchecked(3) }) >> 4 // field::PAD
     }
 
     /// Return the address vector in bytes
@@ -384,7 +384,7 @@ impl<T: AsRef<[u8]>> Header<T> {
     #[flux_rs::no_panic]
     pub fn addresses(&self) -> &[u8] {
         let data = self.buffer.as_ref();
-        &data[6..] // field::ADDRESSES
+        (unsafe { data.get_unchecked(6..) }) // field::ADDRESSES
     }
 }
 
@@ -405,7 +405,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     #[inline]
     pub fn set_routing_type(&mut self, value: Type) {
         let data = self.buffer.as_mut();
-        data[0] = value.into(); // field::TYPE
+        unsafe { *data.get_unchecked_mut(0) = value.into(); } // field::TYPE
         // `u8::from` rather than `value.into()`: the macro specs `From<Type> for u8` as
         // code-preserving, but `Into`'s blanket impl carries no spec, so the code is lost.
         self.grtype = Ghost::from_u8(u8::from(value));
@@ -421,7 +421,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     #[inline]
     pub fn set_segments_left(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[1] = value; // field::SEG_LEFT
+        unsafe { *data.get_unchecked_mut(1) = value; } // field::SEG_LEFT
     }
 
     /// Initialize reserved fields to 0.
@@ -446,16 +446,16 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
 
         match routing_type {
             Type::Type2 => {
-                data[2] = 0;
-                data[3] = 0;
-                data[4] = 0;
-                data[5] = 0;
+                unsafe { *data.get_unchecked_mut(2) = 0; }
+                unsafe { *data.get_unchecked_mut(3) = 0; }
+                unsafe { *data.get_unchecked_mut(4) = 0; }
+                unsafe { *data.get_unchecked_mut(5) = 0; }
             }
             Type::Rpl => {
                 // Retain the higher order 4 bits of the padding field
-                data[3] &= 0xF0; // field::PAD
-                data[4] = 0;
-                data[5] = 0;
+                unsafe { *data.get_unchecked_mut(3) &= 0xF0; } // field::PAD
+                unsafe { *data.get_unchecked_mut(4) = 0; }
+                unsafe { *data.get_unchecked_mut(5) = 0; }
             }
 
             _ => panic!("Unrecognized routing type when clearing reserved fields."),
@@ -496,8 +496,8 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     pub fn set_cmpr_i(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         // field::CMPR
-        let raw = (value << 4) | (data[2] & 0xF);
-        data[2] = raw;
+        let raw = (value << 4) | ((unsafe { *data.get_unchecked(2) }) & 0xF);
+        unsafe { *data.get_unchecked_mut(2) = raw; }
     }
 
     /// Set the number of prefix octets elided from the last address (`addresses[n]`).
@@ -513,8 +513,8 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     pub fn set_cmpr_e(&mut self, value: u8) {
         let data = self.buffer.as_mut();
         // field::CMPR
-        let raw = (value & 0xF) | (data[2] & 0xF0);
-        data[2] = raw;
+        let raw = (value & 0xF) | ((unsafe { *data.get_unchecked(2) }) & 0xF0);
+        unsafe { *data.get_unchecked_mut(2) = raw; }
     }
 
     /// Set the number of octets used for padding after `addresses[n]`.
@@ -529,7 +529,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Header<T> {
     #[flux_rs::no_panic]
     pub fn set_pad(&mut self, value: u8) {
         let data = self.buffer.as_mut();
-        data[3] = value << 4; // field::PAD
+        unsafe { *data.get_unchecked_mut(3) = value << 4; } // field::PAD
     }
 
     /// Set address data

@@ -106,7 +106,7 @@ pub const fn byte_len(data: &[u8]) -> usize {
 pub fn first_nul(data: &[u8]) -> usize {
     let mut i = 0;
     while i < data.len() {
-        if data[i] == 0 {
+        if (unsafe { *data.get_unchecked(i) }) == 0 {
             return i;
         }
         i += 1;

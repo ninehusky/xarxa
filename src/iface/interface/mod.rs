@@ -1189,9 +1189,9 @@ impl InterfaceInner {
                             0x01,
                             0x00,
                             0x5e,
-                            b[1] & 0x7F,
-                            b[2],
-                            b[3],
+                            (unsafe { *b.get_unchecked(1) }) & 0x7F,
+                            (unsafe { *b.get_unchecked(2) }),
+                            (unsafe { *b.get_unchecked(3) }),
                         ]))
                     }
                     #[cfg(feature = "medium-ieee802154")]
@@ -1205,7 +1205,7 @@ impl InterfaceInner {
                     Medium::Ethernet => {
                         let b = addr.octets();
                         HardwareAddress::Ethernet(EthernetAddress::from_bytes(&[
-                            0x33, 0x33, b[12], b[13], b[14], b[15],
+                            0x33, 0x33, (unsafe { *b.get_unchecked(12) }), (unsafe { *b.get_unchecked(13) }), (unsafe { *b.get_unchecked(14) }), (unsafe { *b.get_unchecked(15) }),
                         ]))
                     }
                     #[cfg(feature = "medium-ieee802154")]

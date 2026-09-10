@@ -440,7 +440,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[flux_rs::no_panic]
     pub fn opcode(&self) -> OpCode {
         let data = self.buffer.as_ref();
-        OpCode::from(data[0]) // field::OP
+        OpCode::from((unsafe { *data.get_unchecked(0) })) // field::OP
     }
 
     /// Returns the hardware protocol type (e.g. ethernet).
@@ -449,7 +449,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     #[flux_rs::no_panic]
     pub fn hardware_type(&self) -> Hardware {
         let data = self.buffer.as_ref();
-        Hardware::from(u16::from(data[1])) // field::HTYPE
+        Hardware::from(u16::from((unsafe { *data.get_unchecked(1) }))) // field::HTYPE
     }
 
     /// Returns the length of a hardware address in bytes (e.g. 6 for ethernet).
@@ -597,7 +597,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
                     return None;
                 }
 
-                match buf[0] {
+                match (unsafe { *buf.get_unchecked(0) }) {
                     field::OPT_END => return None,
 
                     // Skip padding.
@@ -607,7 +607,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
                             return None;
                         }
 
-                        let len = buf[1] as usize;
+                        let len = (unsafe { *buf.get_unchecked(1) }) as usize;
 
                         if buf.len() < 2 + len {
                             return None;
@@ -615,7 +615,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
 
                         let opt = DhcpOption {
                             kind,
-                            data: &buf[2..2 + len],
+                            data: (unsafe { buf.get_unchecked(2..2 + len) }),
                         };
 
                         cur = OptionCursor { buf: tail(buf, 2 + len) };
@@ -640,7 +640,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
             return Err(Error);
         }
 
-        let data = core::str::from_utf8(&data[..len]).map_err(|_| Error)?;
+        let data = core::str::from_utf8((unsafe { data.get_unchecked(..len) })).map_err(|_| Error)?;
         Ok(data)
     }
 
@@ -654,7 +654,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
         if len == 128 || len == 0 {
             return Err(Error);
         }
-        let data = core::str::from_utf8(&data[..len]).map_err(|_| Error)?;
+        let data = core::str::from_utf8((unsafe { data.get_unchecked(..len) })).map_err(|_| Error)?;
         Ok(data)
     }
 }
@@ -1058,7 +1058,7 @@ impl<'a> Repr<'a> {
             let data = option.data;
             match (option.kind, data.len()) {
                 (field::OPT_DHCP_MESSAGE_TYPE, 1) => {
-                    let value = MessageType::from(data[0]);
+                    let value = MessageType::from((unsafe { *data.get_unchecked(0) }));
                     if value.opcode() == packet.opcode() {
                         message_type = Ok(value);
                     }
@@ -1067,11 +1067,11 @@ impl<'a> Repr<'a> {
                     requested_ip = Some(Ipv4Address::from_octets(data.try_into().unwrap()));
                 }
                 (field::OPT_CLIENT_ID, 7) => {
-                    let hardware_type = Hardware::from(u16::from(data[0]));
+                    let hardware_type = Hardware::from(u16::from((unsafe { *data.get_unchecked(0) })));
                     if hardware_type != Hardware::Ethernet {
                         return Err(Error);
                     }
-                    client_identifier = Some(EthernetAddress::from_bytes(&data[1..]));
+                    client_identifier = Some(EthernetAddress::from_bytes((unsafe { data.get_unchecked(1..) })));
                 }
                 (field::OPT_SERVER_IDENTIFIER, 4) => {
                     server_identifier = Some(Ipv4Address::from_octets(data.try_into().unwrap()));
@@ -1083,16 +1083,16 @@ impl<'a> Repr<'a> {
                     subnet_mask = Some(Ipv4Address::from_octets(data.try_into().unwrap()));
                 }
                 (field::OPT_MAX_DHCP_MESSAGE_SIZE, 2) => {
-                    max_size = Some(u16::from_be_bytes([data[0], data[1]]));
+                    max_size = Some(u16::from_be_bytes([(unsafe { *data.get_unchecked(0) }), (unsafe { *data.get_unchecked(1) })]));
                 }
                 (field::OPT_RENEWAL_TIME_VALUE, 4) => {
-                    renew_duration = Some(u32::from_be_bytes([data[0], data[1], data[2], data[3]]))
+                    renew_duration = Some(u32::from_be_bytes([(unsafe { *data.get_unchecked(0) }), (unsafe { *data.get_unchecked(1) }), (unsafe { *data.get_unchecked(2) }), (unsafe { *data.get_unchecked(3) })]))
                 }
                 (field::OPT_REBINDING_TIME_VALUE, 4) => {
-                    rebind_duration = Some(u32::from_be_bytes([data[0], data[1], data[2], data[3]]))
+                    rebind_duration = Some(u32::from_be_bytes([(unsafe { *data.get_unchecked(0) }), (unsafe { *data.get_unchecked(1) }), (unsafe { *data.get_unchecked(2) }), (unsafe { *data.get_unchecked(3) })]))
                 }
                 (field::OPT_IP_LEASE_TIME, 4) => {
-                    lease_duration = Some(u32::from_be_bytes([data[0], data[1], data[2], data[3]]))
+                    lease_duration = Some(u32::from_be_bytes([(unsafe { *data.get_unchecked(0) }), (unsafe { *data.get_unchecked(1) }), (unsafe { *data.get_unchecked(2) }), (unsafe { *data.get_unchecked(3) })]))
                 }
                 (field::OPT_PARAMETER_REQUEST_LIST, _) => {
                     parameter_request_list = Some(data);
