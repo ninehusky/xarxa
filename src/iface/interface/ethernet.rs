@@ -38,13 +38,13 @@ impl InterfaceInner {
                     &ipv4_packet,
                     fragments,
                 )
-                .map(EthernetPacket::Ip)
+                .map(|p| EthernetPacket::Ip(p))
             }
             #[cfg(feature = "proto-ipv6")]
             EthernetProtocol::Ipv6 => {
                 let ipv6_packet = check!(Ipv6Packet::new_checked_ref(Ref::new(eth_frame.payload())));
                 self.process_ipv6(sockets, meta, eth_frame.src_addr().into(), &ipv6_packet)
-                    .map(EthernetPacket::Ip)
+                    .map(|p| EthernetPacket::Ip(p))
             }
             // Drop all other traffic.
             _ => None,
@@ -61,6 +61,7 @@ impl InterfaceInner {
     ///
     /// [`phy::call_with_buf`]: crate::phy::call_with_buf
     #[flux_rs::trusted(no, reason = "checks the closure's frame-length contract, #23")]
+    #[flux_rs::no_panic_if(F::no_panic())]
     #[flux_rs::sig(
         fn(EthernetFrame<Buf>[@fr], F)
         where F: FnOnce(EthernetFrame<Buf>{g: g.buffer == fr.buffer})
@@ -88,6 +89,10 @@ impl InterfaceInner {
     /// `ArpRepr::buffer_len()`, which is 28.
     #[flux_rs::opts(check_overflow = "strict")]
     #[flux_rs::trusted(no, reason = "poses the Ethernet header writes' buffer bound")]
+    // The `tx_token.consume` below is the token's to answer for, as in `dispatch_ip`; the
+    // closure is the caller's. Both go in one attribute -- two `no_panic_if` on an item is a
+    // `duplicated attribute` error.
+    #[flux_rs::no_panic_if(F::no_panic() && <Tx as TxToken>::tx_no_panic())]
     #[flux_rs::sig(
         fn(self: &mut InterfaceInner, Tx, buffer_len: usize[@bl], F)
             -> Result<(), DispatchError>

@@ -47,6 +47,8 @@ impl<'a> Parser<'a> {
         }
     }
 
+    #[flux_rs::no_panic_if(F::no_panic())]
+    #[flux_rs::sig(fn(&mut Self, f: F) -> Option<T>)]
     fn try_do<F, T>(&mut self, f: F) -> Option<T>
     where
         F: FnOnce(&mut Parser<'a>) -> Result<T>,
@@ -69,6 +71,8 @@ impl<'a> Parser<'a> {
         }
     }
 
+    #[flux_rs::no_panic_if(F::no_panic())]
+    #[flux_rs::sig(fn(&mut Self, f: F) -> Result<T>)]
     fn until_eof<F, T>(&mut self, f: F) -> Result<T>
     where
         F: FnOnce(&mut Parser<'a>) -> Result<T>,
@@ -106,6 +110,10 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// `Ok` is returned only past the `value < max_value` test below, so the bound is exact.
+    /// It is what lets `Ipv4Cidr::from_str` discharge `Cidr::new`'s prefix-length precondition
+    /// without a second check.
+    #[flux_rs::sig(fn(&mut Self, usize, max_value: u32, bool) -> Result<u32{v: v < max_value}>)]
     fn accept_number(&mut self, max_digits: usize, max_value: u32, hex: bool) -> Result<u32> {
         let mut value = self.accept_digit(hex)? as u32;
         for _ in 1..max_digits {

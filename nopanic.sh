@@ -10,7 +10,14 @@ OUT="_np"; mkdir -p "$OUT"
 L="$OUT/$TAG.log"
 
 FEATURES=medium-ethernet,socket-udp,socket-tcp,socket-dhcpv4,proto-ipv4,proto-ipv6
-FLUX_CACHE=false cargo flux check -p xarxa --no-default-features --features "$FEATURES" > "$L" 2>&1
+# The firmware target, because the allocation ceiling is now stated per word size: on 32-bit
+# `isize::MAX` is `i32::MAX`, which is what `SeqNumber`'s arithmetic needs. The count is
+# target-dependent from here; this is the one to quote. `TARGET=` (empty) forces the host.
+TARGET="${TARGET-thumbv7em-none-eabi}"
+TARGET_ARG=""
+[ -n "$TARGET" ] && TARGET_ARG="--target $TARGET"
+FLUX_SYSROOT="${FLUX_SYSROOT:-/Users/andrew/research/flux-npif/sysroot}" \
+  RUSTFLAGS="-C debug-assertions=off" FLUX_CACHE=false cargo flux check -p xarxa $TARGET_ARG --no-default-features --features "$FEATURES" > "$L" 2>&1
 
 fail=0
 chk() { # name expected actual
@@ -30,6 +37,12 @@ chk "no dep-crate abort"  0 "$DEPFAIL"
 if [ "$E" -gt 0 ]; then
   chk "errors are xarxa's"  1 "$(grep -- '-->' "$L" | grep -c '^ *--> src/' > /dev/null && echo 1 || echo 0)"
 fi
+# Any E0999 that is not a may-panic or a known refinement failure means the run did not
+# measure what we think. A malformed spec stops the body being checked, so its rows VANISH
+# and the tally reads as an improvement -- a duplicated `sig` once took 296 to "1".
+UNEXPECTED=$(grep -o '^error\[E0999\]: .*' "$L" \
+  | grep -vcE 'call to .* may panic|refinement type error|assertion might fail' || true)
+chk "no unexpected errors" 0 "$UNEXPECTED"
 chk "panicked (ICE)"      0 "$(grep -c panicked "$L")"
 chk "syntax error"        0 "$(grep -c 'syntax error' "$L")"
 chk "is missing"          0 "$(grep -c 'is missing' "$L")"

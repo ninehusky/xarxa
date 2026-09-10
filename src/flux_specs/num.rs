@@ -15,6 +15,17 @@ impl usize {
     #[no_panic]
     #[spec(fn(num: usize, rhs: usize) -> usize[if num > rhs { num - rhs } else { 0 }])]
     fn saturating_sub(self, rhs: usize) -> usize;
+
+    // A `clz` instruction: total on every input, zero included.
+    // <https://doc.rust-lang.org/1.89.0/src/core/num/uint_macros.rs.html#297>
+    #[no_panic]
+    fn leading_zeros(self) -> u32;
+
+    // Divides, so it panics on a zero divisor and only then.
+    // <https://doc.rust-lang.org/1.89.0/src/core/num/uint_macros.rs.html#3106>
+    #[flux_rs::no_panic_if(rhs > 0)]
+    #[spec(fn(num: usize, rhs: usize) -> usize)]
+    fn div_ceil(self, rhs: usize) -> usize;
 }
 
 // flux-core has these too, written against its `wrap_once` defn. Same reason as above for
@@ -53,7 +64,10 @@ impl u16 {
 
 #[extern_spec(core::num)]
 impl u32 {
+    // A u32 has 32 bits, so a population count cannot exceed 32. Stating it is what lets
+    // `Ipv4Cidr::from_netmask` establish the `prefix_len <= 32` invariant.
     #[no_panic]
+    #[spec(fn(u32) -> u32{v: v <= 32})]
     const fn count_ones(self) -> u32;
     #[no_panic]
     const fn count_zeros(self) -> u32;
@@ -65,4 +79,22 @@ impl u32 {
     const fn to_be_bytes(self) -> [u8; 4];
     #[no_panic]
     const fn from_be_bytes(bytes: [u8; 4]) -> u32;
+
+    // Divides, so it panics on a zero divisor and only then.
+    // <https://doc.rust-lang.org/1.89.0/src/core/num/uint_macros.rs.html#3106>
+    #[flux_rs::no_panic_if(rhs > 0)]
+    #[spec(fn(num: u32, rhs: u32) -> u32)]
+    fn div_ceil(self, rhs: u32) -> u32;
+}
+
+#[extern_spec(core::num)]
+impl u8 {
+    // A `clz` instruction: total on every input, zero included.
+    #[no_panic]
+    const fn leading_zeros(self) -> u32;
+
+    // Saturates rather than overflowing; that is the whole point of it.
+    // <https://doc.rust-lang.org/1.89.0/src/core/num/uint_macros.rs.html#2432>
+    #[no_panic]
+    const fn saturating_add(self, rhs: u8) -> u8;
 }

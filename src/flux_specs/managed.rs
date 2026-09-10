@@ -59,9 +59,24 @@ enum ManagedSlice<'a, T> {
 // anything. A post-monomorphization `const` assert does not close it: it fires on `cargo build`
 // of a *reachable* instantiation and not at all under `cargo check`. A sealed `NonZst` bound on
 // `T` would, at the cost of a breaking change to a public generic type.
+//
+// The block is written twice because the ceiling is the target's `isize::MAX` and `variant` is
+// not a standalone attribute -- it exists only inside `extern_spec`'s expansion, so it cannot
+// be `cfg_attr`'d. On 32-bit the ceiling is `i32::MAX`, which is the bound `SeqNumber`'s
+// arithmetic needs; the host test build is 64-bit and keeps the wider one.
+#[cfg(not(target_pointer_width = "32"))]
 #[invariant(len >= 0 && len <= 9223372036854775807)]
 enum ManagedSlice<'a, T> {
     #[variant(({&mut [T][@n] | n <= 9223372036854775807}) -> ManagedSlice<T>[n])]
+    Borrowed(&'a mut [T]),
+}
+
+#[cfg(all(not(feature = "alloc"), target_pointer_width = "32"))]
+#[extern_spec(managed)]
+#[refined_by(len: int)]
+#[invariant(len >= 0 && len <= 2147483647)]
+enum ManagedSlice<'a, T> {
+    #[variant(({&mut [T][@n] | n <= 2147483647}) -> ManagedSlice<T>[n])]
     Borrowed(&'a mut [T]),
 }
 

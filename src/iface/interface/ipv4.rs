@@ -186,10 +186,13 @@ impl InterfaceInner {
                     if udp_packet.src_port() == dhcp_socket.server_port
                         && udp_packet.dst_port() == dhcp_socket.client_port
                     {
+                        // `IpAddress::from` rather than `.into()`: the blanket `Into` impl is
+                        // specified as `fn(T) -> U`, which erases the family, and
+                        // `UdpRepr::parse` needs the two addresses to agree.
                         let udp_repr = check!(UdpRepr::parse(
                             &udp_packet,
-                            &ipv4_repr.src_addr.into(),
-                            &ipv4_repr.dst_addr.into(),
+                            &IpAddress::from(ipv4_repr.src_addr),
+                            &IpAddress::from(ipv4_repr.dst_addr),
                             &self.caps.checksum
                         ));
                         dhcp_socket.process(self, &ipv4_repr, &udp_repr, udp_packet.payload());
@@ -216,7 +219,7 @@ impl InterfaceInner {
             if self
                 .routes
                 .lookup(&IpAddress::Ipv4(ipv4_repr.dst_addr), self.now)
-                .is_none_or(|router_addr| !self.has_ip_addr(router_addr))
+                .map_or(true, |router_addr| !self.has_ip_addr(router_addr))
             {
                 net_trace!("Rejecting IPv4 packet; no matching routes");
 

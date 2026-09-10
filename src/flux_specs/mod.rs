@@ -9,6 +9,7 @@
 //! | [`flux_core`] | verbatim copies of specs that already ship in flux-core | check the transcription |
 //! | [`array`] | flux-core's `[T; N]` `Index`/`IndexMut`, plus `as_slice`/`as_mut_slice` | check both |
 //! | [`convert`] | `AsRef`/`AsMut` associated refinements | check the claim |
+//! | [`str`] | `from_utf8` | check the claim |
 //! | [`slice`] | `copy_from_slice`, `SliceIndex for RangeFull` | check the claim |
 //! | [`cmp`] | `min` | check the claim |
 //! | [`heapless`] | `Vec::{new, push}`, `Deref` | check the claim |
@@ -25,6 +26,7 @@ mod array;
 mod byteorder;
 mod cmp;
 mod convert;
+mod convert_nopanic;
 mod flux_core;
 mod heapless;
 mod intrinsics;
@@ -34,4 +36,6 @@ mod net;
 mod num;
 mod option;
 mod range;
+mod result;
 mod slice;
+mod str;

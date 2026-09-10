@@ -206,7 +206,12 @@ impl Interface {
     /// # Panics
     /// This function panics if the [`Config::hardware_addr`] does not match
     /// the medium of the device.
-    pub fn new(config: Config, device: &mut (impl Device + ?Sized), now: Instant) -> Self {
+    //
+    // A named `D`, for the same reason as `device_caps`: an argument-position impl trait has
+    // no type parameter to name in `device_no_panic`. Source-compatible for callers.
+    #[flux_rs::no_panic_if(<D as Device>::device_no_panic())]
+    #[flux_rs::sig(fn(Config, &mut D, Instant) -> Self)]
+    pub fn new<D: Device + ?Sized>(config: Config, device: &mut D, now: Instant) -> Self {
         let caps = device.capabilities();
         let medium = Medium::from_driver(caps.medium);
         assert_eq!(
@@ -386,6 +391,8 @@ impl Interface {
     ///
     /// # Panics
     /// This function panics if any of the addresses are not unicast.
+    #[flux_rs::no_panic_if(F::no_panic())]
+    #[flux_rs::sig(fn(&mut Self, f: F))]
     pub fn update_ip_addrs<F: FnOnce(&mut Vec<IpCidr, IFACE_MAX_ADDR_COUNT>)>(&mut self, f: F) {
         f(&mut self.inner.ip_addrs);
         InterfaceInner::flush_neighbor_cache(&mut self.inner);
@@ -402,6 +409,8 @@ impl Interface {
     }
 
     /// Check whether the interface has the given IP address assigned.
+    #[flux_rs::no_panic_if(<T as Into<IpAddress>>::into_no_panic())]
+    #[flux_rs::sig(fn(&Self, addr: T) -> bool)]
     pub fn has_ip_addr<T: Into<IpAddress>>(&self, addr: T) -> bool {
         self.inner.has_ip_addr(addr)
     }
@@ -468,10 +477,18 @@ impl Interface {
     /// and [`poll_ingress_single()`](Self::poll_ingress_single).
     /// This allows you to insert yields or process other events between processing
     /// individual ingress packets.
-    pub fn poll(
+    //
+    // The contract surfaces here, at the public entry point, which is where it belongs: only
+    // the consumer knows whether their `Device` panics. xarxa's guarantee is conditional on
+    // it and says so.
+    #[flux_rs::no_panic_if(<D as Device>::device_no_panic()
+            && <<D as Device>::RxToken<_> as RxToken>::rx_no_panic()
+            && <<D as Device>::TxToken<_> as TxToken>::tx_no_panic())]
+    #[flux_rs::sig(fn(&mut Self, Instant, &mut D, &mut SocketSet) -> PollResult)]
+    pub fn poll<D: Device + ?Sized>(
         &mut self,
         timestamp: Instant,
-        device: &mut (impl Device + ?Sized),
+        device: &mut D,
         sockets: &mut SocketSet<'_>,
     ) -> PollResult {
         self.inner.now = timestamp;
@@ -546,10 +563,15 @@ impl Interface {
     /// - whether the state of any socket might have changed.
     ///
     /// Since it processes at most one packet, this is guaranteed to always perform a bounded amount of work.
-    pub fn poll_ingress_single(
+    // See [`Self::poll`].
+    #[flux_rs::no_panic_if(<D as Device>::device_no_panic()
+            && <<D as Device>::RxToken<_> as RxToken>::rx_no_panic()
+            && <<D as Device>::TxToken<_> as TxToken>::tx_no_panic())]
+    #[flux_rs::sig(fn(&mut Self, Instant, &mut D, &mut SocketSet) -> PollIngressSingleResult)]
+    pub fn poll_ingress_single<D: Device + ?Sized>(
         &mut self,
         timestamp: Instant,
-        device: &mut (impl Device + ?Sized),
+        device: &mut D,
         sockets: &mut SocketSet<'_>,
     ) -> PollIngressSingleResult {
         self.inner.now = timestamp;
@@ -632,9 +654,19 @@ impl Interface {
         }
     }
 
-    fn socket_ingress(
+    // Three contracts, because this touches all three: `receive` is the device's, `meta` and
+    // `consume` are the receive token's, and the `dispatch` inside the closure is the transmit
+    // token's. A named `D` so the associated types can be spelled; `<_>` for the GAT lifetime,
+    // which is a syntax error written `<'_>` and an arity error omitted.
+    #[flux_rs::no_panic_if(
+        <D as Device>::device_no_panic()
+            && <<D as Device>::RxToken<_> as RxToken>::rx_no_panic()
+            && <<D as Device>::TxToken<_> as TxToken>::tx_no_panic()
+    )]
+    #[flux_rs::sig(fn(&mut Self, &mut D, &mut SocketSet) -> PollIngressSingleResult)]
+    fn socket_ingress<D: Device + ?Sized>(
         &mut self,
-        device: &mut (impl Device + ?Sized),
+        device: &mut D,
         sockets: &mut SocketSet<'_>,
     ) -> PollIngressSingleResult {
         let Some((rx_token, tx_token)) = device.receive() else {
@@ -702,9 +734,13 @@ impl Interface {
     }
 
     #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
-    fn socket_egress(
+    #[flux_rs::no_panic_if(<D as Device>::device_no_panic()
+            && <<D as Device>::RxToken<_> as RxToken>::rx_no_panic()
+            && <<D as Device>::TxToken<_> as TxToken>::tx_no_panic())]
+    #[flux_rs::sig(fn(&mut Self, &mut D, &mut SocketSet) -> PollResult)]
+    fn socket_egress<D: Device + ?Sized>(
         &mut self,
-        device: &mut (impl Device + ?Sized),
+        device: &mut D,
         sockets: &mut SocketSet<'_>,
     ) -> PollResult {
         let _caps = Self::device_caps(device);
@@ -747,8 +783,14 @@ impl Interface {
     /// call in that body that also takes `device` with an unsolved existential variable
     /// (`parameter inference error`), which aborts the whole function's check. Isolating the
     /// call here confines that to one statement. Behaviour is unchanged.
+    //
+    // A named `D` rather than `impl Device`: an argument-position impl trait has no type
+    // parameter to name, so `<D as Device>::device_no_panic()` could not be written. The Rust
+    // signature is equivalent.
     #[flux_rs::trusted(no)]
-    fn device_caps(device: &mut (impl Device + ?Sized)) -> DeviceCapabilities {
+    #[flux_rs::no_panic_if(<D as Device>::device_no_panic())]
+    #[flux_rs::sig(fn(&mut D) -> DeviceCapabilities)]
+    fn device_caps<D: Device + ?Sized>(device: &mut D) -> DeviceCapabilities {
         device.capabilities()
     }
 
@@ -944,7 +986,7 @@ impl InterfaceInner {
 
     #[allow(unused)] // unused depending on which sockets are enabled
     #[flux_rs::trusted(no, reason = "IpRepr::new fan-in cone")]
-    #[flux_rs::sig(fn(&Self, &IpAddress[@v]) -> Option<IpAddress[v]>)]
+    #[flux_rs::sig(fn(&Self, &IpAddress[@v]) -> Option<IpAddress{s: s.address_ty == v.address_ty}>)]
     pub(crate) fn get_source_address(&self, dst_addr: &IpAddress) -> Option<IpAddress> {
         match dst_addr {
             #[cfg(feature = "proto-ipv4")]
@@ -1002,6 +1044,8 @@ impl InterfaceInner {
     /// Check whether the interface has the given IP address assigned.
     ///
     /// Always returns true if [`InterfaceInner::any_ip`].
+    #[flux_rs::no_panic_if(<T as Into<IpAddress>>::into_no_panic())]
+    #[flux_rs::sig(fn(&Self, addr: T) -> bool)]
     pub(crate) fn has_ip_addr<T: Into<IpAddress>>(&self, addr: T) -> bool {
         // If any IP is set to true, we don't bother about checking the IP.
         if self.any_ip {
@@ -1013,6 +1057,8 @@ impl InterfaceInner {
     }
 
     /// Check whether the interface listens to given destination multicast IP address.
+    #[flux_rs::no_panic_if(<T as Into<IpAddress>>::into_no_panic())]
+    #[flux_rs::sig(fn(&Self, addr: T) -> bool)]
     fn has_multicast_group<T: Into<IpAddress>>(&self, addr: T) -> bool {
         let addr = addr.into();
 
@@ -1093,6 +1139,11 @@ impl InterfaceInner {
     }
 
     #[cfg(feature = "medium-ethernet")]
+    // Both `dispatch_ip` and `dispatch_ethernet` below are the token's to answer for.
+    #[flux_rs::no_panic_if(<Tx as TxToken>::tx_no_panic())]
+    #[flux_rs::sig(
+        fn(&mut Self, Tx, EthernetPacket, &mut Fragmenter) -> Result<(), DispatchError>
+    )]
     fn dispatch<Tx>(
         &mut self,
         tx_token: Tx,
@@ -1157,6 +1208,12 @@ impl InterfaceInner {
     }
 
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
+    // See `dispatch`.
+    #[flux_rs::no_panic_if(<Tx as TxToken>::tx_no_panic())]
+    #[flux_rs::sig(
+        fn(&mut Self, Tx, &IpAddress, &mut Fragmenter)
+            -> Result<(HardwareAddress, Tx), DispatchError>
+    )]
     fn lookup_hardware_addr<Tx>(
         &mut self,
         tx_token: Tx,
@@ -1367,6 +1424,7 @@ impl InterfaceInner {
             checksum_caps: &ChecksumCapabilities,
         )
         requires
+            ipr.ip_ty == p.ip_ty &&
             (ipr.ip_ty == 0 => n == 20 + ipr.plen) &&
             (ipr.ip_ty == 1 => n == 40 + ipr.plen) &&
             (p.blen != -1 => (p.blen <= 65535 &&
@@ -1397,6 +1455,12 @@ impl InterfaceInner {
     // it ICEs in `fixpoint_encoding.rs:1623` at `parsers.rs:163` and checks nothing.
     #[flux_rs::opts(check_overflow = "strict")]
     #[flux_rs::trusted(no, reason = "entry point: must discharge Ipv4Repr::emit's buffer bound")]
+    // The three `tx_token` calls below -- two `consume` and a `set_meta` -- are the token's to
+    // answer for, not xarxa's.
+    #[flux_rs::no_panic_if(<Tx as TxToken>::tx_no_panic())]
+    #[flux_rs::sig(
+        fn(&mut Self, Tx, PacketMeta, Packet, &mut Fragmenter) -> Result<(), DispatchError>
+    )]
     fn dispatch_ip<Tx: TxToken>(
         &mut self,
         // NOTE(unused_mut): tx_token isn't always mutated, depending on

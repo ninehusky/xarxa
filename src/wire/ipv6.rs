@@ -62,6 +62,7 @@ pub(crate) enum MulticastScope {
     Unknown = 0xFF,
 }
 
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<u8> for MulticastScope {
     fn from(value: u8) -> Self {
         match value {
@@ -106,6 +107,8 @@ pub(crate) trait AddressExt {
     ///
     /// # Panics
     /// This function panics if `mask` is greater than 128.
+    #[flux_rs::no_panic_if(false)]
+    #[flux_rs::sig(fn(&Self, u8) -> [u8; _])]
     fn mask(&self, mask: u8) -> [u8; ADDR_SIZE];
 
     /// The solicited node for the given unicast address.
@@ -113,6 +116,8 @@ pub(crate) trait AddressExt {
     /// # Panics
     /// This function panics if the given address is not
     /// unicast.
+    #[flux_rs::no_panic_if(false)]
+    #[flux_rs::sig(fn(&Self) -> Address)]
     fn solicited_node(&self) -> Address;
 
     /// Return the scope of the address.
@@ -127,6 +132,7 @@ pub(crate) trait AddressExt {
 
     /// If `self` is a CIDR-compatible subnet mask, return `Some(prefix_len)`,
     /// where `prefix_len` is the number of leading zeroes. Return `None` otherwise.
+    #[flux_rs::sig(fn(&Self) -> Option<u8{v: v <= 128}>)]
     fn prefix_len(&self) -> Option<u8>;
 }
 
@@ -153,6 +159,9 @@ impl AddressExt for Address {
         }
     }
 
+    #[flux_rs::trusted(yes, reason = "the ghost flag has no relation to the octets, so this equality is the flag's definition rather than something the body can prove; body is three total predicates")]
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&Address[@a]) -> bool[a.is_unicast])]
     fn x_is_unicast(&self) -> bool {
         !(self.is_multicast() || self.is_unspecified())
     }
@@ -162,9 +171,14 @@ impl AddressExt for Address {
     }
 
     fn is_link_local(&self) -> bool {
-        self.octets()[0..8] == [0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+        crate::flux_util::bytes_eq(
+            &self.octets()[0..8],
+            &[0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        )
     }
 
+    #[flux_rs::no_panic_if(m <= 128)]
+    #[flux_rs::sig(fn(&Address, m: u8) -> [u8; _])]
     fn mask(&self, mask: u8) -> [u8; ADDR_SIZE] {
         assert!(mask <= 128);
         let mut bytes = [0u8; ADDR_SIZE];
@@ -183,6 +197,8 @@ impl AddressExt for Address {
         bytes
     }
 
+    #[flux_rs::no_panic_if(a.is_unicast)]
+    #[flux_rs::sig(fn(&Address[@a]) -> Address)]
     fn solicited_node(&self) -> Address {
         assert!(self.x_is_unicast());
         let o = self.octets();
@@ -209,12 +225,16 @@ impl AddressExt for Address {
     }
 
     fn is_solicited_node_multicast(&self) -> bool {
-        self.octets()[0..13]
-            == [
+        crate::flux_util::bytes_eq(
+            &self.octets()[0..13],
+            &[
                 0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xFF,
-            ]
+            ],
+        )
     }
 
+    #[flux_rs::trusted(yes, reason = "counts the leading one-bits of a fixed-width address, so the result cannot exceed its width; the loop bound is not something flux follows")]
+    #[flux_rs::sig(fn(&Address) -> Option<u8{v: v <= 128}>)]
     fn prefix_len(&self) -> Option<u8> {
         let mut ones = true;
         let mut prefix_len = 0;
@@ -243,8 +263,14 @@ impl AddressExt for Address {
 /// A specification of an IPv6 CIDR block, containing an address and a variable-length
 /// subnet masking prefix length.
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+// `new` is the only constructor that takes a caller's length and it requires the bound, so
+// every `Cidr` carries it. This is what lets `mask`'s precondition discharge downstream
+// without each user restating it.
+#[flux_rs::refined_by(prefix_len: int)]
+#[flux_rs::invariant(prefix_len <= 128)]
 pub struct Cidr {
     address: Address,
+    #[flux_rs::field(u8[prefix_len])]
     prefix_len: u8,
 }
 
@@ -267,6 +293,8 @@ impl Cidr {
     ///
     /// # Panics
     /// This function panics if the prefix length is larger than 128.
+    #[flux_rs::no_panic_if(p <= 128)]
+    #[flux_rs::sig(fn(Address, p: u8) -> Cidr[p] requires p <= 128)]
     pub const fn new(address: Address, prefix_len: u8) -> Cidr {
         assert!(prefix_len <= 128);
         Cidr {
@@ -290,6 +318,8 @@ impl Cidr {
     }
 
     /// Return the prefix length of this IPv6 CIDR block.
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&Cidr[@c]) -> u8[c.prefix_len])]
     pub const fn prefix_len(&self) -> u8 {
         self.prefix_len
     }
@@ -302,7 +332,10 @@ impl Cidr {
             return true;
         }
 
-        self.address.mask(self.prefix_len) == addr.mask(self.prefix_len)
+        crate::flux_util::bytes_eq(
+            &self.address.mask(self.prefix_len),
+            &addr.mask(self.prefix_len),
+        )
     }
 
     /// Query whether the subnetwork described by this IPV6 CIDR block contains
@@ -640,7 +673,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     )]
     pub fn src_addr(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_octets(sub(data, 8, 16).try_into().unwrap()) // field::SRC_ADDR
+        Address::from_octets(<[u8; 16]>::try_from(sub(data, 8, 16)).unwrap()) // field::SRC_ADDR
     }
 
     /// Return the destination address field.
@@ -652,7 +685,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     )]
     pub fn dst_addr(&self) -> Address {
         let data = self.buffer.as_ref();
-        Address::from_octets(sub(data, 24, 16).try_into().unwrap()) // field::DST_ADDR
+        Address::from_octets(<[u8; 16]>::try_from(sub(data, 24, 16)).unwrap()) // field::DST_ADDR
     }
 }
 

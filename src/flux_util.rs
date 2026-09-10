@@ -92,7 +92,10 @@ pub fn suffix_mut<T>(data: &mut [T], at: usize) -> &mut [T] {
 ///
 /// Restricted to `[u8]` on purpose -- the bound is false for a slice of zero-sized elements.
 #[flux_rs::trusted(yes, reason = "core guarantees an allocation is at most isize::MAX bytes")]
-#[flux_rs::sig(fn(&[u8][@n]) -> usize{v: v == n && n <= 9223372036854775807})]
+#[cfg_attr(not(target_pointer_width = "32"),
+    flux_rs::sig(fn(&[u8][@n]) -> usize{v: v == n && n <= 9223372036854775807}))]
+#[cfg_attr(target_pointer_width = "32",
+    flux_rs::sig(fn(&[u8][@n]) -> usize{v: v == n && n <= 2147483647}))]
 #[flux_rs::no_panic]
 pub const fn byte_len(data: &[u8]) -> usize {
     data.len()
@@ -136,4 +139,27 @@ pub fn first_nul(data: &[u8]) -> usize {
 #[flux_rs::no_panic]
 pub const fn usize_to_i32(n: usize) -> i32 {
     n as i32
+}
+
+/// `a == b` for byte slices, open-coded.
+///
+/// `[T] == [U; N]` goes through a generic `T: PartialEq<U>`, so flux reaches it as
+/// `MightPanic(Transitive)` and every comparison of two byte arrays owes a proof no caller can
+/// construct. Comparing bytes cannot fail; restricting to `[u8]` is what makes that statable,
+/// the same device as [`byte_len`]. The body is exactly what `PartialEq for [T]` does: compare
+/// the lengths, then the elements.
+#[flux_rs::no_panic]
+#[flux_rs::sig(fn(&[u8][@n], &[u8][@m]) -> bool)]
+pub fn bytes_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
 }

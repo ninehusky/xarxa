@@ -34,20 +34,54 @@ pub use xarxa_driver::Medium as DriverMedium;
 /// This is the stack-internal counterpart of [`xarxa_driver::Medium`]: it only has variants for the
 /// mediums the stack was built for, so that when a single `medium-*` Cargo feature is enabled
 /// it becomes a zero-sized type and all the matches on it are compiled away.
-#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+#[derive(Debug, Eq, Copy, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[flux_rs::refined_by(code: int)]
+// With exactly one `medium-*` feature there is one variant, so every `Medium` has that
+// code. Flux checks this against the variant list, so it is a consequence of the cfg, not
+// an assumption -- and it is what makes `medium == Medium::Ethernet` provable at a field
+// read, where the struct holding it carries no index of its own.
+#[cfg_attr(
+    all(
+        feature = "medium-ethernet",
+        not(feature = "medium-ip"),
+        not(feature = "medium-ieee802154")
+    ),
+    flux_rs::invariant(code == 0)
+)]
 pub enum Medium {
     /// See [`DriverMedium::Ethernet`].
     #[cfg(feature = "medium-ethernet")]
+    #[flux_rs::variant(Medium[0])]
     Ethernet,
 
     /// See [`DriverMedium::Ip`].
     #[cfg(feature = "medium-ip")]
+    #[flux_rs::variant(Medium[1])]
     Ip,
 
     /// See [`DriverMedium::Ieee802154`].
     #[cfg(feature = "medium-ieee802154")]
+    #[flux_rs::variant(Medium[2])]
     Ieee802154,
+}
+
+// Hand-written rather than derived, and refined by the variant code: with a single
+// `medium-*` feature this enum has one variant, so `medium == Medium::Ethernet` is a
+// tautology and the `assert!`s that check it are dead code. A derive states neither the
+// panic-freedom nor the value. `!=` needs its own item; it goes to the trait's default.
+impl PartialEq for Medium {
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&Medium[@a], &Medium[@b]) -> bool[a == b])]
+    fn eq(&self, other: &Medium) -> bool {
+        *self as u8 == *other as u8
+    }
+
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&Medium[@a], &Medium[@b]) -> bool[a != b])]
+    fn ne(&self, other: &Medium) -> bool {
+        *self as u8 != *other as u8
+    }
 }
 
 impl Medium {
@@ -89,14 +123,17 @@ impl Medium {
 ))]
 mod sys;
 
+#[cfg(feature = "phy-debug")]
 mod fault_injector;
 #[cfg(feature = "alloc")]
 mod fuzz_injector;
 #[cfg(feature = "alloc")]
 mod loopback;
+#[cfg(feature = "phy-debug")]
 mod pcap_writer;
 #[cfg(all(feature = "phy-raw_socket", unix))]
 mod raw_socket;
+#[cfg(feature = "phy-debug")]
 mod tracer;
 #[cfg(all(
     feature = "phy-tuntap_interface",
@@ -110,14 +147,17 @@ mod tuntap_interface;
 ))]
 pub use self::sys::wait;
 
+#[cfg(feature = "phy-debug")]
 pub use self::fault_injector::FaultInjector;
 #[cfg(feature = "alloc")]
 pub use self::fuzz_injector::{FuzzInjector, Fuzzer};
 #[cfg(feature = "alloc")]
 pub use self::loopback::Loopback;
+#[cfg(feature = "phy-debug")]
 pub use self::pcap_writer::{PcapLinkType, PcapMode, PcapSink, PcapWriter};
 #[cfg(all(feature = "phy-raw_socket", unix))]
 pub use self::raw_socket::RawSocket;
+#[cfg(feature = "phy-debug")]
 pub use self::tracer::{Tracer, TracerDirection, TracerPacket};
 #[cfg(all(
     feature = "phy-tuntap_interface",
@@ -140,6 +180,7 @@ pub const IPV4_FRAGMENT_PAYLOAD_ALIGNMENT: usize = 8;
 /// this and the obligation is discharged; call it directly from a closure and the
 /// implementor verifies vacuously. See `xarxa-driver`'s `spec_is_live` tripwires.
 #[flux_rs::trusted(no, reason = "checks TxToken::consume's buffer-length contract, #23")]
+#[flux_rs::no_panic_if(F::no_panic())]
 #[flux_rs::sig(
     fn(&mut [u8][@m], F) -> R
     where

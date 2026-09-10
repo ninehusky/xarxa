@@ -158,7 +158,11 @@ impl ops::Add<usize> for SeqNumber {
     // The guard below is what discharges `usize_to_i32`'s bound; the panic stays and this
     // retires none of it. `rhs as i32` became `usize_to_i32(rhs)`, which is the same cast --
     // flux does not model the `as`, and that is all the helper supplies.
+    // The panic stays. `no_panic_if` states the condition it guards -- every `rhs` in the crate
+    // is a buffer length or window, and on a 32-bit target no allocation reaches `i32::MAX`.
+    // Nothing here changes what runs; the obligation moves to the callers, where it is real.
     #[flux_rs::reveal(wrap32_up)]
+    #[flux_rs::no_panic_if(n <= 2147483647)]
     #[flux_rs::sig(fn(SeqNumber[@a], usize[@n]) -> SeqNumber[wrap32_up(a.v + n)])]
     fn add(self, rhs: usize) -> SeqNumber {
         if rhs > i32::MAX as usize {
@@ -172,7 +176,11 @@ impl ops::Sub<usize> for SeqNumber {
     type Output = SeqNumber;
 
     // See `Add<usize>` above.
+    // The panic stays. `no_panic_if` states the condition it guards -- every `rhs` in the crate
+    // is a buffer length or window, and on a 32-bit target no allocation reaches `i32::MAX`.
+    // Nothing here changes what runs; the obligation moves to the callers, where it is real.
     #[flux_rs::reveal(wrap32_down)]
+    #[flux_rs::no_panic_if(n <= 2147483647)]
     #[flux_rs::sig(fn(SeqNumber[@a], usize[@n]) -> SeqNumber[wrap32_down(a.v - n)])]
     fn sub(self, rhs: usize) -> SeqNumber {
         if rhs > i32::MAX as usize {
@@ -183,6 +191,10 @@ impl ops::Sub<usize> for SeqNumber {
 }
 
 impl ops::AddAssign<usize> for SeqNumber {
+    // Forwards to `Add`, so it carries the same condition. Every checked `+=` in the crate is
+    // `+= 1`, which discharges it on the spot.
+    #[flux_rs::no_panic_if(n <= 2147483647)]
+    #[flux_rs::sig(fn(self: &mut SeqNumber, usize[@n]))]
     fn add_assign(&mut self, rhs: usize) {
         *self = *self + rhs;
     }
@@ -768,7 +780,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     // `checksum::pseudo_header` and is a *value* obligation on the two addresses, a different
     // axis from the length work here. The `requires` covers only the header read.
     #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
-    #[flux_rs::sig(fn(&Packet<T>[@p], &IpAddress, &IpAddress) -> bool requires 18 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
+    #[flux_rs::sig(fn(&Packet<T>[@p], &IpAddress[@s], &IpAddress[@d]) -> bool requires s.address_ty == d.address_ty && 18 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer))]
     pub fn verify_partial_checksum(&self, src_addr: &IpAddress, dst_addr: &IpAddress) -> bool {
         if cfg!(fuzzing) {
             return true;
@@ -793,7 +805,7 @@ impl<T: AsRef<[u8]>> Packet<T> {
     // `checksum::data`'s own bound: this hands it the whole buffer, so the bound lands on the
     // buffer rather than on a window of it.
     #[flux_rs::trusted(no, reason = "panic site: checksums the whole buffer")]
-    #[flux_rs::sig(fn(&Packet<T>[@p], &IpAddress, &IpAddress) -> bool requires <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535)]
+    #[flux_rs::sig(fn(&Packet<T>[@p], &IpAddress[@s], &IpAddress[@d]) -> bool requires s.address_ty == d.address_ty && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535)]
     pub fn verify_checksum(&self, src_addr: &IpAddress, dst_addr: &IpAddress) -> bool {
         if cfg!(fuzzing) {
             return true;
@@ -1094,8 +1106,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     // `Packet::verify_checksum` for where the `<= 65535` comes from.
     #[flux_rs::trusted(no, reason = "panic site: checksums the whole buffer")]
     #[flux_rs::sig(
-        fn(self: &mut Packet<T>[@p], &IpAddress, &IpAddress)
-        requires 18 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer) && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
+        fn(self: &mut Packet<T>[@p], &IpAddress[@s], &IpAddress[@d])
+        requires s.address_ty == d.address_ty
+              && 18 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer) && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
     )]
     pub fn fill_checksum(&mut self, src_addr: &IpAddress, dst_addr: &IpAddress) {
         self.set_checksum(0);
@@ -1354,16 +1367,15 @@ impl<'a> TcpOption<'a> {
         if buffer.is_empty() {
             return Err(Error);
         }
-        match buffer[0] {
-            field::OPT_END => {
-                length = 1;
-                option = TcpOption::EndOfList;
-            }
-            field::OPT_NOP => {
-                length = 1;
-                option = TcpOption::NoOperation;
-            }
-            kind => {
+        let kind = buffer[0];
+        if kind == field::OPT_END {
+            length = 1;
+            option = TcpOption::EndOfList;
+        } else if kind == field::OPT_NOP {
+            length = 1;
+            option = TcpOption::NoOperation;
+        } else {
+            {
                 if buffer.len() < 2 {
                     return Err(Error);
                 }
@@ -1520,7 +1532,7 @@ impl<'a> TcpOption<'a> {
 }
 
 /// The possible control flags of a Transmission Control Protocol packet.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, Eq, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Control {
     None,
@@ -1530,9 +1542,28 @@ pub enum Control {
     Rst,
 }
 
+// Hand-written rather than derived: `#[derive(PartialEq)]` gives flux no place to put a
+// panic-freedom claim, and `!=` goes to the trait's *default* `ne`, which is unresolved at
+// every call site. `Control` is fieldless, so both are a discriminant comparison.
+impl PartialEq for Control {
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&Control, &Control) -> bool)]
+    fn eq(&self, other: &Control) -> bool {
+        *self as u8 == *other as u8
+    }
+
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&Control, &Control) -> bool)]
+    fn ne(&self, other: &Control) -> bool {
+        *self as u8 != *other as u8
+    }
+}
+
 #[allow(clippy::len_without_is_empty)]
 impl Control {
     /// Return the length of a control flag, in terms of sequence space.
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(Control) -> usize{v: v <= 1})]
     pub const fn len(self) -> usize {
         match self {
             Control::Syn | Control::Fin => 1,
@@ -1668,8 +1699,9 @@ impl<'a> Repr<'a> {
     /// not a lie about it, and that the options window does not run backwards -- and over `Ref`
     /// they are statable.
     #[flux_rs::sig(
-        fn(&Packet<Ref>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities) -> Result<Repr>
-        requires p.buffer.len <= 65535
+        fn(&Packet<Ref>[@p], &IpAddress[@s], &IpAddress[@d], &ChecksumCapabilities)
+            -> Result<Repr{r: r.plen <= 65535}>
+        requires s.address_ty == d.address_ty && p.buffer.len <= 65535
     )]
     pub fn parse_ref(
         packet: &Packet<Ref<'a>>,
@@ -1829,8 +1861,9 @@ impl<'a> Repr<'a> {
     // is still `&mut Packet<T>`. Same move as `ipv4::Repr::emit`.
     #[flux_rs::trusted(no, reason = "panic site: the header setters and the payload copy")]
     #[flux_rs::sig(
-        fn(&Self[@r], packet: &strg Packet<T>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities)
-        requires hdr_len(r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c) + r.plen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        fn(&Self[@r], packet: &strg Packet<T>[@p], &IpAddress[@s], &IpAddress[@d], &ChecksumCapabilities)
+        requires s.address_ty == d.address_ty
+              && hdr_len(r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c) + r.plen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
               && hdr_len(r.mss, r.ws, r.sp, r.ts, r.a, r.b, r.c) + r.plen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
               && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
         ensures packet: Packet<T>{q: q.buffer == p.buffer}
@@ -1915,6 +1948,12 @@ impl<'a> Repr<'a> {
     }
 
     /// Return the length of the segment, in terms of sequence space.
+    ///
+    /// Stated against `plen` rather than as a constant: `Repr` deliberately carries no
+    /// invariant on its payload length (492 struct literals would owe it), so the ceiling has
+    /// to come from whatever the caller already knows about its own `repr`.
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&Self[@r]) -> usize{v: v <= r.plen + 1})]
     pub const fn segment_len(&self) -> usize {
         self.payload.len() + self.control.len()
     }
@@ -2037,9 +2076,10 @@ impl<'a> SizedRepr<'a> {
 
     /// Emit the representation into `packet`, exactly as [`Repr::emit`] would.
     #[flux_rs::sig(
-        fn(&Self[@s], packet: &strg Packet<T>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities)
-        requires s.blen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
-              && s.blen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+        fn(&Self[@r], packet: &strg Packet<T>[@p], &IpAddress[@s], &IpAddress[@d], &ChecksumCapabilities)
+        requires s.address_ty == d.address_ty
+              && r.blen <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+              && r.blen <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
               && <T as AsRef<[u8]>>::as_ref_reft(p.buffer) <= 65535
         ensures packet: Packet<T>{q: q.buffer == p.buffer}
     )]

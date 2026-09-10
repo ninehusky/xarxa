@@ -170,10 +170,12 @@ impl<K> PacketAssembler<K> {
         self.expires_at
     }
 
-    pub(crate) fn add_with(
+    #[flux_rs::no_panic_if(F::no_panic())]
+    #[flux_rs::sig(fn(&mut Self, usize, f: F) -> Result<(), AssemblerError>)]
+    pub(crate) fn add_with<F: Fn(&mut [u8]) -> Result<usize, AssemblerError>>(
         &mut self,
         offset: usize,
-        f: impl Fn(&mut [u8]) -> Result<usize, AssemblerError>,
+        f: F,
     ) -> Result<(), AssemblerError> {
         if self.buffer.len() < offset {
             return Err(AssemblerError);

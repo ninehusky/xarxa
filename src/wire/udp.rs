@@ -258,8 +258,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
     // `requires` covers only the two header reads.
     #[flux_rs::trusted(no, reason = "panic site: reads the header at a fixed offset")]
     #[flux_rs::sig(
-        fn(&Packet<T>[@p], &IpAddress, &IpAddress) -> bool
-        requires 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+        fn(&Packet<T>[@p], &IpAddress[@s], &IpAddress[@d]) -> bool
+        requires s.address_ty == d.address_ty
+              && 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
     )]
     pub fn verify_partial_checksum(&self, src_addr: &IpAddress, dst_addr: &IpAddress) -> bool {
         if cfg!(fuzzing) {
@@ -283,8 +284,9 @@ impl<T: AsRef<[u8]>> Packet<T> {
     // the second half of what `checked_len` returns; it is what makes the `..len` window safe.
     #[flux_rs::trusted(no, reason = "panic site: reads the window named by the length field")]
     #[flux_rs::sig(
-        fn(&Packet<T>[@p], &IpAddress, &IpAddress) -> bool
-        requires 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
+        fn(&Packet<T>[@p], &IpAddress[@s], &IpAddress[@d]) -> bool
+        requires s.address_ty == d.address_ty
+              && 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
               && p.len <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
     )]
     pub fn verify_checksum(&self, src_addr: &IpAddress, dst_addr: &IpAddress) -> bool {
@@ -380,8 +382,9 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Packet<T> {
     // See `verify_partial_checksum` for why there is no `no_panic`.
     #[flux_rs::trusted(no, reason = "panic site: reads the window named by the length field")]
     #[flux_rs::sig(
-        fn(self: &mut Packet<T>[@p], &IpAddress, &IpAddress)
-        requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        fn(self: &mut Packet<T>[@p], &IpAddress[@s], &IpAddress[@d])
+        requires s.address_ty == d.address_ty
+              && 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
               && 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
               && p.len <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
     )]
@@ -473,6 +476,13 @@ pub struct Repr {
 
 impl Repr {
     /// Parse an User Datagram Protocol packet and return a high-level representation.
+    ///
+    /// The two addresses are the ends of one IP repr, so they share a family; `verify_checksum`
+    /// needs that stated.
+    #[flux_rs::sig(
+        fn(&Packet<Ref>, &IpAddress[@s], &IpAddress[@d], &ChecksumCapabilities) -> Result<Repr>
+        requires s.address_ty == d.address_ty
+    )]
     pub fn parse(
         packet: &Packet<Ref<'_>>,
         src_addr: &IpAddress,
@@ -544,8 +554,9 @@ impl Repr {
     /// Fill in or zero the checksum field, whichever the capabilities call for.
     #[flux_rs::trusted(no, reason = "panic site: fill_checksum reads the window")]
     #[flux_rs::sig(
-        fn(&Self, packet: &mut Packet<T>[@p], &IpAddress, &IpAddress, &ChecksumCapabilities)
-        requires 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        fn(&Self, packet: &mut Packet<T>[@p], &IpAddress[@s], &IpAddress[@d], &ChecksumCapabilities)
+        requires s.address_ty == d.address_ty
+              && 8 <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
               && 8 <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
               && p.len <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
     )]
@@ -605,28 +616,30 @@ impl Repr {
     // needs; the window's own obligation is the caller's, and `emit_slice` is the way to
     // discharge it.
     #[flux_rs::trusted(no, reason = "panic site: the header setters and the payload window")]
+    #[flux_rs::no_panic_if(F::no_panic())]
     #[flux_rs::sig(
         fn(
             &Self,
             packet: &strg Packet<T>[@p],
-            &IpAddress,
-            &IpAddress,
+            &IpAddress[@s],
+            &IpAddress[@d],
             payload_len: usize,
             _,
             &ChecksumCapabilities,
         )
-        requires 8 + payload_len <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        requires s.address_ty == d.address_ty
+              && 8 + payload_len <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
               && 8 + payload_len <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
               && 8 + payload_len <= 65535
         ensures packet: Packet<T>[p.buffer, 8 + payload_len]
     )]
-    pub fn emit<T>(
+    pub fn emit<T, F: FnOnce(&mut [u8])>(
         &self,
         packet: &mut Packet<T>,
         src_addr: &IpAddress,
         dst_addr: &IpAddress,
         payload_len: usize,
-        emit_payload: impl FnOnce(&mut [u8]),
+        emit_payload: F,
         checksum_caps: &ChecksumCapabilities,
     ) where
         T: AsRef<[u8]> + AsMut<[u8]>,
@@ -646,8 +659,9 @@ impl Repr {
     /// the window `emit_ports_and_len` just pinned.
     #[flux_rs::trusted(no, reason = "panic site: the header setters and the payload copy")]
     #[flux_rs::sig(
-        fn(&Self, packet: &strg Packet<T>[@p], &IpAddress, &IpAddress, payload: &[u8][@m], &ChecksumCapabilities)
-        requires 8 + m <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
+        fn(&Self, packet: &strg Packet<T>[@p], &IpAddress[@s], &IpAddress[@d], payload: &[u8][@m], &ChecksumCapabilities)
+        requires s.address_ty == d.address_ty
+              && 8 + m <= <T as AsMut<[u8]>>::as_mut_reft(p.buffer)
               && 8 + m <= <T as AsRef<[u8]>>::as_ref_reft(p.buffer)
               && 8 + m <= 65535
         ensures packet: Packet<T>[p.buffer, 8 + m]

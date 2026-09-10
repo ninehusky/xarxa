@@ -335,7 +335,7 @@ pub type Result<T> = core::result::Result<T, Error>;
     feature = "medium-ethernet",
     feature = "medium-ieee802154"
 ))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[flux_rs::refined_by(unicast: bool)]
 pub enum HardwareAddress {
@@ -348,6 +348,37 @@ pub enum HardwareAddress {
     #[cfg(feature = "medium-ieee802154")]
     #[flux_rs::variant((Ieee802154Address[@u]) -> HardwareAddress[u])]
     Ieee802154(Ieee802154Address),
+}
+
+// Hand-written rather than derived, for the reason on `ethernet::Address`: a derive gives
+// flux no place to state panic-freedom, and `!=` goes to the trait's default `ne` rather
+// than through `eq`. Each arm compares two addresses of one medium.
+#[cfg(any(
+    feature = "medium-ip",
+    feature = "medium-ethernet",
+    feature = "medium-ieee802154"
+))]
+impl PartialEq for HardwareAddress {
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&HardwareAddress, &HardwareAddress) -> bool)]
+    fn eq(&self, other: &HardwareAddress) -> bool {
+        match (self, other) {
+            #[cfg(feature = "medium-ip")]
+            (HardwareAddress::Ip, HardwareAddress::Ip) => true,
+            #[cfg(feature = "medium-ethernet")]
+            (HardwareAddress::Ethernet(a), HardwareAddress::Ethernet(b)) => a == b,
+            #[cfg(feature = "medium-ieee802154")]
+            (HardwareAddress::Ieee802154(a), HardwareAddress::Ieee802154(b)) => a == b,
+            #[allow(unreachable_patterns)]
+            _ => false,
+        }
+    }
+
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&HardwareAddress, &HardwareAddress) -> bool)]
+    fn ne(&self, other: &HardwareAddress) -> bool {
+        !self.eq(other)
+    }
 }
 
 #[cfg(any(
@@ -514,6 +545,7 @@ impl core::fmt::Display for HardwareAddress {
 // `.into()` dispatches through core's blanket `Into` impl, which forwards to
 // `from_val` (see `crate::flux_specs`).
 #[cfg(feature = "medium-ethernet")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<EthernetAddress> for HardwareAddress {
     #[flux_rs::sig(fn(EthernetAddress[@o0]) -> HardwareAddress[o0 % 2 == 0])]
     fn from(addr: EthernetAddress) -> Self {
@@ -724,6 +756,7 @@ impl core::fmt::Display for RawHardwareAddress {
 }
 
 #[cfg(feature = "medium-ethernet")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<EthernetAddress> for RawHardwareAddress {
     fn from(addr: EthernetAddress) -> Self {
         Self::from_bytes(addr.as_bytes())
@@ -738,6 +771,7 @@ impl From<Ieee802154Address> for RawHardwareAddress {
 }
 
 #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<HardwareAddress> for RawHardwareAddress {
     fn from(addr: HardwareAddress) -> Self {
         Self::from_bytes(addr.as_bytes())

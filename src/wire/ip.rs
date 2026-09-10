@@ -92,15 +92,15 @@ impl fmt::Display for Protocol {
 
 /// An internetworking address.
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-#[flux_rs::refined_by(address_ty: int)]
+#[flux_rs::refined_by(address_ty: int, is_unicast: bool)]
 pub enum Address {
     /// An IPv4 address.
     #[cfg(feature = "proto-ipv4")]
-    #[flux_rs::variant((Ipv4Address) -> Address[0])]
+    #[flux_rs::variant((Ipv4Address[@a]) -> Address[0, a])]
     Ipv4(Ipv4Address),
     /// An IPv6 address.
     #[cfg(feature = "proto-ipv6")]
-    #[flux_rs::variant((Ipv6Address) -> Address[1])]
+    #[flux_rs::variant((Ipv6Address[@a]) -> Address[1, a.is_unicast])]
     Ipv6(Ipv6Address),
 }
 
@@ -108,7 +108,7 @@ pub enum Address {
 impl Address {
     /// Create an address wrapping an IPv4 address with the given octets.
     #[cfg(feature = "proto-ipv4")]
-    #[flux_rs::sig(fn(u8, u8, u8, u8) -> Address[0])]
+    #[flux_rs::sig(fn(u8, u8, u8, u8) -> Address{v: v.address_ty == 0})]
     pub const fn v4(a0: u8, a1: u8, a2: u8, a3: u8) -> Address {
         Address::Ipv4(Ipv4Address::new(a0, a1, a2, a3))
     }
@@ -116,7 +116,7 @@ impl Address {
     /// Create an address wrapping an IPv6 address with the given octets.
     #[cfg(feature = "proto-ipv6")]
     #[allow(clippy::too_many_arguments)]
-    #[flux_rs::sig(fn(u16, u16, u16, u16, u16, u16, u16, u16) -> Address[1])]
+    #[flux_rs::sig(fn(u16, u16, u16, u16, u16, u16, u16, u16) -> Address{v: v.address_ty == 1})]
     pub const fn v6(
         a0: u16,
         a1: u16,
@@ -131,7 +131,7 @@ impl Address {
     }
 
     /// Return the protocol version.
-    #[flux_rs::sig(fn(&Address[@v]) -> Version[v])]
+    #[flux_rs::sig(fn(&Address[@a]) -> Version[a.address_ty])]
     pub const fn version(&self) -> Version {
         match self {
             #[cfg(feature = "proto-ipv4")]
@@ -147,7 +147,7 @@ impl Address {
     /// `Version` yields a plain `bool`, so Flux cannot relate the result back to the
     /// addresses. The signature here states that relation explicitly, which is what
     /// lets a caller's version guard discharge downstream obligations.
-    #[flux_rs::sig(fn(&Address[@a], &Address[@b]) -> bool[a == b])]
+    #[flux_rs::sig(fn(&Address[@a], &Address[@b]) -> bool[a.address_ty == b.address_ty])]
     pub fn same_version(&self, other: &Address) -> bool {
         // Scrutinised separately rather than as a tuple: Flux loses the refinement
         // through tuple construction.
@@ -168,6 +168,8 @@ impl Address {
     }
 
     /// Query whether the address is a valid unicast address.
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(&Address[@a]) -> bool[a.is_unicast])]
     pub fn is_unicast(&self) -> bool {
         match self {
             #[cfg(feature = "proto-ipv4")]
@@ -209,6 +211,14 @@ impl Address {
 
     /// If `self` is a CIDR-compatible subnet mask, return `Some(prefix_len)`,
     /// where `prefix_len` is the number of leading zeroes. Return `None` otherwise.
+    ///
+    /// The bound depends on the family, which the index carries, so a v4 address yields a
+    /// length `Ipv4Cidr::new` accepts without a second check.
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(
+        fn(&Address[@a]) -> Option<u8{v: (a.address_ty == 0 => v <= 32)
+                                      && (a.address_ty == 1 => v <= 128)}>
+    )]
     pub fn prefix_len(&self) -> Option<u8> {
         match self {
             #[cfg(feature = "proto-ipv4")]
@@ -220,6 +230,7 @@ impl Address {
 }
 
 #[cfg(all(feature = "proto-ipv4", feature = "proto-ipv6"))]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<::core::net::IpAddr> for Address {
     fn from(x: ::core::net::IpAddr) -> Address {
         match x {
@@ -229,6 +240,7 @@ impl From<::core::net::IpAddr> for Address {
     }
 }
 
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Address> for ::core::net::IpAddr {
     fn from(x: Address) -> ::core::net::IpAddr {
         match x {
@@ -241,14 +253,23 @@ impl From<Address> for ::core::net::IpAddr {
 }
 
 #[cfg(feature = "proto-ipv4")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Ipv4Address> for Address {
+    // Naming the family is what lets a caller holding two addresses from one `Ipv4Repr` show
+    // they agree, which is `checksum::pseudo_header`'s precondition.
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(Ipv4Address[@a]) -> Address[0, a])]
     fn from(ipv4: Ipv4Address) -> Address {
         Address::Ipv4(ipv4)
     }
 }
 
 #[cfg(feature = "proto-ipv6")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Ipv6Address> for Address {
+    // See the IPv4 impl above.
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(fn(Ipv6Address[@a]) -> Address[1, a.is_unicast])]
     fn from(addr: Ipv6Address) -> Self {
         Address::Ipv6(addr)
     }
@@ -292,6 +313,13 @@ impl Cidr {
     ///
     /// # Panics
     /// This function panics if the given prefix length is invalid for the given address.
+    #[flux_rs::no_panic_if(
+        (a.address_ty == 0 => p <= 32) && (a.address_ty == 1 => p <= 128)
+    )]
+    #[flux_rs::sig(
+        fn(Address[@a], p: u8) -> Cidr
+        requires (a.address_ty == 0 => p <= 32) && (a.address_ty == 1 => p <= 128)
+    )]
     pub const fn new(addr: Address, prefix_len: u8) -> Cidr {
         match addr {
             #[cfg(feature = "proto-ipv4")]
@@ -349,6 +377,7 @@ impl Cidr {
 }
 
 #[cfg(feature = "proto-ipv4")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Ipv4Cidr> for Cidr {
     fn from(addr: Ipv4Cidr) -> Self {
         Cidr::Ipv4(addr)
@@ -356,6 +385,7 @@ impl From<Ipv4Cidr> for Cidr {
 }
 
 #[cfg(feature = "proto-ipv6")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Ipv6Cidr> for Cidr {
     fn from(addr: Ipv6Cidr) -> Self {
         Cidr::Ipv6(addr)
@@ -392,22 +422,23 @@ impl defmt::Format for Cidr {
 /// See also ['ListenEndpoint'], which allows not specifying the address
 /// in order to listen on a given port on any address.
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-#[flux_rs::refined_by(addr_ty: int)]
+#[flux_rs::refined_by(addr_ty: int, addr_unicast: bool)]
 pub struct Endpoint {
-    #[flux_rs::field(Address[addr_ty])]
+    #[flux_rs::field(Address[addr_ty, addr_unicast])]
     pub addr: Address,
     pub port: u16,
 }
 
 impl Endpoint {
     /// Create an endpoint address from given address and port.
-    #[flux_rs::sig(fn(Address[@v], u16) -> Endpoint[v])]
+    #[flux_rs::sig(fn(Address[@a], u16) -> Endpoint[a.address_ty, a.is_unicast])]
     pub const fn new(addr: Address, port: u16) -> Endpoint {
         Endpoint { addr, port }
     }
 }
 
 #[cfg(all(feature = "proto-ipv4", feature = "proto-ipv6"))]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<::core::net::SocketAddr> for Endpoint {
     fn from(x: ::core::net::SocketAddr) -> Endpoint {
         Endpoint {
@@ -418,6 +449,7 @@ impl From<::core::net::SocketAddr> for Endpoint {
 }
 
 #[cfg(feature = "proto-ipv4")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<::core::net::SocketAddrV4> for Endpoint {
     fn from(x: ::core::net::SocketAddrV4) -> Endpoint {
         Endpoint {
@@ -428,6 +460,7 @@ impl From<::core::net::SocketAddrV4> for Endpoint {
 }
 
 #[cfg(feature = "proto-ipv6")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<::core::net::SocketAddrV6> for Endpoint {
     fn from(x: ::core::net::SocketAddrV6) -> Endpoint {
         Endpoint {
@@ -437,6 +470,7 @@ impl From<::core::net::SocketAddrV6> for Endpoint {
     }
 }
 
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Endpoint> for ::core::net::SocketAddr {
     fn from(x: Endpoint) -> ::core::net::SocketAddr {
         ::core::net::SocketAddr::new(x.addr.into(), x.port)
@@ -456,7 +490,10 @@ impl defmt::Format for Endpoint {
     }
 }
 
+#[flux_rs::assoc(fn from_no_panic() -> bool { <T as Into<Address>>::into_no_panic() })]
 impl<T: Into<Address>> From<(T, u16)> for Endpoint {
+    #[flux_rs::no_panic_if(<T as Into<Address>>::into_no_panic())]
+    #[flux_rs::sig(fn from(v: (T, u16)) -> Endpoint)]
     fn from((addr, port): (T, u16)) -> Endpoint {
         Endpoint {
             addr: addr.into(),
@@ -520,7 +557,7 @@ impl ListenEndpoint {
     /// keeps it in the payload constraint rather than indexing the `Option`, which would
     /// need `-Fstd-extern-specs`.
     #[flux_rs::trusted(reason = "opaque: projects the hidden addr field")]
-    #[flux_rs::sig(fn(&ListenEndpoint[@t]) -> Option<Address{v: v == t && t != -1}>)]
+    #[flux_rs::sig(fn(&ListenEndpoint[@t]) -> Option<Address{v: v.address_ty == t && t != -1}>)]
     pub const fn addr(&self) -> Option<Address> {
         self.addr
     }
@@ -532,7 +569,7 @@ impl ListenEndpoint {
     /// this type, where the rest of it already is. `-1` is reserved for "no address", so an
     /// endpoint built from an `Address` never carries it.
     #[flux_rs::trusted(reason = "opaque: constructs an endpoint with a definite address")]
-    #[flux_rs::sig(fn(addr: Address[@t], port: u16) -> ListenEndpoint[t])]
+    #[flux_rs::sig(fn(addr: Address[@a], port: u16) -> ListenEndpoint[a.address_ty])]
     pub const fn with_addr(addr: Address, port: u16) -> ListenEndpoint {
         ListenEndpoint {
             addr: Some(addr),
@@ -549,6 +586,7 @@ impl ListenEndpoint {
 }
 
 #[cfg(all(feature = "proto-ipv4", feature = "proto-ipv6"))]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<::core::net::SocketAddr> for ListenEndpoint {
     fn from(x: ::core::net::SocketAddr) -> ListenEndpoint {
         ListenEndpoint::with_addr(x.ip().into(), x.port())
@@ -556,6 +594,7 @@ impl From<::core::net::SocketAddr> for ListenEndpoint {
 }
 
 #[cfg(feature = "proto-ipv4")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<::core::net::SocketAddrV4> for ListenEndpoint {
     fn from(x: ::core::net::SocketAddrV4) -> ListenEndpoint {
         ListenEndpoint::with_addr((*x.ip()).into(), x.port())
@@ -563,6 +602,7 @@ impl From<::core::net::SocketAddrV4> for ListenEndpoint {
 }
 
 #[cfg(feature = "proto-ipv6")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<::core::net::SocketAddrV6> for ListenEndpoint {
     fn from(x: ::core::net::SocketAddrV6) -> ListenEndpoint {
         ListenEndpoint::with_addr((*x.ip()).into(), x.port())
@@ -587,6 +627,7 @@ impl defmt::Format for ListenEndpoint {
 }
 
 /// See the note on `From<Endpoint>`: the assoc is what survives `.into()`.
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<u16> for ListenEndpoint {
     #[flux_rs::trusted(reason = "opaque: a bare port binds no address")]
     #[flux_rs::sig(fn(u16) -> ListenEndpoint[-1])]
@@ -597,9 +638,10 @@ impl From<u16> for ListenEndpoint {
 
 /// Ties the conversion's result index to the source, so `.into()` (which routes through the
 /// blanket `Into` spec, whose `from_val` defaults to `true`) does not lose the version.
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Endpoint> for ListenEndpoint {
     #[flux_rs::trusted(reason = "opaque: constructs a bound endpoint from a full one")]
-    #[flux_rs::sig(fn(Endpoint[@v]) -> ListenEndpoint[v])]
+    #[flux_rs::sig(fn(Endpoint[@e]) -> ListenEndpoint[e.addr_ty])]
     fn from(endpoint: Endpoint) -> ListenEndpoint {
         ListenEndpoint {
             addr: Some(endpoint.addr),
@@ -608,7 +650,10 @@ impl From<Endpoint> for ListenEndpoint {
     }
 }
 
+#[flux_rs::assoc(fn from_no_panic() -> bool { <T as Into<Address>>::into_no_panic() })]
 impl<T: Into<Address>> From<(T, u16)> for ListenEndpoint {
+    #[flux_rs::no_panic_if(<T as Into<Address>>::into_no_panic())]
+    #[flux_rs::sig(fn from(v: (T, u16)) -> ListenEndpoint)]
     fn from((addr, port): (T, u16)) -> ListenEndpoint {
         ListenEndpoint::with_addr(addr.into(), port)
     }
@@ -640,6 +685,7 @@ pub enum Repr {
 }
 
 #[cfg(feature = "proto-ipv4")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Ipv4Repr> for Repr {
     fn from(repr: Ipv4Repr) -> Repr {
         Repr::Ipv4(repr)
@@ -647,6 +693,7 @@ impl From<Ipv4Repr> for Repr {
 }
 
 #[cfg(feature = "proto-ipv6")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Ipv6Repr> for Repr {
     fn from(repr: Ipv6Repr) -> Repr {
         Repr::Ipv6(repr)
@@ -743,7 +790,7 @@ impl Repr {
     // `p <= 65535` is `Ipv4Repr`/`Ipv6Repr`'s own invariant: the enclosing header's length
     // field is sixteen bits, so a longer payload cannot be represented on the wire. Stating it
     // here rather than at the two struct literals below puts it where callers can see it.
-    #[flux_rs::sig(fn(Address[@v], Address[v], Protocol, plen: usize{plen <= 65535}, u8) -> Repr[v, plen])]
+    #[flux_rs::sig(fn(Address[@a], Address{w: w.address_ty == a.address_ty}, Protocol, plen: usize{plen <= 65535}, u8) -> Repr[a.address_ty, plen])]
     pub fn new(
         src_addr: Address,
         dst_addr: Address,
@@ -833,7 +880,7 @@ impl Repr {
     }
 
     /// Return the source address.
-    #[flux_rs::sig(fn(&Repr[@r]) -> Address[r.ip_ty])]
+    #[flux_rs::sig(fn(&Repr[@r]) -> Address{v: v.address_ty == r.ip_ty})]
     pub const fn src_addr(&self) -> Address {
         match *self {
             #[cfg(feature = "proto-ipv4")]
@@ -844,7 +891,7 @@ impl Repr {
     }
 
     /// Return the destination address.
-    #[flux_rs::sig(fn(&Repr[@r]) -> Address[r.ip_ty])]
+    #[flux_rs::sig(fn(&Repr[@r]) -> Address{v: v.address_ty == r.ip_ty})]
     pub const fn dst_addr(&self) -> Address {
         match *self {
             #[cfg(feature = "proto-ipv4")]
@@ -1064,23 +1111,40 @@ pub mod checksum {
         ])
     }
 
+    /// A pseudo-header is formed from the two ends of one IP repr, so the families agree --
+    /// `IpRepr::new` already requires it. Stating it is what makes the mixed arms dead.
+    #[flux_rs::no_panic]
+    #[flux_rs::sig(
+        fn(&Address[@s], &Address[@d], Protocol, u32) -> u16
+        requires s.address_ty == d.address_ty
+    )]
     pub fn pseudo_header(
         src_addr: &Address,
         dst_addr: &Address,
         next_header: Protocol,
         length: u32,
     ) -> u16 {
-        match (src_addr, dst_addr) {
+        // Scrutinised separately rather than as a tuple, for the same reason as
+        // `same_version` above: flux loses the refinement through tuple construction, and it
+        // does not carry the negation of earlier arms into a match's catch-all either. Nested
+        // this way every arm names a variant, so each one is an ordinary path condition.
+        match src_addr {
             #[cfg(feature = "proto-ipv4")]
-            (Address::Ipv4(src_addr), Address::Ipv4(dst_addr)) => {
-                pseudo_header_v4(src_addr, dst_addr, next_header, length)
-            }
+            Address::Ipv4(src_addr) => match dst_addr {
+                Address::Ipv4(dst_addr) => {
+                    pseudo_header_v4(src_addr, dst_addr, next_header, length)
+                }
+                #[cfg(feature = "proto-ipv6")]
+                Address::Ipv6(_) => unreachable!(),
+            },
             #[cfg(feature = "proto-ipv6")]
-            (Address::Ipv6(src_addr), Address::Ipv6(dst_addr)) => {
-                pseudo_header_v6(src_addr, dst_addr, next_header, length)
-            }
-            #[allow(unreachable_patterns)]
-            _ => unreachable!(),
+            Address::Ipv6(src_addr) => match dst_addr {
+                #[cfg(feature = "proto-ipv4")]
+                Address::Ipv4(_) => unreachable!(),
+                Address::Ipv6(dst_addr) => {
+                    pseudo_header_v6(src_addr, dst_addr, next_header, length)
+                }
+            },
         }
     }
 

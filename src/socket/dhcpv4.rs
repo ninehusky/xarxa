@@ -421,8 +421,8 @@ impl<'a> Socket<'a> {
                     // changed every time if the receive packet buffer is set,
                     // but we only write changes to the rest of the config now.
                     let config_changed =
-                        state.config != config || self.receive_packet_buffer.is_some();
-                    if state.config != config {
+                        !(state.config == config) || self.receive_packet_buffer.is_some();
+                    if !(state.config == config) {
                         state.config = config;
                     }
                     if config_changed {
@@ -568,6 +568,7 @@ impl<'a> Socket<'a> {
     /// header describes a payload of the UDP header plus what the DHCP representation emits.
     /// It is proved, not assumed -- the three calls below are made directly from this body, so
     /// flux checks each against the bound.
+    #[flux_rs::no_panic_if(F::no_panic())]
     #[flux_rs::sig(
         fn(self: &mut Socket, &mut Context, F) -> Result<(), E>
         where F: FnOnce(&mut Context,
@@ -773,7 +774,7 @@ impl<'a> Socket<'a> {
                 packet: self
                     .receive_packet_buffer
                     .as_deref()
-                    .map(DhcpPacket::new_unchecked),
+                    .map(|b| DhcpPacket::new_unchecked(b)),
             }))
         } else {
             self.config_changed = false;

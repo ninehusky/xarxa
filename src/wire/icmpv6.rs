@@ -988,8 +988,8 @@ impl<'a> Repr<'a> {
                 data: packet.payload(),
             }),
             #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
-            (msg_type, 0) if msg_type.is_ndisc() => NdiscRepr::parse(packet).map(Repr::Ndisc),
-            (msg_type, 0) if msg_type.is_mld() => MldRepr::parse(packet).map(Repr::Mld),
+            (msg_type, 0) if msg_type.is_ndisc() => NdiscRepr::parse(packet).map(|r| Repr::Ndisc(r)),
+            (msg_type, 0) if msg_type.is_mld() => MldRepr::parse(packet).map(|r| Repr::Mld(r)),
             // `RplRepr::parse` still takes a `Packet<&'a T>`; the window goes back to a plain
             // slice for it. It runs its own `check_len`, so nothing proved here is lost.
             #[cfg(feature = "proto-rpl")]

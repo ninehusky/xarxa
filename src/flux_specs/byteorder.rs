@@ -9,7 +9,7 @@
 
 // Referenced only from `extern_spec` bodies, which are stripped in non-flux builds.
 #[allow(unused_imports)]
-use ::byteorder::{BigEndian, ByteOrder};
+use ::byteorder::{BigEndian, ByteOrder, LittleEndian};
 
 use flux_rs::*;
 
@@ -35,6 +35,23 @@ impl ByteOrder for BigEndian {
 
     /// byteorder 1.5.0 `src/lib.rs:1983`: `buf[..4].copy_from_slice(&n.to_be_bytes())`
     /// <https://docs.rs/byteorder/1.5.0/src/byteorder/lib.rs.html#1983>
+    #[no_panic]
+    #[spec(fn(buf: &mut [u8]{v: 4 <= v}, n: u32))]
+    fn write_u32(buf: &mut [u8], n: u32);
+}
+
+/// `NativeEndian` is an alias for `LittleEndian` on these targets, and `phy::pcap_writer`
+/// writes its headers in native order. Same bodies, same `N <= len` precondition.
+#[extern_spec(byteorder)]
+impl ByteOrder for LittleEndian {
+    /// byteorder 1.5.0 `src/lib.rs:1810`: `buf[..2].copy_from_slice(&n.to_le_bytes())`
+    /// <https://docs.rs/byteorder/1.5.0/src/byteorder/lib.rs.html#1810>
+    #[no_panic]
+    #[spec(fn(buf: &mut [u8]{v: 2 <= v}, n: u16))]
+    fn write_u16(buf: &mut [u8], n: u16);
+
+    /// byteorder 1.5.0 `src/lib.rs:1815`: `buf[..4].copy_from_slice(&n.to_le_bytes())`
+    /// <https://docs.rs/byteorder/1.5.0/src/byteorder/lib.rs.html#1815>
     #[no_panic]
     #[spec(fn(buf: &mut [u8]{v: 4 <= v}, n: u32))]
     fn write_u32(buf: &mut [u8], n: u32);

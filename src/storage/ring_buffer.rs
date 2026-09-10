@@ -76,7 +76,10 @@ unsafe impl NonZst for u8 {}
 //
 // The guarantee is about bytes, so it holds only because `T: NonZst` -- see that trait.
 #[flux_rs::invariant(0 <= read_at && 0 <= length && length <= cap)]
-#[flux_rs::invariant(cap <= 9223372036854775807)]
+// On a 32-bit target `isize::MAX` is `i32::MAX`, which is the bound `SeqNumber`'s arithmetic
+// needs. Stated where it is true; the 64-bit host test build keeps the wider one.
+#[cfg_attr(not(target_pointer_width = "32"), flux_rs::invariant(cap <= 9223372036854775807))]
+#[cfg_attr(target_pointer_width = "32", flux_rs::invariant(cap <= 2147483647))]
 #[flux_rs::invariant(read_at < cap || read_at == 0)]
 pub struct RingBuffer<'a, T: 'a + NonZst> {
     #[flux_rs::field(ManagedSlice<T>[cap])]
@@ -92,6 +95,7 @@ impl<'a, T: 'a + NonZst> RingBuffer<'a, T> {
     ///
     /// During creation, every element in `storage` is reset.
     #[flux_rs::trusted(no, reason = "establishes the RingBuffer invariant")]
+    #[flux_rs::no_panic_if(<S as Into<ManagedSlice<T>>>::into_no_panic())]
     #[flux_rs::sig(fn(S) -> RingBuffer<T>{r: r.read_at == 0 && r.length == 0})]
     pub fn new<S>(storage: S) -> RingBuffer<'a, T>
     where
@@ -238,7 +242,7 @@ impl<'a, T: 'a + NonZst> RingBuffer<'a, T> {
     ///
     /// This function is a shortcut for `ring_buf.enqueue_one_with(Ok)`.
     pub fn enqueue_one(&mut self) -> Result<&mut T, Full> {
-        self.enqueue_one_with(Ok)?
+        self.enqueue_one_with(|x| Ok(x))?
     }
 
     /// Call `f` with a single buffer element, and dequeue the element if `f`
@@ -269,7 +273,7 @@ impl<'a, T: 'a + NonZst> RingBuffer<'a, T> {
     ///
     /// This function is a shortcut for `ring_buf.dequeue_one_with(Ok)`.
     pub fn dequeue_one(&mut self) -> Result<&mut T, Empty> {
-        self.dequeue_one_with(Ok)?
+        self.dequeue_one_with(|x| Ok(x))?
     }
 }
 
@@ -559,6 +563,7 @@ impl<'a, T: 'a + NonZst> RingBuffer<'a, T> {
     }
 }
 
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl<'a, T: 'a + NonZst> From<ManagedSlice<'a, T>> for RingBuffer<'a, T> {
     fn from(slice: ManagedSlice<'a, T>) -> RingBuffer<'a, T> {
         RingBuffer::new(slice)

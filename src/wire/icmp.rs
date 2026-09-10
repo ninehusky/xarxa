@@ -12,12 +12,14 @@ pub enum Repr<'a> {
     Ipv6(icmpv6::Repr<'a>),
 }
 #[cfg(feature = "proto-ipv4")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl<'a> From<icmpv4::Repr<'a>> for Repr<'a> {
     fn from(s: icmpv4::Repr<'a>) -> Self {
         Repr::Ipv4(s)
     }
 }
 #[cfg(feature = "proto-ipv6")]
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl<'a> From<icmpv6::Repr<'a>> for Repr<'a> {
     fn from(s: icmpv6::Repr<'a>) -> Self {
         Repr::Ipv6(s)

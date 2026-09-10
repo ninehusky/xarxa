@@ -30,6 +30,8 @@ impl Instant {
     pub const ZERO: Instant = Instant::from_micros_const(0);
 
     /// Create a new `Instant` from a number of microseconds.
+    #[flux_rs::no_panic_if(T::into_no_panic())]
+    #[flux_rs::sig(fn from_micros(micros: T) -> Instant)]
     pub fn from_micros<T: Into<i64>>(micros: T) -> Instant {
         Instant {
             micros: micros.into(),
@@ -41,6 +43,8 @@ impl Instant {
     }
 
     /// Create a new `Instant` from a number of milliseconds.
+    #[flux_rs::no_panic_if(T::into_no_panic())]
+    #[flux_rs::sig(fn from_millis(millis: T) -> Instant)]
     pub fn from_millis<T: Into<i64>>(millis: T) -> Instant {
         Instant {
             micros: millis.into() * 1000,
@@ -55,6 +59,8 @@ impl Instant {
     }
 
     /// Create a new `Instant` from a number of seconds.
+    #[flux_rs::no_panic_if(T::into_no_panic())]
+    #[flux_rs::sig(fn from_secs(secs: T) -> Instant)]
     pub fn from_secs<T: Into<i64>>(secs: T) -> Instant {
         Instant {
             micros: secs.into() * 1000000,
@@ -338,12 +344,14 @@ impl ops::ShrAssign<u32> for Duration {
     }
 }
 
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<::core::time::Duration> for Duration {
     fn from(other: ::core::time::Duration) -> Duration {
         Duration::from_micros(other.as_secs() * 1000000 + other.subsec_micros() as u64)
     }
 }
 
+#[flux_rs::assoc(fn from_no_panic() -> bool { true })]
 impl From<Duration> for ::core::time::Duration {
     fn from(val: Duration) -> Self {
         ::core::time::Duration::from_micros(val.total_micros())

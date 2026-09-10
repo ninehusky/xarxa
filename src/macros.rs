@@ -50,7 +50,7 @@ macro_rules! enum_with_unknown {
             ),+ $(,)?
         }
     ) => {
-        #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
+        #[derive(Debug, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
         #[cfg_attr(feature = "defmt", derive(defmt::Format))]
         #[flux_rs::refined_by(code: int)]
         $( #[$enum_attr] )*
@@ -67,6 +67,35 @@ macro_rules! enum_with_unknown {
             Unknown($ty)
         }
 
+
+        // Hand-written rather than derived: a derive gives flux no place to state
+        // panic-freedom, and `!=` goes to the trait's *default* `ne` rather than through
+        // `eq`, so both need their own item. Matching directly rather than via `From`
+        // keeps this to one comparison of two `$ty` values.
+        impl ::core::cmp::PartialEq for $name {
+            // The result is the index equality, not just a bool: two values of this type are
+            // equal exactly when their codes are. Named variants carry their literal and
+            // `Unknown`'s index is its payload, so the body proves it. Without this an
+            // `if x == Variant` guard establishes nothing about `x` in the branch.
+            #[flux_rs::no_panic]
+            #[flux_rs::sig(fn(&$name[@a], &$name[@b]) -> bool[a == b])]
+            fn eq(&self, other: &$name) -> bool {
+                match (self, other) {
+                    $( ($name::$variant, $name::$variant) => true, )*
+                    ($name::Unknown(a), $name::Unknown(b)) => *a == *b,
+                    #[allow(unreachable_patterns)]
+                    _ => false,
+                }
+            }
+
+            #[flux_rs::no_panic]
+            #[flux_rs::sig(fn(&$name[@a], &$name[@b]) -> bool[a != b])]
+            fn ne(&self, other: &$name) -> bool {
+                !self.eq(other)
+            }
+        }
+
+        #[flux_rs::assoc(fn from_no_panic() -> bool { true })]
         impl ::core::convert::From<$ty> for $name {
             #[flux_rs::trusted(no, reason = "backs the code index")]
             #[flux_rs::sig(fn($ty[@c]) -> $name[c])]
@@ -78,6 +107,7 @@ macro_rules! enum_with_unknown {
             }
         }
 
+        #[flux_rs::assoc(fn from_no_panic() -> bool { true })]
         impl ::core::convert::From<$name> for $ty {
             #[flux_rs::trusted(no, reason = "backs the code index")]
             #[flux_rs::sig(fn($name[@c]) -> $ty[c])]
@@ -99,7 +129,7 @@ macro_rules! enum_with_unknown {
             ),+ $(,)?
         }
     ) => {
-        #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
+        #[derive(Debug, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
         #[cfg_attr(feature = "defmt", derive(defmt::Format))]
         $( #[$enum_attr] )*
         pub enum $name {
@@ -110,6 +140,31 @@ macro_rules! enum_with_unknown {
             Unknown($ty)
         }
 
+
+        // Hand-written rather than derived: a derive gives flux no place to state
+        // panic-freedom, and `!=` goes to the trait's *default* `ne` rather than through
+        // `eq`, so both need their own item. Matching directly rather than via `From`
+        // keeps this to one comparison of two `$ty` values.
+        impl ::core::cmp::PartialEq for $name {
+            #[flux_rs::no_panic]
+            #[flux_rs::sig(fn(&$name, &$name) -> bool)]
+            fn eq(&self, other: &$name) -> bool {
+                match (self, other) {
+                    $( ($name::$variant, $name::$variant) => true, )*
+                    ($name::Unknown(a), $name::Unknown(b)) => *a == *b,
+                    #[allow(unreachable_patterns)]
+                    _ => false,
+                }
+            }
+
+            #[flux_rs::no_panic]
+            #[flux_rs::sig(fn(&$name, &$name) -> bool)]
+            fn ne(&self, other: &$name) -> bool {
+                !self.eq(other)
+            }
+        }
+
+        #[flux_rs::assoc(fn from_no_panic() -> bool { true })]
         impl ::core::convert::From<$ty> for $name {
             fn from(value: $ty) -> Self {
                 match value {
@@ -119,6 +174,7 @@ macro_rules! enum_with_unknown {
             }
         }
 
+        #[flux_rs::assoc(fn from_no_panic() -> bool { true })]
         impl ::core::convert::From<$name> for $ty {
             fn from(value: $name) -> Self {
                 match value {

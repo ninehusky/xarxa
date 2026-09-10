@@ -56,6 +56,8 @@ pub struct PacketBuffer<'a, H: 'a> {
 /// Kept out of [`PacketBuffer::dequeue_with`], whose two nested closures leave
 /// `self.payload_ring` blocked at the exit join and so cannot be checked. This is the half of
 /// that operation that carries obligations.
+#[flux_rs::no_panic_if(F::no_panic())]
+#[flux_rs::sig(fn(&mut PacketMetadata<H>, &mut [u8], F) -> (usize, Result<R, E>))]
 fn dequeue_one<'c, H, R, E, F>(
     metadata: &mut PacketMetadata<H>,
     payload_buf: &'c mut [u8],
@@ -78,6 +80,9 @@ impl<'a, H> PacketBuffer<'a, H> {
     ///
     /// Metadata storage limits the maximum _number_ of packets in the buffer and payload
     /// storage limits the maximum _total size_ of packets.
+    #[flux_rs::no_panic_if(<MS as Into<ManagedSlice<PacketMetadata<H>>>>::into_no_panic()
+        && <PS as Into<ManagedSlice<u8>>>::into_no_panic())]
+    #[flux_rs::sig(fn(metadata_storage: MS, payload_storage: PS) -> PacketBuffer<H>)]
     pub fn new<MS, PS>(metadata_storage: MS, payload_storage: PS) -> PacketBuffer<'a, H>
     where
         MS: Into<ManagedSlice<'a, PacketMetadata<H>>>,
@@ -156,6 +161,8 @@ impl<'a, H> PacketBuffer<'a, H> {
 
     /// Call `f` with a packet from the buffer large enough to fit `max_size` bytes. The packet
     /// is shrunk to the size returned from `f` and enqueued into the buffer.
+    #[flux_rs::no_panic_if(F::no_panic())]
+    #[flux_rs::sig(fn(&mut Self, usize, H, f: F) -> Result<usize, Full>)]
     pub fn enqueue_with_infallible<'b, F>(
         &'b mut self,
         max_size: usize,
